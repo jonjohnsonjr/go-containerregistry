@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
@@ -28,16 +29,22 @@ import (
 func init() { Root.AddCommand(NewCmdPull()) }
 
 func NewCmdPull() *cobra.Command {
-	return &cobra.Command{
+	var oci bool
+	cmd := &cobra.Command{
 		Use:   "pull",
 		Short: "Pull a remote image by reference and store its contents in a tarball",
 		Args:  cobra.ExactArgs(2),
-		Run:   pull,
+		Run: func(_ *cobra.Command, args []string) {
+			pull(args[0], args[1], oci)
+		},
 	}
+
+	cmd.Flags().BoolVarP(&oci, "oci", "", false, "Whether to write image as OCI image layout")
+
+	return cmd
 }
 
-func pull(_ *cobra.Command, args []string) {
-	src, dst := args[0], args[1]
+func pull(src, dst string, oci bool) {
 	// TODO: Why is only tag allowed?
 	t, err := name.NewTag(src, name.WeakValidation)
 	if err != nil {
@@ -50,7 +57,13 @@ func pull(_ *cobra.Command, args []string) {
 		log.Fatalf("reading image %q: %v", t, err)
 	}
 
-	if err := tarball.WriteToFile(dst, t, i, &tarball.WriteOptions{}); err != nil {
-		log.Fatalf("writing image %q: %v", dst, err)
+	if oci {
+		if err := layout.Write(dst, i); err != nil {
+			log.Fatalf("writing image %q: %v", dst, err)
+		}
+	} else {
+		if err := tarball.WriteToFile(dst, t, i, &tarball.WriteOptions{}); err != nil {
+			log.Fatalf("writing image %q: %v", dst, err)
+		}
 	}
 }
