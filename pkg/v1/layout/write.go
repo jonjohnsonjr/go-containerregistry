@@ -131,6 +131,7 @@ func writeBlob(path string, hash v1.Hash, r io.ReadCloser) error {
 		return err
 	}
 
+	// TODO: Ignore already exists, since that's okay.
 	w, err := os.Create(filepath.Join(dir, hash.Hex))
 	if err != nil {
 		return err
