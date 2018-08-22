@@ -22,6 +22,8 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
@@ -29,16 +31,22 @@ import (
 func init() { Root.AddCommand(NewCmdPush()) }
 
 func NewCmdPush() *cobra.Command {
-	return &cobra.Command{
+	var oci bool
+	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "Push image contents as a tarball to a remote registry",
 		Args:  cobra.ExactArgs(2),
-		Run:   push,
+		Run: func(_ *cobra.Command, args []string) {
+			push(args[0], args[1], oci)
+		},
 	}
+
+	cmd.Flags().BoolVarP(&oci, "oci", "", false, "Whether the source image is OCI image layout")
+
+	return cmd
 }
 
-func push(_ *cobra.Command, args []string) {
-	src, dst := args[0], args[1]
+func push(src, dst string, oci bool) {
 	t, err := name.NewTag(dst, name.WeakValidation)
 	if err != nil {
 		log.Fatalf("parsing tag %q: %v", dst, err)
@@ -50,9 +58,26 @@ func push(_ *cobra.Command, args []string) {
 		log.Fatalf("getting creds for %q: %v", t, err)
 	}
 
-	i, err := tarball.ImageFromPath(src, nil)
-	if err != nil {
-		log.Fatalf("reading image %q: %v", src, err)
+	var i v1.Image
+	if oci {
+		ii, err := layout.ImageIndex(src)
+		if err != nil {
+			log.Fatalf("reading image layout %q: %v", src, err)
+		}
+		manifest, err := ii.IndexManifest()
+		if err != nil {
+			log.Fatalf("reading index manifest %q: %v", src, err)
+		}
+		digest := manifest.Manifests[0].Digest
+		i, err = layout.Image(src, digest)
+		if err != nil {
+			log.Fatalf("reading oci image %q: %v", digest, err)
+		}
+	} else {
+		i, err = tarball.ImageFromPath(src, nil)
+		if err != nil {
+			log.Fatalf("reading image %q: %v", src, err)
+		}
 	}
 
 	if err := remote.Write(t, i, auth, http.DefaultTransport, remote.WriteOptions{}); err != nil {
