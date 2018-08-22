@@ -109,7 +109,7 @@ func Write(p string, img v1.Image) error {
 		}},
 	}
 
-	rawIndex, err := json.Marshal(index)
+	rawIndex, err := json.MarshalIndent(index, "", "   ")
 	if err != nil {
 		return err
 	}
