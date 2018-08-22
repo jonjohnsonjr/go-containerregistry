@@ -28,6 +28,7 @@ import (
 
 type layoutImage struct {
 	path        string
+	desc        v1.Descriptor
 	rawManifest []byte
 }
 
@@ -39,16 +40,35 @@ func Image(path string, hash v1.Hash) (v1.Image, error) {
 		return nil, err
 	}
 
-	img := &layoutImage{
-		path:        path,
-		rawManifest: rawManifest,
+	// Read the index.json so we can find the manifest descriptor.
+	ii, err := ImageIndex(path)
+	if err != nil {
+		return nil, err
 	}
 
-	return partial.CompressedToImage(img)
+	im, err := ii.IndexManifest()
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO(jonjohnsonjr): We need to implement a Walk function for descriptors.
+	for _, desc := range im.Manifests {
+		if desc.Digest == hash {
+			img := &layoutImage{
+				path:        path,
+				desc:        desc,
+				rawManifest: rawManifest,
+			}
+
+			return partial.CompressedToImage(img)
+		}
+	}
+
+	return nil, fmt.Errorf("could not find descriptor in index.json: %s", hash)
 }
 
 func (li *layoutImage) MediaType() (types.MediaType, error) {
-	return types.OCIManifestSchema1, nil
+	return li.desc.MediaType, nil
 }
 
 func (li *layoutImage) Manifest() (*v1.Manifest, error) {
@@ -74,14 +94,22 @@ func (li *layoutImage) BlobSet() (map[v1.Hash]struct{}, error) {
 	return partial.BlobSet(li)
 }
 
-func (li *layoutImage) LayerByDigest(digest v1.Hash) (partial.CompressedLayer, error) {
+func (li *layoutImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error) {
 	manifest, err := li.Manifest()
 	if err != nil {
 		return nil, err
 	}
 
+	// TODO(#87): Remove me.
+	if h == manifest.Config.Digest {
+		return partial.CompressedLayer(&compressedBlob{
+			path: li.path,
+			desc: manifest.Config,
+		}), nil
+	}
+
 	for _, desc := range manifest.Layers {
-		if desc.Digest == digest {
+		if h == desc.Digest {
 			// We assume that all these layers are compressed, which is probably not
 			// safe to assume. It will take some restructuring to make that work, so
 			// just return an error for now if we encounter unexpected layers.
@@ -96,7 +124,7 @@ func (li *layoutImage) LayerByDigest(digest v1.Hash) (partial.CompressedLayer, e
 		}
 	}
 
-	return nil, fmt.Errorf("could not find layer in image: %s", digest)
+	return nil, fmt.Errorf("could not find layer in image: %s", h)
 }
 
 func checkLayerMediaType(desc v1.Descriptor) error {
