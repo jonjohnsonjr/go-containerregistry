@@ -32,9 +32,9 @@ var layoutFile = `{
 
 // Write the contents of the image to the provided directory, in the compressed format.
 // The contents are written in the following format:
-// At the top leve, there is:
+// At the top level, there is:
 //   One oci-layout file containing the version of this image-layout.
-//   One index.json file containing information about several images.
+//   One index.json file containing information about (potentially) several images.
 // Under blobs/, there is:
 //   One file for each layer, named after the layer's SHA.
 //   One file for the config blob, named after its SHA.
