@@ -51,7 +51,8 @@ func Image(path string, hash v1.Hash) (v1.Image, error) {
 		return nil, err
 	}
 
-	// TODO(jonjohnsonjr): We need to implement a Walk function for descriptors.
+	// TODO(jonjohnsonjr): We need to implement a Walk function for descriptors
+	// in order to recurse on image indexes.
 	for _, desc := range im.Manifests {
 		if desc.Digest == hash {
 			img := &layoutImage{
@@ -71,6 +72,7 @@ func (li *layoutImage) MediaType() (types.MediaType, error) {
 	return li.desc.MediaType, nil
 }
 
+// Implements WithManifest for partial.Blobset.
 func (li *layoutImage) Manifest() (*v1.Manifest, error) {
 	return partial.Manifest(li)
 }
@@ -88,10 +90,6 @@ func (li *layoutImage) RawConfigFile() ([]byte, error) {
 	cfg := manifest.Config.Digest
 
 	return ioutil.ReadFile(filepath.Join(li.path, "blobs", cfg.Algorithm, cfg.Hex))
-}
-
-func (li *layoutImage) BlobSet() (map[v1.Hash]struct{}, error) {
-	return partial.BlobSet(li)
 }
 
 func (li *layoutImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error) {
@@ -113,7 +111,7 @@ func (li *layoutImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error)
 			// We assume that all these layers are compressed, which is probably not
 			// safe to assume. It will take some restructuring to make that work, so
 			// just return an error for now if we encounter unexpected layers.
-			if err := checkLayerMediaType(desc); err != nil {
+			if err := checkCompressedLayer(desc); err != nil {
 				return nil, err
 			}
 
@@ -127,7 +125,7 @@ func (li *layoutImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error)
 	return nil, fmt.Errorf("could not find layer in image: %s", h)
 }
 
-func checkLayerMediaType(desc v1.Descriptor) error {
+func checkCompressedLayer(desc v1.Descriptor) error {
 	switch desc.MediaType {
 	case types.OCILayer:
 	case types.DockerLayer:
