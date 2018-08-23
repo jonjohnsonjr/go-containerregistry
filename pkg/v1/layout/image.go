@@ -51,7 +51,8 @@ func Image(path string, hash v1.Hash) (v1.Image, error) {
 		return nil, err
 	}
 
-	// TODO(jonjohnsonjr): We need to implement a Walk function for descriptors.
+	// TODO(jonjohnsonjr): We need to implement a Walk function for descriptors
+	// in order to recurse on image indexes.
 	for _, desc := range im.Manifests {
 		if desc.Digest == hash {
 			img := &layoutImage{
@@ -89,10 +90,6 @@ func (li *layoutImage) RawConfigFile() ([]byte, error) {
 	cfg := manifest.Config.Digest
 
 	return ioutil.ReadFile(filepath.Join(li.path, "blobs", cfg.Algorithm, cfg.Hex))
-}
-
-func (li *layoutImage) BlobSet() (map[v1.Hash]struct{}, error) {
-	return partial.BlobSet(li)
 }
 
 func (li *layoutImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error) {
