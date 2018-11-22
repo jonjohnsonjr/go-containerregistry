@@ -20,12 +20,10 @@ import (
 	"io"
 	"sync"
 
-	"gopkg.in/yaml.v2"
-
-	"golang.org/x/sync/errgroup"
-
 	"github.com/google/go-containerregistry/pkg/ko/build"
 	"github.com/google/go-containerregistry/pkg/ko/publish"
+	"golang.org/x/sync/errgroup"
+	"gopkg.in/yaml.v2"
 )
 
 // ImageReferences resolves supported references to images within the input yaml
@@ -90,6 +88,11 @@ func ImageReferences(input []byte, builder build.Interface, publisher publish.In
 			}
 			return nil, err
 		}
+
+		// TODO: Do we need to expose a port here?
+		// TODO: Do we need SYS_PTRACE?
+		// TODO: Can we use a duck types here to determine if a thing is debuggable?
+
 		// Recursively walk input, replacing supported reference with our computed digests.
 		obj2, err := replaceRecursive(obj, func(ref string) (string, error) {
 			if !builder.IsSupportedReference(ref) {

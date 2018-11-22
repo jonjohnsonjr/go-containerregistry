@@ -32,7 +32,13 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/v1util"
 )
 
-const appPath = "/ko-app"
+const (
+	appPath   = "/ko-app"
+	delvePath = "/dlv"
+
+	// TODO: This must be on your GOPATH, do we care?
+	delveRepo = "github.com/derekparker/delve/cmd/dlv"
+)
 
 type GetBase func(string) (v1.Image, error)
 type builder func(string) (string, error)
@@ -97,6 +103,7 @@ func build(ip string) (string, error) {
 	}
 	file := filepath.Join(tmpDir, "out")
 
+	// TODO: Disable optimizations with -gcflags?
 	cmd := exec.Command("go", "build", "-o", file, ip)
 
 	// Last one wins
@@ -115,7 +122,7 @@ func build(ip string) (string, error) {
 	return file, nil
 }
 
-func tarBinary(binary string) (*bytes.Buffer, error) {
+func tarBinary(binary, binaryPath string) (*bytes.Buffer, error) {
 	buf := bytes.NewBuffer(nil)
 	tw := tar.NewWriter(buf)
 	defer tw.Close()
@@ -130,7 +137,7 @@ func tarBinary(binary string) (*bytes.Buffer, error) {
 		return nil, err
 	}
 	header := &tar.Header{
-		Name:     appPath,
+		Name:     binaryPath,
 		Size:     stat.Size(),
 		Typeflag: tar.TypeReg,
 		// Use a fixed Mode, so that this isn't sensitive to the directory and umask
@@ -225,6 +232,9 @@ func tarKoData(importpath string) (*bytes.Buffer, error) {
 
 // Build implements build.Interface
 func (gb *gobuild) Build(s string) (v1.Image, error) {
+	// TODO: Hoist this into options.
+	debug := true
+
 	// Do the build into a temporary file.
 	file, err := gb.build(s)
 	if err != nil {
@@ -248,7 +258,7 @@ func (gb *gobuild) Build(s string) (v1.Image, error) {
 	layers = append(layers, dataLayer)
 
 	// Construct a tarball with the binary and produce a layer.
-	binaryLayerBuf, err := tarBinary(file)
+	binaryLayerBuf, err := tarBinary(file, appPath)
 	if err != nil {
 		return nil, err
 	}
@@ -260,6 +270,30 @@ func (gb *gobuild) Build(s string) (v1.Image, error) {
 		return nil, err
 	}
 	layers = append(layers, binaryLayer)
+
+	// TODO: Move this whole section into a debug builder?
+	if debug {
+		// Do the delve build into a temporary file.
+		debugFile, err := gb.build(delveRepo)
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(filepath.Dir(debugFile))
+
+		// Construct a tarball with the delve binary and produce a layer.
+		debugBinaryLayerBuf, err := tarBinary(debugFile, delvePath)
+		if err != nil {
+			return nil, err
+		}
+		debugBinaryLayerBytes := debugBinaryLayerBuf.Bytes()
+		debugBinaryLayer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
+			return v1util.NopReadCloser(bytes.NewBuffer(debugBinaryLayerBytes)), nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		layers = append(layers, debugBinaryLayer)
+	}
 
 	// Determine the appropriate base image for this import path.
 	base, err := gb.getBase(s)
@@ -281,8 +315,21 @@ func (gb *gobuild) Build(s string) (v1.Image, error) {
 	}
 
 	cfg = cfg.DeepCopy()
-	cfg.Config.Entrypoint = []string{appPath}
+	if debug {
+		cfg.Config.Entrypoint = []string{
+			delvePath,
+			"--listen=:40000", // TODO: Generate port?
+			"--headless",
+			"--api-version=2",
+			"exec", appPath,
+		}
+		cfg.Config.Env = append(cfg.Config.Env, "USER=root")
+	} else {
+		cfg.Config.Entrypoint = []string{appPath}
+	}
 	cfg.Config.Env = append(cfg.Config.Env, "KO_DATA_PATH="+kodataRoot)
+
+	// TODO: Expose port?
 
 	image, err := mutate.Config(withApp, cfg.Config)
 	if err != nil {
