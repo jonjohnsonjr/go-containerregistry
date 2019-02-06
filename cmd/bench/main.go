@@ -20,25 +20,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1/google"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	_ "github.com/motemen/go-loghttp/global"
 )
 
 func main() {
-	reg, err := name.NewRegistry("gcr.io", name.WeakValidation)
-	if err != nil {
-		log.Fatalf("reg: %v", err)
-	}
-
-	// Resolve once to avoid gcloud auth latency creeping in.
-	auth, err := google.Keychain.Resolve(reg)
-	if err != nil {
-		log.Fatalf("auth: %v", err)
-	}
-
 	for i := 0; i <= 400; i++ {
 		dst := fmt.Sprintf("gcr.io/jonjohnson-test/bench/run:%d", i)
 		dstTag, err := name.NewTag(dst, name.WeakValidation)
@@ -50,6 +39,11 @@ func main() {
 		img, err := random.Image(1024, 5)
 		if err != nil {
 			log.Fatalf("random.Image: %v", err)
+		}
+
+		auth, err := authn.DefaultKeychain.Resolve(dstTag.Context().Registry)
+		if err != nil {
+			log.Fatalf("auth: %v", err)
 		}
 
 		start := time.Now()
