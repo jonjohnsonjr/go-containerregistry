@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 
 	"github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/v1util"
 )
 
 var layoutFile = `{
@@ -55,7 +54,7 @@ func Write(p string, img v1.Image) error {
 	if err != nil {
 		return err
 	}
-	if err := writeBlob(p, cfgName, v1util.NopReadCloser(bytes.NewReader(cfgBlob))); err != nil {
+	if err := writeBlob(p, cfgName, ioutil.NopCloser(bytes.NewReader(cfgBlob))); err != nil {
 		return err
 	}
 
@@ -90,7 +89,7 @@ func Write(p string, img v1.Image) error {
 	if err != nil {
 		return err
 	}
-	if err := writeBlob(p, d, v1util.NopReadCloser(bytes.NewReader(manifest))); err != nil {
+	if err := writeBlob(p, d, ioutil.NopCloser(bytes.NewReader(manifest))); err != nil {
 		return err
 	}
 

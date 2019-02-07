@@ -84,7 +84,7 @@ func pull(src, dst string, oci bool) {
 			log.Fatalf("writing image %q: %v", dst, err)
 		}
 	} else {
-		if err := tarball.WriteToFile(dst, t, i); err != nil {
+		if err := tarball.WriteToFile(dst, tag, i); err != nil {
 			log.Fatalf("writing image %q: %v", dst, err)
 		}
 	}
