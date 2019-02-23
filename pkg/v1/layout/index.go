@@ -67,6 +67,37 @@ func (i *layoutIndex) RawIndexManifest() ([]byte, error) {
 }
 
 func (i *layoutIndex) Image(h v1.Hash) (v1.Image, error) {
+	desc, err := i.findDescriptor(h)
+	if err != nil {
+		return nil, err
+	}
+
+	img := &layoutImage{
+		path: i.path,
+		desc: *desc,
+	}
+	return partial.CompressedToImage(img)
+}
+
+func (i *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) {
+	desc, err := i.findDescriptor(h)
+	if err != nil {
+		return nil, err
+	}
+
+	d := desc.Digest
+	rawIndex, err := ioutil.ReadFile(filepath.Join(i.path, "blobs", d.Algorithm, d.Hex))
+	if err != nil {
+		return nil, err
+	}
+
+	return &layoutIndex{
+		path:     i.path,
+		rawIndex: rawIndex,
+	}, nil
+}
+
+func (i *layoutIndex) findDescriptor(h v1.Hash) (*v1.Descriptor, error) {
 	im, err := i.IndexManifest()
 	if err != nil {
 		return nil, err
@@ -74,12 +105,7 @@ func (i *layoutIndex) Image(h v1.Hash) (v1.Image, error) {
 
 	for _, desc := range im.Manifests {
 		if desc.Digest == h {
-			img := &layoutImage{
-				path: i.path,
-				desc: desc,
-			}
-
-			return partial.CompressedToImage(img)
+			return &desc, nil
 		}
 	}
 

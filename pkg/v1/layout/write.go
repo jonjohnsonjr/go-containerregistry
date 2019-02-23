@@ -39,12 +39,7 @@ var layoutFile = `{
 //   One file for the config blob, named after its SHA.
 //
 // https://github.com/opencontainers/image-spec/blob/master/image-layout.md
-func Write(p string, img v1.Image) error {
-	// Write oci-layout file.
-	if err := writeFile(p, "oci-layout", []byte(layoutFile)); err != nil {
-		return err
-	}
-
+func Append(p string, img v1.Image) error {
 	// Write the config.
 	cfgName, err := img.ConfigName()
 	if err != nil {
@@ -93,7 +88,8 @@ func Write(p string, img v1.Image) error {
 		return err
 	}
 
-	// Write index.json, currently just points to a single image.
+	// TODO: This just writes a singleton image index, we should not do that.
+	// TODO: Index(p) || empty.Index
 	mt, err := img.MediaType()
 	if err != nil {
 		return err
@@ -117,7 +113,7 @@ func Write(p string, img v1.Image) error {
 }
 
 func writeFile(path string, name string, data []byte) error {
-	if err := os.MkdirAll(path, os.ModePerm); err != nil {
+	if err := os.MkdirAll(path, os.ModePerm); err != nil && !os.IsExist(err) {
 		return err
 	}
 
@@ -126,18 +122,33 @@ func writeFile(path string, name string, data []byte) error {
 
 func writeBlob(path string, hash v1.Hash, r io.ReadCloser) error {
 	dir := filepath.Join(path, "blobs", hash.Algorithm)
-	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil && !os.IsExist(err) {
 		return err
 	}
 
-	// TODO: Ignore already exists, since that's okay.
 	w, err := os.Create(filepath.Join(dir, hash.Hex))
-	if err != nil {
+	if os.IsExist(err) {
+		// Blob already exists, that's fine.
+		return nil
+	} else if err != nil {
 		return err
 	}
 	defer w.Close()
 
-	// TODO: Do we need to do this in a goroutine?
 	_, err = io.Copy(w, r)
 	return err
+}
+
+func Write(p string, ii v1.ImageIndex) error {
+	// Always just write oci-layout file, since it's small.
+	if err := writeFile(p, "oci-layout", []byte(layoutFile)); err != nil {
+		return err
+	}
+
+	rm, err := ii.RawIndexManifest()
+	if err != nil {
+		return err
+	}
+
+	return writeFile(p, "index.json", rawIndex)
 }
