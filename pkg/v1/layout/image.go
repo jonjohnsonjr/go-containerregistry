@@ -38,7 +38,7 @@ var _ partial.CompressedImageCore = (*layoutImage)(nil)
 
 func Image(path string, h v1.Hash) (v1.Image, error) {
 	// Read the index.json so we can find the manifest descriptor.
-	ii, err := ImageIndex(path)
+	ii, err := Index(path)
 	if err != nil {
 		return nil, err
 	}

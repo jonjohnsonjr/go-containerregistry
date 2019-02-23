@@ -33,7 +33,7 @@ type layoutIndex struct {
 	rawIndex []byte
 }
 
-func ImageIndex(path string) (*layoutIndex, error) {
+func Index(path string) (*layoutIndex, error) {
 	rawIndex, err := ioutil.ReadFile(filepath.Join(path, "index.json"))
 	if err != nil {
 		return nil, err
@@ -80,13 +80,12 @@ func (i *layoutIndex) Image(h v1.Hash) (v1.Image, error) {
 }
 
 func (i *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) {
-	desc, err := i.findDescriptor(h)
-	if err != nil {
+	// Look up the digest in our manifest first to return a better error.
+	if _, err := i.findDescriptor(h); err != nil {
 		return nil, err
 	}
 
-	d := desc.Digest
-	rawIndex, err := ioutil.ReadFile(filepath.Join(i.path, "blobs", d.Algorithm, d.Hex))
+	rawIndex, err := ioutil.ReadFile(filepath.Join(i.path, "blobs", h.Algorithm, h.Hex))
 	if err != nil {
 		return nil, err
 	}

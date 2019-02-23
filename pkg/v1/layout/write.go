@@ -23,6 +23,9 @@ import (
 	"path/filepath"
 
 	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/types"
+	"golang.org/x/sync/errgroup"
 )
 
 var layoutFile = `{
@@ -39,77 +42,53 @@ var layoutFile = `{
 //   One file for the config blob, named after its SHA.
 //
 // https://github.com/opencontainers/image-spec/blob/master/image-layout.md
-func Append(p string, img v1.Image) error {
-	// Write the config.
-	cfgName, err := img.ConfigName()
-	if err != nil {
-		return err
-	}
-	cfgBlob, err := img.RawConfigFile()
-	if err != nil {
-		return err
-	}
-	if err := writeBlob(p, cfgName, ioutil.NopCloser(bytes.NewReader(cfgBlob))); err != nil {
-		return err
-	}
+func Append(path string, img v1.Image) error {
+	var ii v1.ImageIndex
 
-	// Write the layers.
-	layers, err := img.Layers()
-	if err != nil {
-		return err
-	}
-
-	for _, l := range layers {
-		d, err := l.Digest()
-		if err != nil {
+	ii, err := Index(path)
+	if os.IsNotExist(err) {
+		if err := writeFile(path, "oci-layout", []byte(layoutFile)); err != nil {
 			return err
 		}
-
-		r, err := l.Compressed()
-		if err != nil {
-			return err
-		}
-
-		if err := writeBlob(p, d, r); err != nil {
-			return err
-		}
+		ii = empty.Index
 	}
 
-	// Write the img manifest.
-	d, err := img.Digest()
-	if err != nil {
-		return err
-	}
-	manifest, err := img.RawManifest()
-	if err != nil {
-		return err
-	}
-	if err := writeBlob(p, d, ioutil.NopCloser(bytes.NewReader(manifest))); err != nil {
+	if err := writeImage(path, img); err != nil {
 		return err
 	}
 
-	// TODO: This just writes a singleton image index, we should not do that.
-	// TODO: Index(p) || empty.Index
 	mt, err := img.MediaType()
 	if err != nil {
 		return err
 	}
 
-	index := v1.IndexManifest{
-		SchemaVersion: 2,
-		Manifests: []v1.Descriptor{{
-			MediaType: mt,
-			Size:      int64(len(manifest)),
-			Digest:    d,
-		}},
+	d, err := img.Digest()
+	if err != nil {
+		return err
 	}
+
+	manifest, err := img.RawManifest()
+	if err != nil {
+		return err
+	}
+
+	index, err := ii.IndexManifest()
+	if err != nil {
+		return err
+	}
+
+	index.Manifests = append(index.Manifests, v1.Descriptor{
+		MediaType: mt,
+		Size:      int64(len(manifest)),
+		Digest:    d,
+	})
 
 	rawIndex, err := json.MarshalIndent(index, "", "   ")
 	if err != nil {
 		return err
 	}
 
-	return writeFile(p, "index.json", rawIndex)
+	return writeFile(path, "index.json", rawIndex)
 }
 
 func writeFile(path string, name string, data []byte) error {
@@ -139,16 +118,115 @@ func writeBlob(path string, hash v1.Hash, r io.ReadCloser) error {
 	return err
 }
 
-func Write(p string, ii v1.ImageIndex) error {
-	// Always just write oci-layout file, since it's small.
-	if err := writeFile(p, "oci-layout", []byte(layoutFile)); err != nil {
-		return err
-	}
-
-	rm, err := ii.RawIndexManifest()
+// TODO: For streaming layers we should write to a tmp file then Rename to the
+// final digest.
+func writeLayer(path string, layer v1.Layer) error {
+	d, err := layer.Digest()
 	if err != nil {
 		return err
 	}
 
-	return writeFile(p, "index.json", rawIndex)
+	r, err := layer.Compressed()
+	if err != nil {
+		return err
+	}
+
+	return writeBlob(path, d, r)
+}
+
+// TODO: Refactor things so that this code can be shared with remote.Write?
+func writeImage(path string, img v1.Image) error {
+	layers, err := img.Layers()
+	if err != nil {
+		return err
+	}
+
+	// Write the layers concurrently.
+	var g errgroup.Group
+	for _, layer := range layers {
+		layer := layer
+		g.Go(func() error {
+			return writeLayer(path, layer)
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	// Write the config.
+	cfgName, err := img.ConfigName()
+	if err != nil {
+		return err
+	}
+	cfgBlob, err := img.RawConfigFile()
+	if err != nil {
+		return err
+	}
+	if err := writeBlob(path, cfgName, ioutil.NopCloser(bytes.NewReader(cfgBlob))); err != nil {
+		return err
+	}
+
+	// Write the img manifest.
+	d, err := img.Digest()
+	if err != nil {
+		return err
+	}
+	manifest, err := img.RawManifest()
+	if err != nil {
+		return err
+	}
+
+	return writeBlob(path, d, ioutil.NopCloser(bytes.NewReader(manifest)))
+}
+
+func Write(path string, ii v1.ImageIndex) error {
+	// Always just write oci-layout file, since it's small.
+	if err := writeFile(path, "oci-layout", []byte(layoutFile)); err != nil {
+		return err
+	}
+
+	rawIndex, err := ii.RawIndexManifest()
+	if err != nil {
+		return err
+	}
+
+	index, err := ii.IndexManifest()
+	if err != nil {
+		return err
+	}
+
+	for _, desc := range index.Manifests {
+		switch desc.MediaType {
+		case types.OCIImageIndex, types.DockerManifestList:
+			ii, err := ii.ImageIndex(desc.Digest)
+			if err != nil {
+				return err
+			}
+
+			// TODO: This writes the index to "index.json" too, which isn't necessary.
+			// It's not a problem since we overwrite it later, but it's inefficient.
+			if err := Write(path, ii); err != nil {
+				return err
+			}
+
+			rawIndex, err := ii.RawIndexManifest()
+			if err != nil {
+				return err
+			}
+
+			if err := writeBlob(path, desc.Digest, ioutil.NopCloser(bytes.NewReader(rawIndex))); err != nil {
+				return err
+			}
+		case types.OCIManifestSchema1, types.DockerManifestSchema2:
+			img, err := ii.Image(desc.Digest)
+			if err != nil {
+				return err
+			}
+			if err := writeImage(path, img); err != nil {
+				return err
+			}
+		}
+	}
+
+	return writeFile(path, "index.json", rawIndex)
 }
