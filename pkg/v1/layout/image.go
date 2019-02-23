@@ -20,6 +20,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
@@ -27,45 +28,22 @@ import (
 )
 
 type layoutImage struct {
-	path        string
-	desc        v1.Descriptor
-	rawManifest []byte
+	path         string
+	desc         v1.Descriptor
+	manifestLock sync.Mutex // Protects rawManifest
+	rawManifest  []byte
 }
 
 var _ partial.CompressedImageCore = (*layoutImage)(nil)
 
-func Image(path string, hash v1.Hash) (v1.Image, error) {
-	rawManifest, err := ioutil.ReadFile(filepath.Join(path, "blobs", hash.Algorithm, hash.Hex))
-	if err != nil {
-		return nil, err
-	}
-
+func Image(path string, h v1.Hash) (v1.Image, error) {
 	// Read the index.json so we can find the manifest descriptor.
 	ii, err := ImageIndex(path)
 	if err != nil {
 		return nil, err
 	}
 
-	im, err := ii.IndexManifest()
-	if err != nil {
-		return nil, err
-	}
-
-	// TODO(jonjohnsonjr): We need to implement a Walk function for descriptors
-	// in order to recurse on image indexes.
-	for _, desc := range im.Manifests {
-		if desc.Digest == hash {
-			img := &layoutImage{
-				path:        path,
-				desc:        desc,
-				rawManifest: rawManifest,
-			}
-
-			return partial.CompressedToImage(img)
-		}
-	}
-
-	return nil, fmt.Errorf("could not find descriptor in index.json: %s", hash)
+	return ii.Image(h)
 }
 
 func (li *layoutImage) MediaType() (types.MediaType, error) {
@@ -78,6 +56,19 @@ func (li *layoutImage) Manifest() (*v1.Manifest, error) {
 }
 
 func (li *layoutImage) RawManifest() ([]byte, error) {
+	li.manifestLock.Lock()
+	defer li.manifestLock.Unlock()
+	if li.rawManifest != nil {
+		return li.rawManifest, nil
+	}
+
+	h := li.desc.Digest
+	rawManifest, err := ioutil.ReadFile(filepath.Join(li.path, "blobs", h.Algorithm, h.Hex))
+	if err != nil {
+		return nil, err
+	}
+
+	li.rawManifest = rawManifest
 	return li.rawManifest, nil
 }
 
@@ -87,9 +78,9 @@ func (li *layoutImage) RawConfigFile() ([]byte, error) {
 		return nil, err
 	}
 
-	cfg := manifest.Config.Digest
+	h := manifest.Config.Digest
 
-	return ioutil.ReadFile(filepath.Join(li.path, "blobs", cfg.Algorithm, cfg.Hex))
+	return ioutil.ReadFile(filepath.Join(li.path, "blobs", h.Algorithm, h.Hex))
 }
 
 func (li *layoutImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error) {
@@ -98,7 +89,6 @@ func (li *layoutImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error)
 		return nil, err
 	}
 
-	// TODO(#87): Remove me.
 	if h == manifest.Config.Digest {
 		return partial.CompressedLayer(&compressedBlob{
 			path: li.path,

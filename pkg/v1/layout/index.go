@@ -17,10 +17,12 @@ package layout
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"path/filepath"
 
 	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
@@ -31,7 +33,7 @@ type layoutIndex struct {
 	rawIndex []byte
 }
 
-func ImageIndex(path string) (v1.ImageIndex, error) {
+func ImageIndex(path string) (*layoutIndex, error) {
 	rawIndex, err := ioutil.ReadFile(filepath.Join(path, "index.json"))
 	if err != nil {
 		return nil, err
@@ -62,4 +64,24 @@ func (i *layoutIndex) IndexManifest() (*v1.IndexManifest, error) {
 
 func (i *layoutIndex) RawIndexManifest() ([]byte, error) {
 	return i.rawIndex, nil
+}
+
+func (i *layoutIndex) Image(h v1.Hash) (v1.Image, error) {
+	im, err := i.IndexManifest()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, desc := range im.Manifests {
+		if desc.Digest == h {
+			img := &layoutImage{
+				path: i.path,
+				desc: desc,
+			}
+
+			return partial.CompressedToImage(img)
+		}
+	}
+
+	return nil, fmt.Errorf("could not find descriptor in index.json: %s", h)
 }
