@@ -24,6 +24,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
+var _ v1.ImageIndex = (*layoutIndex)(nil)
+
 type layoutIndex struct {
 	path     string
 	rawIndex []byte
