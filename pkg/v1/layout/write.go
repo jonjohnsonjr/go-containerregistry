@@ -43,6 +43,7 @@ var layoutFile = `{
 //
 // https://github.com/opencontainers/image-spec/blob/master/image-layout.md
 func Append(path string, img v1.Image) error {
+	// TODO: Options for Annotations and URLs.
 	var ii v1.ImageIndex
 
 	ii, err := Index(path)
