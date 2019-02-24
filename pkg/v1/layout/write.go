@@ -180,14 +180,9 @@ func writeImage(path string, img v1.Image) error {
 	return writeBlob(path, d, ioutil.NopCloser(bytes.NewReader(manifest)))
 }
 
-func Write(path string, ii v1.ImageIndex) error {
+func writeIndex(path string, indexFile string, ii v1.ImageIndex) error {
 	// Always just write oci-layout file, since it's small.
 	if err := writeFile(path, "oci-layout", []byte(layoutFile)); err != nil {
-		return err
-	}
-
-	rawIndex, err := ii.RawIndexManifest()
-	if err != nil {
 		return err
 	}
 
@@ -204,18 +199,8 @@ func Write(path string, ii v1.ImageIndex) error {
 				return err
 			}
 
-			// TODO: This writes the index to "index.json" too, which isn't necessary.
-			// It's not a problem since we overwrite it later, but it's inefficient.
-			if err := Write(path, ii); err != nil {
-				return err
-			}
-
-			rawIndex, err := ii.RawIndexManifest()
-			if err != nil {
-				return err
-			}
-
-			if err := writeBlob(path, desc.Digest, ioutil.NopCloser(bytes.NewReader(rawIndex))); err != nil {
+			indexFile := filepath.Join("blobs", desc.Digest.Algorithm, desc.Digest.Hex)
+			if err := writeIndex(path, indexFile, ii); err != nil {
 				return err
 			}
 		case types.OCIManifestSchema1, types.DockerManifestSchema2:
@@ -229,5 +214,19 @@ func Write(path string, ii v1.ImageIndex) error {
 		}
 	}
 
-	return writeFile(path, "index.json", rawIndex)
+	rawIndex, err := ii.RawIndexManifest()
+	if err != nil {
+		return err
+	}
+
+	return writeFile(path, indexFile, rawIndex)
+}
+
+func Write(path string, ii v1.ImageIndex) error {
+	// Always just write oci-layout file, since it's small.
+	if err := writeFile(path, "oci-layout", []byte(layoutFile)); err != nil {
+		return err
+	}
+
+	return writeIndex(path, "index.json", ii)
 }
