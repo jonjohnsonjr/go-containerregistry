@@ -17,9 +17,6 @@ package layout
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/google/go-containerregistry/pkg/v1"
@@ -62,13 +59,12 @@ func (li *layoutImage) RawManifest() ([]byte, error) {
 		return li.rawManifest, nil
 	}
 
-	h := li.desc.Digest
-	rawManifest, err := ioutil.ReadFile(filepath.Join(li.path, "blobs", h.Algorithm, h.Hex))
+	b, err := Bytes(li.path, li.desc.Digest)
 	if err != nil {
 		return nil, err
 	}
 
-	li.rawManifest = rawManifest
+	li.rawManifest = b
 	return li.rawManifest, nil
 }
 
@@ -78,9 +74,7 @@ func (li *layoutImage) RawConfigFile() ([]byte, error) {
 		return nil, err
 	}
 
-	h := manifest.Config.Digest
-
-	return ioutil.ReadFile(filepath.Join(li.path, "blobs", h.Algorithm, h.Hex))
+	return Bytes(li.path, manifest.Config.Digest)
 }
 
 func (li *layoutImage) LayerByDigest(h v1.Hash) (partial.CompressedLayer, error) {
@@ -136,8 +130,7 @@ func (b *compressedBlob) Digest() (v1.Hash, error) {
 }
 
 func (b *compressedBlob) Compressed() (io.ReadCloser, error) {
-	hash := b.desc.Digest
-	return os.Open(filepath.Join(b.path, "blobs", hash.Algorithm, hash.Hex))
+	return Blob(b.path, b.desc.Digest)
 }
 
 func (b *compressedBlob) Size() (int64, error) {

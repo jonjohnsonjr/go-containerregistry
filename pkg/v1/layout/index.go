@@ -101,7 +101,7 @@ func (i *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) {
 		return nil, fmt.Errorf("unexpected media type for %v: %s", h, desc.MediaType)
 	}
 
-	rawIndex, err := ioutil.ReadFile(filepath.Join(i.path, "blobs", h.Algorithm, h.Hex))
+	rawIndex, err := Bytes(i.path, h)
 	if err != nil {
 		return nil, err
 	}
