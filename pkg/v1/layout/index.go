@@ -67,9 +67,17 @@ func (i *layoutIndex) RawIndexManifest() ([]byte, error) {
 }
 
 func (i *layoutIndex) Image(h v1.Hash) (v1.Image, error) {
+	// Look up the digest in our manifest first to return a better error.
 	desc, err := i.findDescriptor(h)
 	if err != nil {
 		return nil, err
+	}
+
+	switch desc.MediaType {
+	case types.OCIManifestSchema1, types.DockerManifestSchema2:
+		// Expected, keep going.
+	default:
+		return nil, fmt.Errorf("unexpected media type for %v: %s", h, desc.MediaType)
 	}
 
 	img := &layoutImage{
@@ -81,8 +89,16 @@ func (i *layoutIndex) Image(h v1.Hash) (v1.Image, error) {
 
 func (i *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) {
 	// Look up the digest in our manifest first to return a better error.
-	if _, err := i.findDescriptor(h); err != nil {
+	desc, err := i.findDescriptor(h)
+	if err != nil {
 		return nil, err
+	}
+
+	switch desc.MediaType {
+	case types.OCIImageIndex, types.DockerManifestList:
+		// Expected, keep going.
+	default:
+		return nil, fmt.Errorf("unexpected media type for %v: %s", h, desc.MediaType)
 	}
 
 	rawIndex, err := ioutil.ReadFile(filepath.Join(i.path, "blobs", h.Algorithm, h.Hex))
