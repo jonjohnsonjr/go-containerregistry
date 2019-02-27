@@ -80,7 +80,7 @@ func pull(src, dst string, oci bool) {
 	}
 
 	if oci {
-		if err := layout.Write(dst, i); err != nil {
+		if _, err := layout.AppendImage(dst, i); err != nil {
 			log.Fatalf("writing image %q: %v", dst, err)
 		}
 	} else {

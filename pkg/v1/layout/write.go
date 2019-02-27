@@ -45,16 +45,8 @@ var layoutFile = `{
 func AppendImage(path string, img v1.Image) (v1.ImageIndex, error) {
 	// TODO: Options for Annotations and URLs.
 
-	ii, err := Index(path)
-	if os.IsNotExist(err) {
-		if err := writeFile(path, "oci-layout", []byte(layoutFile)); err != nil {
-			return err
-		}
-		ii = empty.Index
-	}
-
-	if err := writeImage(path, img); err != nil {
-		return err
+	if err := WriteImage(path, img); err != nil {
+		return nil, err
 	}
 
 	mt, err := img.MediaType()
