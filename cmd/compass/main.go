@@ -100,8 +100,11 @@ func freeze(src, path string) {
 		if err != nil {
 			log.Fatalf("reading image %q: %v", ref, err)
 		}
-		// TODO: WithAnnotation -- put source in there.
-		if _, err := layout.AppendImage(path, img); err != nil {
+
+		annotations := map[string]string{
+			"org.opencontainers.image.ref.name": t,
+		}
+		if _, err := layout.AppendImage(path, img, layout.WithAnnotations(annotations)); err != nil {
 			log.Fatalf("writing image %q: %v", path, err)
 		}
 	}
