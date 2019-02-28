@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"path/filepath"
 
@@ -110,6 +111,10 @@ func (i *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) {
 		path:     i.path,
 		rawIndex: rawIndex,
 	}, nil
+}
+
+func (i *layoutIndex) Blob(h v1.Hash) (io.ReadCloser, error) {
+	return Blob(i.path, h)
 }
 
 func (i *layoutIndex) findDescriptor(h v1.Hash) (*v1.Descriptor, error) {

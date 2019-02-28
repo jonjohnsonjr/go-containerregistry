@@ -236,6 +236,8 @@ func writeIndexToFile(path string, indexFile string, ii v1.ImageIndex) error {
 		return err
 	}
 
+	// Walk the descriptors and write any v1.Image or v1.ImageIndex that we find.
+	// If we come across something we don't expect, just write it as a blob.
 	for _, desc := range index.Manifests {
 		switch desc.MediaType {
 		case types.OCIImageIndex, types.DockerManifestList:
@@ -252,6 +254,15 @@ func writeIndexToFile(path string, indexFile string, ii v1.ImageIndex) error {
 				return err
 			}
 			if err := WriteImage(path, img); err != nil {
+				return err
+			}
+		default:
+			// We don't recognize this artifact, just pass it through.
+			blob, err := ii.Blob(desc.Digest)
+			if err != nil {
+				return err
+			}
+			if err := WriteBlob(path, desc.Digest, blob); err != nil {
 				return err
 			}
 		}

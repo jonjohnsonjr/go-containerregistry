@@ -28,8 +28,8 @@ func Blob(path string, h v1.Hash) (io.ReadCloser, error) {
 	return os.Open(blobPath(path, h))
 }
 
-// Bytes is a convenience function to return a Blob as a byte slice instead of
-// an io.ReadCloser.
+// Bytes is a convenience function to return a blob from an OCI Image Layout as
+// a byte slice.
 func Bytes(path string, h v1.Hash) ([]byte, error) {
 	return ioutil.ReadFile(blobPath(path, h))
 }
