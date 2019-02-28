@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package layout provides facilities for reading/writing v1.Images from/to
-// an OCI image layout on-disk.
+// Package layout provides facilities for reading/writing artifacts from/to
+// an OCI image layout on disk, see:
+//
+// https://github.com/opencontainers/image-spec/blob/master/image-layout.md
 package layout

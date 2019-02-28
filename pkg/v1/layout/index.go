@@ -34,7 +34,8 @@ type layoutIndex struct {
 	rawIndex []byte
 }
 
-func Index(path string) (*layoutIndex, error) {
+// Index reads an OCI image layout at path as a v1.ImageIndex.
+func Index(path string) (v1.ImageIndex, error) {
 	rawIndex, err := ioutil.ReadFile(filepath.Join(path, "index.json"))
 	if err != nil {
 		return nil, err
@@ -74,10 +75,7 @@ func (i *layoutIndex) Image(h v1.Hash) (v1.Image, error) {
 		return nil, err
 	}
 
-	switch desc.MediaType {
-	case types.OCIManifestSchema1, types.DockerManifestSchema2:
-		// Expected, keep going.
-	default:
+	if !isExpectedMediaType(desc.MediaType, types.OCIManifestSchema1, types.DockerManifestSchema2) {
 		return nil, fmt.Errorf("unexpected media type for %v: %s", h, desc.MediaType)
 	}
 
@@ -95,10 +93,7 @@ func (i *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) {
 		return nil, err
 	}
 
-	switch desc.MediaType {
-	case types.OCIImageIndex, types.DockerManifestList:
-		// Expected, keep going.
-	default:
+	if !isExpectedMediaType(desc.MediaType, types.OCIImageIndex, types.DockerManifestList) {
 		return nil, fmt.Errorf("unexpected media type for %v: %s", h, desc.MediaType)
 	}
 
@@ -129,5 +124,17 @@ func (i *layoutIndex) findDescriptor(h v1.Hash) (*v1.Descriptor, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("could not find descriptor in index.json: %s", h)
+	return nil, fmt.Errorf("could not find descriptor in index: %s", h)
+}
+
+// TODO: Pull this out into methods on types.MediaType? e.g. instead, have:
+// * mt.IsIndex()
+// * mt.IsImage()
+func isExpectedMediaType(mt types.MediaType, expected ...types.MediaType) bool {
+	for _, allowed := range expected {
+		if mt == allowed {
+			return true
+		}
+	}
+	return false
 }

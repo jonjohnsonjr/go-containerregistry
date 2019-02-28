@@ -32,16 +32,8 @@ var layoutFile = `{
     "imageLayoutVersion": "1.0.0"
 }`
 
-// AppendImage writes the contents of the image to the provided directory, in the compressed format.
-// The contents are written in the following format:
-// At the top level, there is:
-//   One oci-layout file containing the version of this image-layout.
-//   One index.json file containing information about (potentially) several images.
-// Under blobs/, there is:
-//   One file for each layer, named after the layer's SHA.
-//   One file for the config blob, named after its SHA.
-//
-// https://github.com/opencontainers/image-spec/blob/master/image-layout.md
+// AppendImage writes a v1.Image to an OCI image layout at path and updates
+// the index.json to reference it.
 func AppendImage(path string, img v1.Image) (v1.ImageIndex, error) {
 	// TODO: Options for Annotations and URLs.
 
@@ -105,6 +97,8 @@ func AppendIndex(path string, ii v1.ImageIndex) (v1.ImageIndex, error) {
 	return AppendDescriptor(path, desc)
 }
 
+// AppendDescriptor adds a descriptor to the index.json of an ImageIndex located
+// at path.
 func AppendDescriptor(path string, desc v1.Descriptor) (v1.ImageIndex, error) {
 	// Create an empty image index if it doesn't exist.
 	var ii v1.ImageIndex
@@ -186,6 +180,8 @@ func writeLayer(path string, layer v1.Layer) error {
 	return WriteBlob(path, d, r)
 }
 
+// WriteImage writes a v1.Image to an OCI Image layout at path.
+// This doesn't update the top-level index.json, see AppendImage.
 func WriteImage(path string, img v1.Image) error {
 	layers, err := img.Layers()
 	if err != nil {
@@ -276,7 +272,7 @@ func writeIndexToFile(path string, indexFile string, ii v1.ImageIndex) error {
 	return writeFile(path, indexFile, rawIndex)
 }
 
-// WriteIndex writes an ImageIndex to an OCI Image layout at path.
+// WriteIndex writes a v1.ImageIndex to an OCI Image layout at path.
 // This doesn't update the top-level index.json, see AppendIndex.
 func WriteIndex(path string, ii v1.ImageIndex) error {
 	// Always just write oci-layout file, since it's small.
@@ -294,6 +290,15 @@ func WriteIndex(path string, ii v1.ImageIndex) error {
 }
 
 // Write converts an ImageIndex to an OCI image layout at path.
+//
+// The contents are written in the following format:
+// At the top level, there is:
+//   One oci-layout file containing the version of this image-layout.
+//   One index.json file listing decsriptors for the contained images.
+// Under blobs/, there is, for each image:
+//   One file for each layer, named after the layer's SHA.
+//   One file for each config blob, named after its SHA.
+//   One file for each manifest blob, named after its SHA.
 func Write(path string, ii v1.ImageIndex) error {
 	// Always just write oci-layout file, since it's small.
 	if err := writeFile(path, "oci-layout", []byte(layoutFile)); err != nil {
