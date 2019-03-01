@@ -35,8 +35,6 @@ var layoutFile = `{
 // AppendImage writes a v1.Image to an OCI image layout at path and updates
 // the index.json to reference it.
 func AppendImage(path string, img v1.Image, options ...LayoutOption) (v1.ImageIndex, error) {
-	// TODO: Options for Annotations and URLs.
-
 	if err := WriteImage(path, img); err != nil {
 		return nil, err
 	}
@@ -74,7 +72,6 @@ func AppendImage(path string, img v1.Image, options ...LayoutOption) (v1.ImageIn
 // AppendIndex writes a v1.ImageIndex to an OCI image layout at path and updates
 // the index.json to reference it.
 func AppendIndex(path string, ii v1.ImageIndex, options ...LayoutOption) (v1.ImageIndex, error) {
-	// TODO: Options for Annotations and URLs.
 	if err := WriteIndex(path, ii); err != nil {
 		return nil, err
 	}
