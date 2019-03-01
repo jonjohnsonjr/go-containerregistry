@@ -86,7 +86,7 @@ func AppendIndex(path string, ii v1.ImageIndex, options ...LayoutOption) (v1.Ima
 		return nil, err
 	}
 
-	manifest, err := ii.RawIndexManifest()
+	manifest, err := ii.RawManifest()
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +273,7 @@ func writeIndexToFile(path string, indexFile string, ii v1.ImageIndex) error {
 		}
 	}
 
-	rawIndex, err := ii.RawIndexManifest()
+	rawIndex, err := ii.RawManifest()
 	if err != nil {
 		return err
 	}
