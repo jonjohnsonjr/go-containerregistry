@@ -23,13 +23,17 @@ import (
 )
 
 var (
+	indexDigest = v1.Hash{
+		Algorithm: "sha256",
+		Hex:       "05f95b26ed10668b7183c1e2da98610e91372fa9f510046d4ce5812addad86b5",
+	}
 	manifestDigest = v1.Hash{
 		Algorithm: "sha256",
 		Hex:       "eebff607b1628d67459b0596643fc07de70d702eccf030f0bc7bb6fc2b278650",
 	}
-	indexDigest = v1.Hash{
+	configDigest = v1.Hash{
 		Algorithm: "sha256",
-		Hex:       "05f95b26ed10668b7183c1e2da98610e91372fa9f510046d4ce5812addad86b5",
+		Hex:       "6e0b05049ed9c17d02e1a55e80d6599dbfcce7f4f4b022e3c673e685789c470e",
 	}
 	bogusDigest = v1.Hash{
 		Algorithm: "sha256",
@@ -40,10 +44,6 @@ var (
 )
 
 func TestImage(t *testing.T) {
-	configDigest := v1.Hash{
-		Algorithm: "sha256",
-		Hex:       "6e0b05049ed9c17d02e1a55e80d6599dbfcce7f4f4b022e3c673e685789c470e",
-	}
 	img, err := Image(testPath, manifestDigest)
 	if err != nil {
 		t.Fatalf("Image() = %v", err)

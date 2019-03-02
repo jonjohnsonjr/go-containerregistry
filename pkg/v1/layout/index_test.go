@@ -28,7 +28,7 @@ func TestIndex(t *testing.T) {
 	}
 
 	if err := validate.Index(idx); err != nil {
-		t.Fatalf("validate.Index() = %v", err)
+		t.Errorf("validate.Index() = %v", err)
 	}
 
 	mt, err := idx.MediaType()
@@ -37,7 +37,11 @@ func TestIndex(t *testing.T) {
 	}
 
 	if got, want := mt, types.OCIImageIndex; got != want {
-		t.Fatalf("MediaType(); want: %v got: %v", want, got)
+		t.Errorf("MediaType(); want: %v got: %v", want, got)
+	}
+
+	if _, err := idx.Blob(configDigest); err != nil {
+		t.Errorf("validate.Index() = %v", err)
 	}
 }
 
@@ -48,22 +52,22 @@ func TestIndexErrors(t *testing.T) {
 	}
 
 	if _, err := idx.Image(bogusDigest); err == nil {
-		t.Fatalf("idx.Image(%s) = nil, expected err", bogusDigest)
+		t.Errorf("idx.Image(%s) = nil, expected err", bogusDigest)
 	}
 
 	if _, err := idx.Image(indexDigest); err == nil {
-		t.Fatalf("idx.Image(%s) = nil, expected err", bogusDigest)
+		t.Errorf("idx.Image(%s) = nil, expected err", bogusDigest)
 	}
 
 	if _, err := idx.ImageIndex(bogusDigest); err == nil {
-		t.Fatalf("idx.ImageIndex(%s) = nil, expected err", bogusDigest)
+		t.Errorf("idx.ImageIndex(%s) = nil, expected err", bogusDigest)
 	}
 
 	if _, err := idx.ImageIndex(manifestDigest); err == nil {
-		t.Fatalf("idx.ImageIndex(%s) = nil, expected err", bogusDigest)
+		t.Errorf("idx.ImageIndex(%s) = nil, expected err", bogusDigest)
 	}
 
 	if _, err := Index(bogusPath); err == nil {
-		t.Fatalf("ImageIndex(%s) = nil, expected err", bogusPath)
+		t.Errorf("Index(%s) = nil, expected err", bogusPath)
 	}
 }

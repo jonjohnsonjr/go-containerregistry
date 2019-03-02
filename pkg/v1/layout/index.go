@@ -40,12 +40,12 @@ func Index(path string) (v1.ImageIndex, error) {
 		return nil, err
 	}
 
-	img := &layoutIndex{
+	idx := &layoutIndex{
 		path:     path,
 		rawIndex: rawIndex,
 	}
 
-	return img, nil
+	return idx, nil
 }
 
 func (i *layoutIndex) MediaType() (types.MediaType, error) {
