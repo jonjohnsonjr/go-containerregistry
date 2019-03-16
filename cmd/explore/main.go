@@ -1,8 +1,10 @@
 package main
 
 import (
+	"archive/tar"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/google/go-containerregistry/pkg/v1/v1util"
 )
 
 const indexTemplate = `
@@ -109,7 +112,7 @@ const manifestTemplate = `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": <a href="/?config={{$.Repo}}@{{.Digest}}">{{.Digest}}</a>,
+		"digest": <a href="/?config={{$.Repo}}@{{.Digest}}&image={{$.Image}}">{{.Digest}}</a>,
 		</div>
 		</div>
 		{{ end }}
@@ -147,13 +150,61 @@ type IndexData struct {
 }
 
 type ManifestData struct {
-	Repo string
+	Repo  string
+	Image string
 	v1.Manifest
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%v", r.URL.Query())
 	qs := r.URL.Query()
+
+	if blobs, ok := qs["blob"]; ok {
+		blobRef, err := name.ParseReference(blobs[0], name.StrictValidation)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		blob, err := remote.Blob(blobRef)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		zr, err := v1util.GunzipReadCloser(blob)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer zr.Close()
+
+		tr := tar.NewReader(zr)
+		for {
+			header, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Fprintln(w, header.Name)
+		}
+		return
+	}
+
+	if configs, ok := qs["config"]; ok {
+		cfgRef, err := name.ParseReference(configs[0], name.StrictValidation)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		blob, err := remote.Blob(cfgRef)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		io.Copy(w, blob)
+		return
+	}
+
 	images, ok := qs["image"]
 	if !ok {
 		return
@@ -205,6 +256,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 		data := ManifestData{
 			Repo:     ref.Context().String(),
+			Image:    ref.String(),
 			Manifest: *manifest,
 		}
 
