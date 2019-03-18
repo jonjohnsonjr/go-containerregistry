@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -157,116 +158,9 @@ type ManifestData struct {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%v", r.URL.Query())
-	qs := r.URL.Query()
 
-	if blobs, ok := qs["blob"]; ok {
-		blobRef, err := name.ParseReference(blobs[0], name.StrictValidation)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		blob, err := remote.Blob(blobRef)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		zr, err := v1util.GunzipReadCloser(blob)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer zr.Close()
-
-		tr := tar.NewReader(zr)
-		for {
-			header, err := tr.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				log.Fatal(err)
-			}
-			fmt.Fprintln(w, header.Name)
-		}
-		return
-	}
-
-	if configs, ok := qs["config"]; ok {
-		cfgRef, err := name.ParseReference(configs[0], name.StrictValidation)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		blob, err := remote.Blob(cfgRef)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		io.Copy(w, blob)
-		return
-	}
-
-	images, ok := qs["image"]
-	if !ok {
-		return
-	}
-	image := images[0]
-
-	ref, err := name.ParseReference(image, name.WeakValidation)
-	if err != nil {
-		log.Fatal(err)
-	}
-	desc, err := remote.Get(ref)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if desc.MediaType == types.DockerManifestList {
-		index, err := desc.ImageIndex()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		manifest, err := index.IndexManifest()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		data := IndexData{
-			Repo:          ref.Context().String(),
-			IndexManifest: *manifest,
-		}
-
-		tmpl, err := template.New("indexTemplate").Parse(indexTemplate)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := tmpl.Execute(w, data); err != nil {
-			log.Fatal(err)
-		}
-	} else if desc.MediaType == types.DockerManifestSchema2 {
-		img, err := desc.Image()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		manifest, err := img.Manifest()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		data := ManifestData{
-			Repo:     ref.Context().String(),
-			Image:    ref.String(),
-			Manifest: *manifest,
-		}
-
-		tmpl, err := template.New("manifestTemplate").Parse(manifestTemplate)
-		if err != nil {
-			log.Fatal(err)
-		}
-		if err := tmpl.Execute(w, data); err != nil {
-			log.Fatal(err)
-		}
+	if err := renderResponse(w, r); err != nil {
+		fmt.Fprintf(w, "failed: %v", err)
 	}
 }
 
@@ -281,4 +175,133 @@ func main() {
 	}
 
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
+}
+
+func renderResponse(w io.Writer, r *http.Request) error {
+	qs := r.URL.Query()
+
+	if blobs, ok := qs["blob"]; ok {
+		return renderBlob(w, blobs[0])
+	}
+
+	if configs, ok := qs["config"]; ok {
+		return renderConfig(w, configs[0])
+	}
+
+	images, ok := qs["image"]
+	if !ok {
+		return errors.New("expected 'image' in query string")
+	}
+	image := images[0]
+
+	ref, err := name.ParseReference(image, name.WeakValidation)
+	if err != nil {
+		return err
+	}
+	desc, err := remote.Get(ref)
+	if err != nil {
+		return err
+	}
+
+	if desc.MediaType == types.DockerManifestList || desc.MediaType == types.OCIImageIndex {
+		return renderIndex(w, desc, ref)
+	} else if desc.MediaType == types.DockerManifestSchema2 || desc.MediaType == types.OCIManifestSchema1 {
+		return renderImage(w, desc, ref)
+	}
+
+	return fmt.Errorf("unimplemented mediaType: %s", desc.MediaType)
+}
+
+func renderIndex(w io.Writer, desc *remote.Descriptor, ref name.Reference) error {
+	index, err := desc.ImageIndex()
+	if err != nil {
+		return err
+	}
+
+	manifest, err := index.IndexManifest()
+	if err != nil {
+		return err
+	}
+
+	data := IndexData{
+		Repo:          ref.Context().String(),
+		IndexManifest: *manifest,
+	}
+
+	tmpl, err := template.New("indexTemplate").Parse(indexTemplate)
+	if err != nil {
+		return err
+	}
+	return tmpl.Execute(w, data)
+}
+
+func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference) error {
+	img, err := desc.Image()
+	if err != nil {
+		return err
+	}
+
+	manifest, err := img.Manifest()
+	if err != nil {
+		return err
+	}
+
+	data := ManifestData{
+		Repo:     ref.Context().String(),
+		Image:    ref.String(),
+		Manifest: *manifest,
+	}
+
+	tmpl, err := template.New("manifestTemplate").Parse(manifestTemplate)
+	if err != nil {
+		return err
+	}
+	return tmpl.Execute(w, data)
+}
+
+func renderBlob(w io.Writer, ref string) error {
+	blobRef, err := name.ParseReference(ref, name.StrictValidation)
+	if err != nil {
+		return err
+	}
+
+	blob, err := remote.Blob(blobRef)
+	if err != nil {
+		return err
+	}
+
+	zr, err := v1util.GunzipReadCloser(blob)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+
+	tr := tar.NewReader(zr)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, header.Name)
+	}
+
+	return nil
+}
+
+func renderConfig(w io.Writer, ref string) error {
+	cfgRef, err := name.ParseReference(ref, name.StrictValidation)
+	if err != nil {
+		return err
+	}
+
+	blob, err := remote.Blob(cfgRef)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(w, blob)
+	return err
 }
