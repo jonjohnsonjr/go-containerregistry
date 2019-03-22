@@ -81,6 +81,11 @@ func Config(base v1.Image, cfg v1.Config) (v1.Image, error) {
 	return configFile(base, cf)
 }
 
+// ConfigFile mutates the provided v1.Image to have the provided v1.ConfigFile
+func ConfigFile(base v1.Image, cfg *v1.ConfigFile) (v1.Image, error) {
+	return configFile(base, cfg)
+}
+
 func configFile(base v1.Image, cfg *v1.ConfigFile) (v1.Image, error) {
 	m, err := base.Manifest()
 	if err != nil {
