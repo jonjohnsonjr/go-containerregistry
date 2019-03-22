@@ -164,24 +164,6 @@ func TestStreamableLayerFromTarball(t *testing.T) {
 	}
 }
 
-// TestNotComputed tests that Digest/DiffID/Size return ErrNotComputed before
-// the stream has been consumed.
-func TestNotComputed(t *testing.T) {
-	l := NewLayer(ioutil.NopCloser(bytes.NewBufferString("hi")))
-
-	// All methods should return ErrNotComputed until the stream has been
-	// consumed and closed.
-	if _, err := l.Size(); err != ErrNotComputed {
-		t.Errorf("Size: got %v, want %v", err, ErrNotComputed)
-	}
-	if _, err := l.Digest(); err == nil {
-		t.Errorf("Digest: got %v, want %v", err, ErrNotComputed)
-	}
-	if _, err := l.DiffID(); err == nil {
-		t.Errorf("DiffID: got %v, want %v", err, ErrNotComputed)
-	}
-}
-
 // TestConsumed tests that Compressed returns ErrConsumed when the stream has
 // already been consumed.
 func TestConsumed(t *testing.T) {

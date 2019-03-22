@@ -49,7 +49,18 @@ type Layer struct {
 var _ v1.Layer = (*Layer)(nil)
 
 // NewLayer creates a Layer from an io.ReadCloser.
-func NewLayer(rc io.ReadCloser) *Layer { return &Layer{blob: rc} }
+//
+// Note: Digest, DiffID, and Size will block until the underlying io.ReadCloser
+// has been consumed.
+func NewLayer(rc io.ReadCloser) *Layer {
+	l := Layer{blob: rc}
+
+	// Take the lock on layer construction. This will be released when we Close()
+	// the compressedReader. Any methods that depend on the stream being consumed
+	// will block until we finish reading it.
+	l.mu.Lock()
+	return &l
+}
 
 // Digest implements v1.Layer.
 func (l *Layer) Digest() (v1.Hash, error) {
@@ -129,6 +140,7 @@ func newCompressedReader(l *Layer) (*compressedReader, error) {
 	go func() {
 		if _, err := io.Copy(io.MultiWriter(h, zw), l.blob); err != nil {
 			pw.CloseWithError(err)
+			l.mu.Unlock()
 			return
 		}
 		// Now close the compressed reader, to flush the gzip stream
@@ -144,7 +156,11 @@ func newCompressedReader(l *Layer) (*compressedReader, error) {
 func (cr *compressedReader) Read(b []byte) (int, error) { return cr.pr.Read(b) }
 
 func (cr *compressedReader) Close() error {
-	cr.l.mu.Lock()
+	if cr.l.consumed {
+		return nil
+	}
+
+	// Release the lock once we've computed everything.
 	defer cr.l.mu.Unlock()
 
 	// Close the inner ReadCloser.

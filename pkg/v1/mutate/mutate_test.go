@@ -319,11 +319,6 @@ func TestAppendStreamableLayer(t *testing.T) {
 		t.Fatalf("AppendLayers: %v", err)
 	}
 
-	// Until the streams are consumed, the image manifest is not yet computed.
-	if _, err := img.Manifest(); err != stream.ErrNotComputed {
-		t.Errorf("Manifest: got %v, want %v", err, stream.ErrNotComputed)
-	}
-
 	// We can still get Layers while some are not yet computed.
 	ls, err := img.Layers()
 	if err != nil {

@@ -206,19 +206,24 @@ func (i *image) compute() error {
 // Layers returns the ordered collection of filesystem layers that comprise this image.
 // The order of the list is oldest/base layer first, and most-recent/top layer last.
 func (i *image) Layers() ([]v1.Layer, error) {
-	if err := i.compute(); err == stream.ErrNotComputed {
-		// Image contains a streamable layer which has not yet been
-		// consumed. Just return the layers we have in case the caller
-		// is going to consume the layers.
-		layers, err := i.base.Layers()
-		if err != nil {
-			return nil, err
+	layers, err := i.base.Layers()
+	if err != nil {
+		return nil, err
+	}
+	for _, add := range i.adds {
+		layers = append(layers, add.Layer)
+	}
+
+	// Check if image contains a streamable layer which has not yet been consumed.
+	// Just return the layers in case the caller is going to consume the layers.
+	for _, l := range layers {
+		if _, ok := l.(*stream.Layer); ok {
+			return layers, nil
 		}
-		for _, add := range i.adds {
-			layers = append(layers, add.Layer)
-		}
-		return layers, nil
-	} else if err != nil {
+	}
+
+	// Otherwise, compute everything.
+	if err := i.compute(); err != nil {
 		return nil, err
 	}
 
