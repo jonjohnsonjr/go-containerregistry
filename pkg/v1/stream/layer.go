@@ -36,6 +36,8 @@ var (
 	ErrConsumed = errors.New("stream was already consumed")
 )
 
+type Mutator func(io.ReadCloser) io.ReadCloser
+
 // Layer is a streaming implementation of v1.Layer.
 type Layer struct {
 	blob     io.ReadCloser
@@ -44,12 +46,18 @@ type Layer struct {
 	mu             sync.Mutex
 	digest, diffID *v1.Hash
 	size           int64
+
+	mutator Mutator
 }
 
 var _ v1.Layer = (*Layer)(nil)
 
 // NewLayer creates a Layer from an io.ReadCloser.
 func NewLayer(rc io.ReadCloser) *Layer { return &Layer{blob: rc} }
+
+func (l *Layer) SetMutator(m Mutator) {
+	l.mutator = m
+}
 
 // Digest implements v1.Layer.
 func (l *Layer) Digest() (v1.Hash, error) {
@@ -108,6 +116,10 @@ func newCompressedReader(l *Layer) (*compressedReader, error) {
 	h := sha256.New()
 	zh := sha256.New()
 	count := &countWriter{}
+
+	if l.mutator != nil {
+		l.blob = l.mutator(l.blob)
+	}
 
 	// gzip.Writer writes to the output stream via pipe, a hasher to
 	// capture compressed digest, and a countWriter to capture compressed

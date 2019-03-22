@@ -44,6 +44,9 @@ type Addendum struct {
 	History v1.History
 }
 
+// Mutation mutates an image.
+type Mutation func(v1.Image) (v1.Image, error)
+
 // AppendLayers applies layers to a base image
 func AppendLayers(base v1.Image, layers ...v1.Layer) (v1.Image, error) {
 	additions := make([]Addendum, 0, len(layers))
@@ -82,14 +85,8 @@ func Config(base v1.Image, cfg v1.Config) (v1.Image, error) {
 }
 
 func configFile(base v1.Image, cfg *v1.ConfigFile) (v1.Image, error) {
-	m, err := base.Manifest()
-	if err != nil {
-		return nil, err
-	}
-
 	image := &image{
 		base:       base,
-		manifest:   m.DeepCopy(),
 		configFile: cfg,
 	}
 
@@ -112,6 +109,7 @@ func CreatedAt(base v1.Image, created v1.Time) (v1.Image, error) {
 type image struct {
 	base v1.Image
 	adds []Addendum
+	muts []Mutation
 
 	computed   bool
 	configFile *v1.ConfigFile
@@ -128,6 +126,14 @@ func (i *image) compute() error {
 	// Don't re-compute if already computed.
 	if i.computed {
 		return nil
+	}
+
+	for _, mut := range i.muts {
+		base, err := mut(i.base)
+		if err != nil {
+			return err
+		}
+		i.base = base
 	}
 	var configFile *v1.ConfigFile
 	if i.configFile != nil {
@@ -206,19 +212,24 @@ func (i *image) compute() error {
 // Layers returns the ordered collection of filesystem layers that comprise this image.
 // The order of the list is oldest/base layer first, and most-recent/top layer last.
 func (i *image) Layers() ([]v1.Layer, error) {
-	if err := i.compute(); err == stream.ErrNotComputed {
-		// Image contains a streamable layer which has not yet been
-		// consumed. Just return the layers we have in case the caller
-		// is going to consume the layers.
-		layers, err := i.base.Layers()
-		if err != nil {
-			return nil, err
+	layers, err := i.base.Layers()
+	if err != nil {
+		return nil, err
+	}
+	for _, add := range i.adds {
+		layers = append(layers, add.Layer)
+	}
+
+	// Check if image contains a streamable layer which has not yet been consumed.
+	// Just return the layers in case the caller is going to consume the layers.
+	for _, l := range layers {
+		if _, ok := l.(*stream.Layer); ok {
+			return layers, nil
 		}
-		for _, add := range i.adds {
-			layers = append(layers, add.Layer)
-		}
-		return layers, nil
-	} else if err != nil {
+	}
+
+	// Otherwise, compute everything.
+	if err := i.compute(); err != nil {
 		return nil, err
 	}
 
@@ -434,7 +445,6 @@ func Time(img v1.Image, t time.Time) (v1.Image, error) {
 
 	layers, err := img.Layers()
 	if err != nil {
-
 		return nil, fmt.Errorf("Error getting image layers: %v", err)
 	}
 
@@ -453,65 +463,83 @@ func Time(img v1.Image, t time.Time) (v1.Image, error) {
 		return nil, fmt.Errorf("Error appending layers: %v", err)
 	}
 
-	ocf, err := img.ConfigFile()
-	if err != nil {
-		return nil, fmt.Errorf("Error getting original config file: %v", err)
+	setConfig := func(base v1.Image) (v1.Image, error) {
+		ocf, err := base.ConfigFile()
+		if err != nil {
+			return nil, err
+		}
+
+		// Clear the diffids, which will get repopulated by compute().
+		ocf.RootFS.DiffIDs = []v1.Hash{}
+
+		// Strip away timestamps from the config file
+		ocf.Created = v1.Time{Time: t}
+
+		for _, h := range ocf.History {
+			h.Created = v1.Time{Time: t}
+		}
+
+		return configFile(base, ocf)
 	}
 
-	cf, err := newImage.ConfigFile()
-	if err != nil {
-		return nil, fmt.Errorf("Error setting config file: %v", err)
-	}
-
-	cfg := cf.DeepCopy()
-
-	// Copy basic config over
-	cfg.Config = ocf.Config
-	cfg.ContainerConfig = ocf.ContainerConfig
-
-	// Strip away timestamps from the config file
-	cfg.Created = v1.Time{Time: t}
-
-	for _, h := range cfg.History {
-		h.Created = v1.Time{Time: t}
-	}
-
-	return configFile(newImage, cfg)
+	return &image{
+		base: newImage,
+		muts: []Mutation{setConfig},
+	}, nil
 }
 
 func layerTime(layer v1.Layer, t time.Time) (v1.Layer, error) {
+	mutator := func(in io.ReadCloser) io.ReadCloser {
+		pr, pw := io.Pipe()
+		tarReader := tar.NewReader(in)
+		tarWriter := tar.NewWriter(pw)
+		go func() {
+			for {
+				header, err := tarReader.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					pw.CloseWithError(fmt.Errorf("error reading layer: %v", err))
+					return
+				}
+
+				header.ModTime = t
+				if err := tarWriter.WriteHeader(header); err != nil {
+					pw.CloseWithError(fmt.Errorf("error writing tar header: %v", err))
+					return
+				}
+
+				if header.Typeflag == tar.TypeReg {
+					if _, err = io.Copy(tarWriter, tarReader); err != nil {
+						pw.CloseWithError(fmt.Errorf("error writing layer file: %v", err))
+						return
+					}
+				}
+			}
+
+			if err := tarWriter.Flush(); err != nil {
+				pw.CloseWithError(err)
+			}
+
+			pw.CloseWithError(tarWriter.Close())
+		}()
+		return pr
+	}
+
+	if l, ok := layer.(*stream.Layer); ok {
+		l.SetMutator(mutator)
+		return l, nil
+	}
+
 	layerReader, err := layer.Uncompressed()
 	if err != nil {
 		return nil, fmt.Errorf("Error getting layer: %v", err)
 	}
 	w := new(bytes.Buffer)
-	tarWriter := tar.NewWriter(w)
-	defer tarWriter.Close()
-
-	tarReader := tar.NewReader(layerReader)
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("Error reading layer: %v", err)
-		}
-
-		header.ModTime = t
-		if err := tarWriter.WriteHeader(header); err != nil {
-			return nil, fmt.Errorf("Error writing tar header: %v", err)
-		}
-
-		if header.Typeflag == tar.TypeReg {
-			if _, err = io.Copy(tarWriter, tarReader); err != nil {
-				return nil, fmt.Errorf("Error writing layer file: %v", err)
-			}
-		}
-	}
-
-	if err := tarWriter.Close(); err != nil {
-		return nil, err
+	mutated := mutator(layerReader)
+	if _, err := io.Copy(w, mutated); err != nil {
+		return nil, fmt.Errorf("error setting layer time: %v", err)
 	}
 
 	b := w.Bytes()
@@ -542,18 +570,25 @@ func Canonical(img v1.Image) (v1.Image, error) {
 		return nil, err
 	}
 
-	cf, err := img.ConfigFile()
-	if err != nil {
-		return nil, err
+	setConfig := func(base v1.Image) (v1.Image, error) {
+		cf, err := base.ConfigFile()
+		if err != nil {
+			return nil, err
+		}
+
+		// Get rid of host-dependent random config
+		cfg := cf.DeepCopy()
+
+		cfg.Container = ""
+		cfg.Config.Hostname = ""
+		cfg.ContainerConfig.Hostname = ""
+		cfg.DockerVersion = ""
+
+		return configFile(base, cfg)
 	}
 
-	// Get rid of host-dependent random config
-	cfg := cf.DeepCopy()
-
-	cfg.Container = ""
-	cfg.Config.Hostname = ""
-	cfg.ContainerConfig.Hostname = ""
-	cfg.DockerVersion = ""
-
-	return configFile(img, cfg)
+	return &image{
+		base: img,
+		muts: []Mutation{setConfig},
+	}, nil
 }

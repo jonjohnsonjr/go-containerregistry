@@ -21,9 +21,11 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -589,6 +591,84 @@ func assertAccurateManifestConfigDigest(t *testing.T, i v1.Image) {
 
 	if !cmp.Equal(got, want) {
 		t.Fatalf("Manifest config digest (%v) does not match digest of config file (%v)", got, want)
+	}
+}
+
+func TestCanonicalStreamableLayer(t *testing.T) {
+	tarballs := []*bytes.Buffer{}
+	for i := 0; i < 3; i++ {
+		b := new(bytes.Buffer)
+		tw := tar.NewWriter(b)
+		sr := strings.NewReader(strings.Repeat(strconv.Itoa(i), 100))
+		tw.WriteHeader(&tar.Header{
+			Name: "a file",
+			Size: 100,
+		})
+		if _, err := io.Copy(tw, sr); err != nil {
+			t.Fatalf("creating layer %d", i)
+		}
+		tarballs = append(tarballs, b)
+	}
+	img, err := AppendLayers(
+		sourceImage(t),
+		stream.NewLayer(ioutil.NopCloser(tarballs[0])),
+		stream.NewLayer(ioutil.NopCloser(tarballs[1])),
+		stream.NewLayer(ioutil.NopCloser(tarballs[2])),
+	)
+	if err != nil {
+		t.Fatalf("AppendLayers: %v", err)
+	}
+
+	img, err = Canonical(img)
+	if err != nil {
+		t.Fatalf("Canonical: %v", err)
+	}
+
+	// Until the streams are consumed, the image manifest is not yet computed.
+	if _, err := img.Manifest(); err != stream.ErrNotComputed {
+		t.Errorf("Manifest: got %v, want %v", err, stream.ErrNotComputed)
+	}
+
+	// We can still get Layers while some are not yet computed.
+	ls, err := img.Layers()
+	if err != nil {
+		t.Errorf("Layers: %v", err)
+	}
+	wantMutatedDigest := []string{
+		"sha256:bfa1c600931132f55789459e2f5a5eb85659ac91bc5a54ce09e3ed14809f8a7f",
+		"sha256:77a52b9a141dcc4d3d277d053193765dca725626f50eaf56b903ac2439cf7fd1",
+		"sha256:b78472d63f6e3d31059819173b56fcb0d9479a2b13c097d4addd84889f6aff06",
+	}
+	for i, l := range ls[1:] {
+		log.Printf("layers[%d] Compressed()", i)
+		rc, err := l.Compressed()
+		if err != nil {
+			t.Errorf("Layer %d Compressed: %v", i, err)
+		}
+
+		// Consume the layer's stream and close it to compute the
+		// layer's metadata.
+		if _, err := io.Copy(ioutil.Discard, rc); err != nil {
+			t.Errorf("Reading layer %d: %v", i, err)
+		}
+		if err := rc.Close(); err != nil {
+			t.Errorf("Closing layer %d: %v", i, err)
+		}
+
+		// The layer's metadata is now available.
+		h, err := l.Digest()
+		if err != nil {
+			t.Errorf("Digest after consuming layer %d: %v", i, err)
+		}
+		if h.String() == wantMutatedDigest[i] {
+			t.Errorf("Layer %d digest got %q, wanted NOT %q", i, h, wantMutatedDigest[i])
+		}
+	}
+
+	// Now that the streamable layers have been consumed, the image's
+	// manifest can be computed.
+	if _, err := img.Manifest(); err != nil {
+		t.Errorf("Manifest: %v", err)
 	}
 }
 
