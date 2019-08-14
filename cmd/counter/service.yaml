@@ -1,0 +1,54 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: counter
+  namespace: default
+imagePullSecrets:
+- name: regcred
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: counter-role
+  namespace: default
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  - secrets
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: counter-role-binding
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: counter-role
+subjects:
+- kind: ServiceAccount
+  name: counter
+  namespace: default
+---
+apiVersion: serving.knative.dev/v1alpha1
+kind: Service
+metadata:
+  name: counter
+  namespace: default
+spec:
+  template:
+    spec:
+      serviceAccountName: counter
+      containers:
+      - image: index.docker.io/jonjohnson/counter
+        imagePullPolicy: Always
+        env:
+        - name: IMAGE
+          value: index.docker.io/jonjohnson/counter
+
