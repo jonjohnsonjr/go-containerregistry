@@ -59,11 +59,10 @@ func increment(w http.ResponseWriter, counter string) (int, error) {
 		return 0, err
 	}
 
-	prev, err := img.Digest()
+	resolved, err := img.Digest()
 	if err != nil {
 		return 0, err
 	}
-	fmt.Fprintf(w, "This image: %s@%s\n", tag, prev.String())
 
 	cf, err := img.ConfigFile()
 	if err != nil {
@@ -80,15 +79,19 @@ func increment(w http.ResponseWriter, counter string) (int, error) {
 			cfg.Env[i] = fmt.Sprintf("COUNTER=%d", count)
 			break
 		} else if parts[0] == "DIGEST" {
-			cfg.Env[i] = fmt.Sprintf("DIGEST=%s", prev.String())
+			cfg.Env[i] = fmt.Sprintf("DIGEST=%s", resolved.String())
 		}
 	}
 	if os.Getenv("COUNTER") == "" {
 		cfg.Env = append(cfg.Env, fmt.Sprintf("COUNTER=%d", count))
 	}
-	if os.Getenv("DIGEST") == "" {
-		cfg.Env = append(cfg.Env, fmt.Sprintf("DIGEST=%s", prev.String()))
+	if prev := os.Getenv("DIGEST"); prev == "" {
+		cfg.Env = append(cfg.Env, fmt.Sprintf("DIGEST=%s", resolved.String()))
+	} else {
+		fmt.Fprintf(w, "Last image: %s@%s\n", tag, prev)
 	}
+
+	fmt.Fprintf(w, "Current tag: %s@%s\n", tag, resolved.String())
 
 	img, err = mutate.Config(img, cfg)
 	if err != nil {
