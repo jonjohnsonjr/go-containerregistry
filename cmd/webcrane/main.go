@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +11,7 @@ import (
 	"os"
 
 	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/gorilla/mux"
 )
 
@@ -53,6 +56,28 @@ func doCrane(w http.ResponseWriter, cmd, arg string) error {
 		}
 		_, err = io.Copy(w, bytes.NewReader(c))
 		return err
+	case "export":
+		img, err := crane.Pull(arg)
+		if err != nil {
+			return err
+		}
+		tr := tar.NewReader(mutate.Extract(img))
+		for {
+			header, err := tr.Next()
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				return err
+			}
+			b, err := json.Marshal(header)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(w, bytes.NewReader(b)); err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "\n")
+		}
 	}
 	return nil
 }
