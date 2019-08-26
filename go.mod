@@ -8,20 +8,30 @@ require (
 	github.com/Azure/go-autorest v10.15.5+incompatible // indirect
 	github.com/Microsoft/go-winio v0.4.14 // indirect
 	github.com/aws/aws-sdk-go v1.15.90 // indirect
+<<<<<<< HEAD
 	github.com/containerd/containerd v1.3.0 // indirect
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible // indirect
 	github.com/docker/cli v0.0.0-20191017083524-a8ff7f821017
 	github.com/docker/distribution v2.6.0-rc.1.0.20180327202408-83389a148052+incompatible // indirect
 	github.com/docker/docker v1.4.2-0.20190924003213-a8608b5b67c7
+=======
+	github.com/docker/cli v0.0.0-20190925022749-754388324470
+	github.com/docker/docker v1.4.2-0.20180531152204-71cd53e4a197
+>>>>>>> Add 'crane edit' command
 	github.com/docker/docker-credential-helpers v0.6.3 // indirect
 	github.com/docker/go-connections v0.4.0 // indirect
 	github.com/docker/go-units v0.4.0 // indirect
 	github.com/ghodss/yaml v1.0.0 // indirect
+<<<<<<< HEAD
 	github.com/google/btree v0.0.0-20180124185431-e89373fe6b4a // indirect
 	github.com/google/go-cmp v0.2.0
+=======
+	github.com/google/go-cmp v0.3.0
+>>>>>>> Add 'crane edit' command
 	github.com/googleapis/gnostic v0.2.2 // indirect
 	github.com/gorilla/mux v1.7.3 // indirect
 	github.com/gregjones/httpcache v0.0.0-20180305231024-9cad4c3443a7 // indirect
+<<<<<<< HEAD
 	github.com/konsorten/go-windows-terminal-sequences v1.0.2 // indirect
 	github.com/maxbrunsfeld/counterfeiter/v6 v6.2.2
 	github.com/morikuni/aec v1.0.0 // indirect
@@ -46,5 +56,19 @@ require (
 	k8s.io/apimachinery v0.0.0-20180904193909-def12e63c512
 	k8s.io/client-go v0.0.0-20180910083459-2cefa64ff137
 	k8s.io/code-generator v0.0.0-20191121015212-c4c8f8345c7e
+=======
+	github.com/opencontainers/image-spec v1.0.1 // indirect
+	github.com/pkg/errors v0.8.1
+	github.com/spf13/cobra v0.0.5
+	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/stretchr/testify v1.4.0 // indirect
+	golang.org/x/oauth2 v0.0.0-20190604053449-0f29369cfe45
+	golang.org/x/sync v0.0.0-20190423024810-112230192c58
+	gopkg.in/inf.v0 v0.9.1 // indirect
+	k8s.io/api v0.0.0-20191005115622-2e41325d9e4b
+	k8s.io/apimachinery v0.0.0-20191006235458-f9f2f3f8ab02
+	k8s.io/client-go v0.0.0-20191006235818-c918cd02a1a3
+	k8s.io/kubectl v0.0.0-20191007002032-340a90f4c38f
+>>>>>>> Add 'crane edit' command
 	k8s.io/kubernetes v1.11.10
 )
