@@ -15,12 +15,14 @@
 package stream
 
 import (
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"hash"
 	"io"
+	"io/ioutil"
 	"sync"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -41,6 +43,7 @@ var (
 type Layer struct {
 	blob     io.ReadCloser
 	consumed bool
+	buf      *bytes.Buffer
 
 	mu             sync.Mutex
 	digest, diffID *v1.Hash
@@ -91,15 +94,83 @@ func (l *Layer) MediaType() (types.MediaType, error) {
 
 // Uncompressed implements v1.Layer.
 func (l *Layer) Uncompressed() (io.ReadCloser, error) {
-	return nil, errors.New("NYI: stream.Layer.Uncompressed is not implemented")
+	if l.buf == nil {
+		return nil, errors.New("NYI: stream.Layer.Uncompressed is not implemented")
+	}
+	if l.consumed {
+		return ioutil.NopCloser(bytes.NewReader(l.buf.Bytes())), nil
+	}
+	return newUncompressedReader(l), nil
 }
 
 // Compressed implements v1.Layer.
 func (l *Layer) Compressed() (io.ReadCloser, error) {
 	if l.consumed {
-		return nil, ErrConsumed
+		if l.buf == nil {
+			return nil, ErrConsumed
+		}
+		return l.newConsumedReader()
 	}
-	return newCompressedReader(l)
+	return newCompressedReader(l, l.blob)
+}
+
+func (l *Layer) newConsumedReader() (io.ReadCloser, error) {
+	// gzip.Writer writes to the output stream via pipe, a hasher to
+	// capture compressed digest, and a countWriter to capture compressed
+	// size.
+	pr, pw := io.Pipe()
+	zw, err := gzip.NewWriterLevel(pw, gzip.BestSpeed)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		if _, err := io.Copy(zw, bytes.NewReader(l.buf.Bytes())); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		defer pw.Close()
+	}()
+
+	return pr, nil
+}
+
+type uncompressedReader struct {
+	closer io.Closer // original blob's Closer.
+
+	h hash.Hash // collects diffid
+	r io.Reader
+
+	l *Layer // stream.Layer to update upon Close.
+}
+
+func newUncompressedReader(l *Layer) *uncompressedReader {
+	h := sha256.New()
+	ur := uncompressedReader{
+		closer: l.blob,
+		r:      io.TeeReader(l.blob, io.MultiWriter(h, l.buf)),
+		h:      h,
+	}
+	return &ur
+}
+
+func (ur *uncompressedReader) Read(b []byte) (int, error) { return ur.r.Read(b) }
+
+func (ur *uncompressedReader) Close() error {
+	ur.l.mu.Lock()
+	defer ur.l.mu.Unlock()
+
+	// Close the inner ReadCloser.
+	if err := ur.closer.Close(); err != nil {
+		return err
+	}
+
+	diffID, err := v1.NewHash("sha256:" + hex.EncodeToString(ur.h.Sum(nil)))
+	if err != nil {
+		return err
+	}
+	ur.l.diffID = &diffID
+	return nil
 }
 
 type compressedReader struct {
@@ -112,7 +183,7 @@ type compressedReader struct {
 	l *Layer // stream.Layer to update upon Close.
 }
 
-func newCompressedReader(l *Layer) (*compressedReader, error) {
+func newCompressedReader(l *Layer, source io.ReadCloser) (*compressedReader, error) {
 	h := sha256.New()
 	zh := sha256.New()
 	count := &countWriter{}
@@ -127,7 +198,7 @@ func newCompressedReader(l *Layer) (*compressedReader, error) {
 	}
 
 	cr := &compressedReader{
-		closer: newMultiCloser(zw, l.blob),
+		closer: newMultiCloser(zw, source),
 		pr:     pr,
 		h:      h,
 		zh:     zh,
@@ -135,7 +206,11 @@ func newCompressedReader(l *Layer) (*compressedReader, error) {
 		l:      l,
 	}
 	go func() {
-		if _, err := io.Copy(io.MultiWriter(h, zw), l.blob); err != nil {
+		ws := []io.Writer{h, zw}
+		if l.buf != nil {
+			ws = append(ws, l.buf)
+		}
+		if _, err := io.Copy(io.MultiWriter(ws...), source); err != nil {
 			pw.CloseWithError(err)
 			return
 		}
@@ -199,4 +274,13 @@ func (m multiCloser) Close() error {
 		}
 	}
 	return nil
+}
+
+// NewBufferedLayer creates a Layer from an io.ReadCloser that buffers its
+// uncompressed contents so that they are not consumed the first time they are read.
+func NewBufferedLayer(rc io.ReadCloser) *Layer {
+	return &Layer{
+		blob: rc,
+		buf:  new(bytes.Buffer),
+	}
 }

@@ -12,31 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package stream
+package stream_test
 
 import (
 	"archive/tar"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"strings"
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/stream"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
-func TestStreamVsBuffer(t *testing.T) {
+func TestStreamVsTarball(t *testing.T) {
 	var n, wantSize int64 = 10000, 49
 	newBlob := func() io.ReadCloser { return ioutil.NopCloser(bytes.NewReader(bytes.Repeat([]byte{'a'}, int(n)))) }
 	wantDigest := "sha256:3d7c465be28d9e1ed810c42aeb0e747b44441424f566722ba635dc93c947f30e"
 	wantDiffID := "sha256:27dd1f61b867b6a0f6e9d8a41c43231de52107e53ae424de8f847b821db4b711"
 
 	// Check that streaming some content results in the expected digest/diffID/size.
-	l := NewLayer(newBlob())
+	l := stream.NewLayer(newBlob())
 	if c, err := l.Compressed(); err != nil {
 		t.Errorf("Compressed: %v", err)
 	} else {
@@ -84,11 +88,113 @@ func TestStreamVsBuffer(t *testing.T) {
 	} else if s != wantSize {
 		t.Errorf("stream Size got %d, want %d", s, wantSize)
 	}
+
+	// This should fail.
+	if _, err := l.Compressed(); err != stream.ErrConsumed {
+		t.Errorf("Compressed() after consuming; got %v, want %v", err, stream.ErrConsumed)
+	}
+}
+
+func TestBufferedLayer(t *testing.T) {
+	var n, wantSize int64 = 10000, 49
+	newBlob := func() io.ReadCloser { return ioutil.NopCloser(bytes.NewReader(bytes.Repeat([]byte{'a'}, int(n)))) }
+	wantDigest := "sha256:3d7c465be28d9e1ed810c42aeb0e747b44441424f566722ba635dc93c947f30e"
+	wantDiffID := "sha256:27dd1f61b867b6a0f6e9d8a41c43231de52107e53ae424de8f847b821db4b711"
+
+	// Check that streaming some content results in the expected digest/diffID/size.
+	l := stream.NewLayer(newBlob())
+	if c, err := l.Compressed(); err != nil {
+		t.Errorf("Compressed: %v", err)
+	} else {
+		if _, err := io.Copy(ioutil.Discard, c); err != nil {
+			t.Errorf("error reading Compressed: %v", err)
+		}
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
+	if d, err := l.Digest(); err != nil {
+		t.Errorf("Digest: %v", err)
+	} else if d.String() != wantDigest {
+		t.Errorf("stream Digest got %q, want %q", d.String(), wantDigest)
+	}
+	if d, err := l.DiffID(); err != nil {
+		t.Errorf("DiffID: %v", err)
+	} else if d.String() != wantDiffID {
+		t.Errorf("stream DiffID got %q, want %q", d.String(), wantDiffID)
+	}
+	if s, err := l.Size(); err != nil {
+		t.Errorf("Size: %v", err)
+	} else if s != wantSize {
+		t.Errorf("stream Size got %d, want %d", s, wantSize)
+	}
+
+	// Test that buffering the same contents and using
+	// NewBufferedLayer results in the same digest/diffID/size.
+	bl := stream.NewBufferedLayer(newBlob())
+	if c, err := bl.Compressed(); err != nil {
+		t.Errorf("Compressed: %v", err)
+	} else {
+		if _, err := io.Copy(ioutil.Discard, c); err != nil {
+			t.Errorf("error reading Compressed: %v", err)
+		}
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
+	if d, err := bl.Digest(); err != nil {
+		t.Errorf("Digest: %v", err)
+	} else if d.String() != wantDigest {
+		t.Errorf("buffered Digest got %q, want %q", d.String(), wantDigest)
+	}
+	if d, err := bl.DiffID(); err != nil {
+		t.Errorf("DiffID: %v", err)
+	} else if d.String() != wantDiffID {
+		t.Errorf("buffered DiffID got %q, want %q", d.String(), wantDiffID)
+	}
+	if s, err := bl.Size(); err != nil {
+		t.Errorf("Size: %v", err)
+	} else if s != wantSize {
+		t.Errorf("stream Size got %d, want %d", s, wantSize)
+	}
+
+	// This should still work thanks to the buffer.
+	if c, err := bl.Compressed(); err != nil {
+		t.Errorf("Compressed: %v", err)
+	} else {
+		if _, err := io.Copy(ioutil.Discard, c); err != nil {
+			t.Errorf("error reading Compressed: %v", err)
+		}
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
+
+	// This should work thanks to the buffer.
+	if u, err := bl.Uncompressed(); err != nil {
+		t.Errorf("Uncompressed: %v", err)
+	} else {
+		log.Printf("%+v", u)
+		diff := sha256.New()
+		if _, err := io.Copy(diff, u); err != nil {
+			t.Fatal(err)
+		}
+		if err := u.Close(); err != nil {
+			t.Fatal(err)
+		}
+		d, err := v1.NewHash("sha256:" + hex.EncodeToString(diff.Sum(nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.String() != wantDiffID {
+			t.Errorf("stream DiffID got %q, want %q", d.String(), wantDiffID)
+		}
+	}
 }
 
 func TestLargeStream(t *testing.T) {
 	var n, wantSize int64 = 10000000, 10000788 // "Compressing" n random bytes results in this many bytes.
-	sl := NewLayer(ioutil.NopCloser(io.LimitReader(rand.Reader, n)))
+	sl := stream.NewLayer(ioutil.NopCloser(io.LimitReader(rand.Reader, n)))
 	rc, err := sl.Compressed()
 	if err != nil {
 		t.Fatalf("Uncompressed: %v", err)
@@ -145,7 +251,7 @@ func TestStreamableLayerFromTarball(t *testing.T) {
 		}())
 	}()
 
-	l := NewLayer(pr)
+	l := stream.NewLayer(pr)
 	rc, err := l.Compressed()
 	if err != nil {
 		t.Fatalf("Compressed: %v", err)
@@ -168,25 +274,25 @@ func TestStreamableLayerFromTarball(t *testing.T) {
 // TestNotComputed tests that Digest/DiffID/Size return ErrNotComputed before
 // the stream has been consumed.
 func TestNotComputed(t *testing.T) {
-	l := NewLayer(ioutil.NopCloser(bytes.NewBufferString("hi")))
+	l := stream.NewLayer(ioutil.NopCloser(bytes.NewBufferString("hi")))
 
 	// All methods should return ErrNotComputed until the stream has been
 	// consumed and closed.
-	if _, err := l.Size(); err != ErrNotComputed {
-		t.Errorf("Size: got %v, want %v", err, ErrNotComputed)
+	if _, err := l.Size(); err != stream.ErrNotComputed {
+		t.Errorf("Size: got %v, want %v", err, stream.ErrNotComputed)
 	}
 	if _, err := l.Digest(); err == nil {
-		t.Errorf("Digest: got %v, want %v", err, ErrNotComputed)
+		t.Errorf("Digest: got %v, want %v", err, stream.ErrNotComputed)
 	}
 	if _, err := l.DiffID(); err == nil {
-		t.Errorf("DiffID: got %v, want %v", err, ErrNotComputed)
+		t.Errorf("DiffID: got %v, want %v", err, stream.ErrNotComputed)
 	}
 }
 
 // TestConsumed tests that Compressed returns ErrConsumed when the stream has
 // already been consumed.
 func TestConsumed(t *testing.T) {
-	l := NewLayer(ioutil.NopCloser(strings.NewReader("hello")))
+	l := stream.NewLayer(ioutil.NopCloser(strings.NewReader("hello")))
 	rc, err := l.Compressed()
 	if err != nil {
 		t.Errorf("Compressed: %v", err)
@@ -198,13 +304,13 @@ func TestConsumed(t *testing.T) {
 		t.Errorf("Close: %v", err)
 	}
 
-	if _, err := l.Compressed(); err != ErrConsumed {
-		t.Errorf("Compressed() after consuming; got %v, want %v", err, ErrConsumed)
+	if _, err := l.Compressed(); err != stream.ErrConsumed {
+		t.Errorf("Compressed() after consuming; got %v, want %v", err, stream.ErrConsumed)
 	}
 }
 
 func TestMediaType(t *testing.T) {
-	l := NewLayer(ioutil.NopCloser(strings.NewReader("hello")))
+	l := stream.NewLayer(ioutil.NopCloser(strings.NewReader("hello")))
 	mediaType, err := l.MediaType()
 
 	if err != nil {
