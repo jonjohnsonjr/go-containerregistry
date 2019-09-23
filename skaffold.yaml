@@ -1,0 +1,11 @@
+apiVersion: skaffold/v1beta15
+kind: Config
+metadata:
+  name: go-containerregistry
+build:
+  artifacts:
+  - image: github.com/google/go-containerregistry/cmd/webcrane
+deploy:
+  kubectl:
+    manifests:
+    - cmd/webcrane/service.yaml

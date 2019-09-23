@@ -1,0 +1,8 @@
+{
+    "cloudcode.profile-cluster-map": {
+        "[default]": "gke_jonjohnson-test_us-central1-a_knative-test"
+    },
+    "cloudcode.profile-registry-map": {
+        "[default]": "gcr.io/jonjohnson-test"
+    }
+}
