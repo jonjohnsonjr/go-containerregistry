@@ -25,7 +25,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
-	"github.com/lucas-clemente/quic-go/http3"
+	"github.com/lucas-clemente/quic-go/h2quic"
 )
 
 // ListerOption is a functional option for List and Walk.
@@ -42,7 +42,7 @@ type lister struct {
 func newLister(repo name.Repository, options ...ListerOption) (*lister, error) {
 	l := &lister{
 		auth:      authn.Anonymous,
-		transport: &http3.RoundTripper{},
+		transport: &h2quic.RoundTripper{},
 		repo:      repo,
 	}
 

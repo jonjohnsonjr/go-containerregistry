@@ -21,7 +21,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/logs"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
-	"github.com/lucas-clemente/quic-go/http3"
+	"github.com/lucas-clemente/quic-go/h2quic"
 )
 
 // Option is a functional option for remote operations.
@@ -37,7 +37,7 @@ type options struct {
 func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
 	o := &options{
 		auth:      authn.Anonymous,
-		transport: &http3.RoundTripper{},
+		transport: &h2quic.RoundTripper{},
 		platform:  defaultPlatform,
 	}
 
