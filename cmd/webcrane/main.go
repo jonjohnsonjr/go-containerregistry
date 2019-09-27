@@ -15,6 +15,26 @@ import (
 	"github.com/gorilla/mux"
 )
 
+const welcomeMessage = `<html>
+<body>
+<p>This is a web version of <a href="https://github.com/google/go-containerregistry/blob/master/cmd/crane/doc/crane.md">crane</a></p>
+<p>It supports manifest, config, digest, ls, and export.</p>
+<p>Try it:
+<ul>
+	<li><a href="/ls/ubuntu">ls/ubuntu</a></li>
+	<li><a href="/manifest/ubuntu">manifest/ubuntu</a></li>
+	<li><a href="/config/ubuntu">config/ubuntu</a></li>
+	<li><a href="/digest/ubuntu">digest/ubuntu</a></li>
+	<li><a href="/export/ubuntu">export/ubuntu</a></li>
+</u>
+</p>
+</body>
+</html>`
+
+func welcome(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, welcomeMessage)
+}
+
 func craneHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	cmd := vars["command"]
@@ -78,6 +98,8 @@ func doCrane(w http.ResponseWriter, cmd, arg string) error {
 			}
 			fmt.Fprintf(w, "\n")
 		}
+	default:
+		fmt.Fprintf(w, welcomeMessage)
 	}
 	return nil
 }
@@ -92,6 +114,7 @@ func main() {
 	// TODO: dispatch based on domain
 	r := mux.NewRouter()
 	r.HandleFunc("/{command}/{arg:.*}", craneHandler)
+	r.HandleFunc("/", welcome)
 
 	port := os.Getenv("PORT")
 	if port == "" {
