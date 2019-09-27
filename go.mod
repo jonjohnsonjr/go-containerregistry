@@ -10,23 +10,20 @@ require (
 	github.com/aws/aws-sdk-go v1.15.90 // indirect
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible // indirect
 	github.com/docker/cli v0.0.0-20190925022749-754388324470
-	github.com/docker/distribution v2.6.0-rc.1.0.20180327202408-83389a148052+incompatible // indirect
+	github.com/docker/distribution v2.6.0-rc.1.0.20180327202408-83389a148052+incompatible
 	github.com/docker/docker v1.4.2-0.20180531152204-71cd53e4a197
 	github.com/docker/docker-credential-helpers v0.6.3 // indirect
 	github.com/docker/go-connections v0.4.0 // indirect
+	github.com/docker/go-metrics v0.0.1 // indirect
 	github.com/docker/go-units v0.3.3 // indirect
 	github.com/ghodss/yaml v1.0.0 // indirect
-	github.com/gogo/protobuf v1.1.1 // indirect
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b // indirect
 	github.com/google/btree v0.0.0-20180124185431-e89373fe6b4a // indirect
-	github.com/google/go-cmp v0.2.0
-	github.com/google/gofuzz v0.0.0-20170612174753-24818f796faf // indirect
+	github.com/google/go-cmp v0.3.0
 	github.com/googleapis/gnostic v0.2.2 // indirect
+	github.com/gorilla/mux v1.7.3 // indirect
 	github.com/gotestyourself/gotestyourself v2.2.0+incompatible // indirect
 	github.com/gregjones/httpcache v0.0.0-20180305231024-9cad4c3443a7 // indirect
-	github.com/json-iterator/go v0.0.0-20180701071628-ab8a2e0c74be // indirect
-	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
-	github.com/modern-go/reflect2 v0.0.0-20180701023420-4b7aa43c6742 // indirect
 	github.com/onsi/ginkgo v1.10.1 // indirect
 	github.com/onsi/gomega v1.7.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0-rc1 // indirect

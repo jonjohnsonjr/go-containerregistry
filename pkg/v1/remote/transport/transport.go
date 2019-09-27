@@ -17,7 +17,11 @@ package transport
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 
+	"github.com/docker/distribution/registry/client/auth"
+	"github.com/docker/distribution/registry/client/auth/challenge"
+	"github.com/docker/distribution/registry/client/transport"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 )
@@ -29,7 +33,7 @@ const (
 // New returns a new RoundTripper based on the provided RoundTripper that has been
 // setup to authenticate with the remote registry "reg", in the capacity
 // laid out by the specified scopes.
-func New(reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scopes []string) (http.RoundTripper, error) {
+func New(reg name.Registry, auther authn.Authenticator, t http.RoundTripper, scopes []string) (http.RoundTripper, error) {
 	// The handshake:
 	//  1. Use "t" to ping() the registry for the authentication challenge.
 	//
@@ -44,42 +48,96 @@ func New(reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scope
 
 	// First we ping the registry to determine the parameters of the authentication handshake
 	// (if one is even necessary).
-	pr, err := ping(reg, t)
-	if err != nil {
-		return nil, err
+	client := http.Client{Transport: t}
+
+	// This first attempts to use "https" for every request, falling back to http
+	// if the registry matches our localhost heuristic or if it is intentionally
+	// set to insecure via name.NewInsecureRegistry.
+	schemes := []string{"https"}
+	if reg.Scheme() == "http" {
+		schemes = append(schemes, "http")
 	}
 
-	switch pr.challenge.Canonical() {
-	case anonymous:
-		return t, nil
-	case basic:
-		return &basicTransport{inner: t, auth: auth, target: reg.RegistryStr()}, nil
-	case bearer:
-		// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
-		realm, ok := pr.parameters["realm"]
-		if !ok {
-			return nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.parameters)
+	var connErr error
+	for _, scheme := range schemes {
+		url := fmt.Sprintf("%s://%s/v2/", scheme, reg.Name())
+		resp, err := client.Get(url)
+		if err != nil {
+			connErr = err
+			// Potentially retry with http.
+			continue
 		}
-		service, ok := pr.parameters["service"]
-		if !ok {
-			// If the service parameter is not specified, then default it to the registry
-			// with which we are talking.
-			service = reg.String()
-		}
-		bt := &bearerTransport{
-			inner:    t,
-			basic:    auth,
-			realm:    realm,
-			registry: reg,
-			service:  service,
-			scopes:   scopes,
-			scheme:   pr.scheme,
-		}
-		if err := bt.refresh(); err != nil {
+		defer resp.Body.Close()
+
+		challengeManager := challenge.NewSimpleManager()
+		if err := challengeManager.AddResponse(resp); err != nil {
 			return nil, err
 		}
-		return bt, nil
-	default:
-		return nil, fmt.Errorf("unrecognized challenge: %s", pr.challenge)
+
+		authConfig, err := auther.Authorization()
+		if err != nil {
+			return nil, err
+		}
+		creds := loginCredentialStore{authConfig}
+
+		tokenHandlerOptions := auth.TokenHandlerOptions{
+			Transport:     t,
+			Credentials:   creds,
+			OfflineAccess: true,
+			ClientID:      transportName,
+			Scopes:        convertScopes(scopes),
+		}
+		tokenHandler := auth.NewTokenHandlerWithOptions(tokenHandlerOptions)
+		basicHandler := auth.NewBasicHandler(creds)
+		mod := auth.NewAuthorizer(challengeManager, tokenHandler, basicHandler)
+
+		return &remoteTransport{
+			inner: transport.NewTransport(t, mod),
+		}, nil
 	}
+	return nil, connErr
+}
+
+var _ http.RoundTripper = (*remoteTransport)(nil)
+
+type remoteTransport struct {
+	// Wrapped by remoteTransport.
+	inner http.RoundTripper
+}
+
+func (t *remoteTransport) RoundTrip(in *http.Request) (*http.Response, error) {
+	in.Header.Set("User-Agent", transportName)
+	return t.inner.RoundTrip(in)
+}
+
+type loginCredentialStore struct {
+	authConfig *authn.AuthConfig
+}
+
+func (lcs loginCredentialStore) Basic(*url.URL) (string, string) {
+	return lcs.authConfig.Username, lcs.authConfig.Password
+}
+
+func (lcs loginCredentialStore) RefreshToken(*url.URL, string) string {
+	return lcs.authConfig.IdentityToken
+}
+
+func (lcs loginCredentialStore) SetRefreshToken(_ *url.URL, _, token string) {
+	lcs.authConfig.IdentityToken = token
+}
+
+type stringer struct {
+	s string
+}
+
+func (s stringer) String() string {
+	return s.s
+}
+
+func convertScopes(ss []string) []auth.Scope {
+	stringers := make([]auth.Scope, len(ss))
+	for i, s := range ss {
+		stringers[i] = stringer{s}
+	}
+	return stringers
 }
