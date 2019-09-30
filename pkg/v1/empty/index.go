@@ -29,7 +29,7 @@ var Index = emptyIndex{}
 type emptyIndex struct{}
 
 func (i emptyIndex) MediaType() (types.MediaType, error) {
-	return types.OCIImageIndex, nil
+	return types.DockerManifestList, nil
 }
 
 func (i emptyIndex) Digest() (v1.Hash, error) {
@@ -59,5 +59,6 @@ func (i emptyIndex) ImageIndex(v1.Hash) (v1.ImageIndex, error) {
 func base() *v1.IndexManifest {
 	return &v1.IndexManifest{
 		SchemaVersion: 2,
+		MediaType:     types.DockerManifestList,
 	}
 }
