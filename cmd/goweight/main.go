@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 
 	"github.com/dustin/go-humanize"
 	"github.com/gorilla/mux"
@@ -54,6 +55,21 @@ const (
 </html>`
 )
 
+func init() {
+	tmp, err := template.New("goweight").Parse(templ)
+	if err != nil {
+		log.Fatal(err)
+	}
+	t = tmp
+	cache = make(map[string]*TemplateInput)
+}
+
+var (
+	work  sync.Map
+	cache map[string]*TemplateInput
+	t     *template.Template
+)
+
 type Entry struct {
 	Name      string
 	SizeHuman string
@@ -78,53 +94,73 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("skipping favicon.ico")
 		return
 	}
-	command := fmt.Sprintf("goweight %s", arg)
-	log.Printf(command)
 	if err := handle(w, arg); err != nil {
-		fmt.Fprintf(w, "%s: %v", command, err)
+		fmt.Fprintf(w, "%s: %v", arg, err)
 	}
 }
 
 func handle(w http.ResponseWriter, arg string) error {
-	cmd := exec.Command("go", "get", arg)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return err
+	// TODO: I'm pretty sure what I actually want is a channel.
+	v, ok := work.LoadOrStore(arg, &sync.Once{})
+	if ok {
+		log.Printf("cached %s", arg)
 	}
+	once, ok := v.(*sync.Once)
+	if !ok {
+		log.Fatal("something went very wrong: %s", arg)
+	}
+	var err error
+	once.Do(func() {
+		err = func() error {
+			log.Printf("go get %s", arg)
+			cmd := exec.Command("go", "get", arg)
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return err
+			}
 
-	weight := gw.NewGoWeight()
-	weight.BuildCmd = append(weight.BuildCmd, arg)
-	work := weight.BuildCurrent()
-	modules := weight.Process(work)
+			log.Printf("goweight %s", arg)
+			weight := gw.NewGoWeight()
+			weight.BuildCmd = append(weight.BuildCmd, arg)
+			work := weight.BuildCurrent()
+			modules := weight.Process(work)
 
-	if len(modules) == 0 {
-		return errors.New("no modules")
-	}
+			if len(modules) == 0 {
+				return errors.New("no modules")
+			}
 
-	max := modules[0].Size
-	total := uint64(0)
-	for _, module := range modules {
-		total += module.Size
-	}
+			max := modules[0].Size
+			total := uint64(0)
+			for _, module := range modules {
+				total += module.Size
+			}
 
-	input := TemplateInput{
-		Package: arg,
-		Total:   humanize.Bytes(total),
-		Entries: []Entry{},
-	}
-	for _, module := range modules {
-		input.Entries = append(input.Entries, Entry{
-			Name:      module.Name,
-			SizeHuman: module.SizeHuman,
-			Width:     100.0 * (float32(module.Size) / float32(max)),
-			Percent:   100.0 * (float32(module.Size) / float32(total)),
-		})
-		log.Printf("%8s %s\n", module.SizeHuman, module.Name)
-	}
-	t, err := template.New("goweight").Parse(templ)
+			input := TemplateInput{
+				Package: arg,
+				Total:   humanize.Bytes(total),
+				Entries: []Entry{},
+			}
+			for _, module := range modules {
+				input.Entries = append(input.Entries, Entry{
+					Name:      module.Name,
+					SizeHuman: module.SizeHuman,
+					Width:     100.0 * (float32(module.Size) / float32(max)),
+					Percent:   100.0 * (float32(module.Size) / float32(total)),
+				})
+				log.Printf("%8s %s\n", module.SizeHuman, module.Name)
+			}
+			cache[arg] = &input
+			return nil
+		}()
+	})
 	if err != nil {
 		return err
 	}
+	input, ok := cache[arg]
+	if !ok {
+		log.Fatal("something went very wrong: %s", arg)
+	}
+	log.Printf("rendering %s", arg)
 	if err := t.Execute(w, input); err != nil {
 		return err
 	}
