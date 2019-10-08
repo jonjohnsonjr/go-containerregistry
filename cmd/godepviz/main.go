@@ -1,55 +1,44 @@
 package main
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"sync"
 
-	"github.com/dustin/go-humanize"
 	"github.com/gorilla/mux"
-
-	gw "github.com/jondot/goweight/pkg"
 )
 
 const (
 	welcomeMessage = `<html>
 <body>
-<p>This is a web version of <a href="https://github.com/jondot/goweight">goweight</a></p>
+<p>This is a web version of <a href="https://github.com/kisielk/godepgraph">godepgraph</a></p>
 <p>Try it:
 <ul>
-	<li><a href="/github.com/jondot/goweight">github.com/jondot/goweight</a></li>
+	<li><a href="/github.com/kisielk/godepgraph">github.com/kisielk/godepgraph</a></li>
 </u>
 </p>
 </body>
 </html>`
 
+	// https://github.com/magjac/d3-graphviz
 	templ = `<html>
 <head>
-<style>
-.entry {
-	background-color: #eeeeee;
-	white-space: nowrap;
-	padding: .5em;
-	border: 1px solid black;
-	margin-top: -1px;
-}
-.wrapper {
-	margin-right: 1em;
-}
-</style>
 </head>
 <body>
 <h1>{{.Package}}</h1>
-<h2>Total: {{.Total}}</h2>
-<div class="wrapper">
-{{range .Entries}}
-<div class="entry" style="width: {{.Width}}%"><a href="https://godoc.org/{{.Name}}">{{.Name}}</a> {{.SizeHuman}} ({{printf "%.2f" .Percent}}%)</div>
-{{end}}
+<script src="//d3js.org/d3.v4.min.js"></script>
+<script src="http://viz-js.com/bower_components/viz.js/viz-lite.js"></script>
+<script src="https://github.com/magjac/d3-graphviz/releases/download/v0.0.4/d3-graphviz.min.js"></script>
+<div id="graph" style="text-align: center;"></div>
+<script>
+d3.select("#graph").graphviz().renderDot('{{.Dot}}');
+</script>
 </div>
 </body>
 </html>`
@@ -78,9 +67,8 @@ type Entry struct {
 }
 
 type TemplateInput struct {
-	Total   string
 	Package string
-	Entries []Entry
+	Dot     string
 }
 
 func welcome(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +87,13 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func kodata(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	arg := vars["arg"]
+	root := os.Getenv("KO_DATA_PATH")
+	http.ServeFile(w, r, path.Join(root, arg))
+}
+
 func handle(w http.ResponseWriter, arg string) error {
 	// TODO: I'm pretty sure what I actually want is a channel.
 	v, ok := work.LoadOrStore(arg, &sync.Once{})
@@ -107,7 +102,7 @@ func handle(w http.ResponseWriter, arg string) error {
 	}
 	once, ok := v.(*sync.Once)
 	if !ok {
-		log.Fatal("something went very wrong: %s", arg)
+		log.Fatalf("something went very wrong: %s", arg)
 	}
 	var err error
 	once.Do(func() {
@@ -119,37 +114,23 @@ func handle(w http.ResponseWriter, arg string) error {
 				return err
 			}
 
-			log.Printf("goweight %s", arg)
-			weight := gw.NewGoWeight()
-			weight.BuildCmd = append(weight.BuildCmd, arg)
-			work := weight.BuildCurrent()
-			modules := weight.Process(work)
-
-			if len(modules) == 0 {
-				return errors.New("no modules")
+			var buf bytes.Buffer
+			gdg := exec.Command("godepgraph", arg)
+			if err != nil {
+				return err
 			}
 
-			max := modules[0].Size
-			total := uint64(0)
-			for _, module := range modules {
-				total += module.Size
+			gdg.Stderr = os.Stderr
+			gdg.Stdout = &buf
+			log.Printf("godepgraph %s", arg)
+			if err := gdg.Run(); err != nil {
+				return err
 			}
 
-			input := TemplateInput{
+			cache[arg] = &TemplateInput{
 				Package: arg,
-				Total:   humanize.Bytes(total),
-				Entries: []Entry{},
+				Dot:     buf.String(),
 			}
-			for _, module := range modules {
-				input.Entries = append(input.Entries, Entry{
-					Name:      module.Name,
-					SizeHuman: module.SizeHuman,
-					Width:     100.0 * (float32(module.Size) / float32(max)),
-					Percent:   100.0 * (float32(module.Size) / float32(total)),
-				})
-				log.Printf("%8s %s\n", module.SizeHuman, module.Name)
-			}
-			cache[arg] = &input
 			return nil
 		}()
 	})
@@ -158,12 +139,13 @@ func handle(w http.ResponseWriter, arg string) error {
 	}
 	input, ok := cache[arg]
 	if !ok {
-		log.Fatal("something went very wrong: %s", arg)
+		log.Fatalf("something went very wrong: %s", arg)
 	}
 	log.Printf("rendering %s", arg)
 	if err := t.Execute(w, input); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -172,6 +154,7 @@ func main() {
 
 	// TODO: dispatch based on domain
 	r := mux.NewRouter()
+	r.HandleFunc("/kodata/{arg:.+}", kodata)
 	r.HandleFunc("/{arg:.+}", handler)
 	r.HandleFunc("/", welcome)
 

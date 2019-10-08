@@ -1,2 +1,3 @@
 baseImageOverrides:
   github.com/google/go-containerregistry/cmd/goweight: golang
+  github.com/google/go-containerregistry/cmd/godepviz: gcr.io/jonjohnson-test/godepviz-base
