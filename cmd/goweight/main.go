@@ -31,19 +31,25 @@ const (
 <head>
 <style>
 .entry {
-        background-color: #eeeeee;
-        white-space: nowrap;
+	background-color: #eeeeee;
+	white-space: nowrap;
 	padding: .5em;
 	border: 1px solid black;
+	margin-top: -1px;
+}
+.wrapper {
+	margin-right: 1em;
 }
 </style>
 </head>
 <body>
 <h1>{{.Package}}</h1>
 <h2>Total: {{.Total}}</h2>
+<div class="wrapper">
 {{range .Entries}}
 <div class="entry" style="width: {{.Width}}%"><a href="https://godoc.org/{{.Name}}">{{.Name}}</a> {{.SizeHuman}} ({{printf "%.2f" .Percent}}%)</div>
 {{end}}
+</div>
 </body>
 </html>`
 )
