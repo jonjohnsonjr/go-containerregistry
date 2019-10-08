@@ -1,0 +1,2 @@
+baseImageOverrides:
+  github.com/google/go-containerregistry/cmd/goweight: golang
