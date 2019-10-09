@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -82,7 +83,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("skipping favicon.ico")
 		return
 	}
-	if err := handle(w, arg); err != nil {
+	if err := handle(w, r, arg, r.URL.String()); err != nil {
 		fmt.Fprintf(w, "%s: %v", arg, err)
 	}
 }
@@ -94,9 +95,9 @@ func kodata(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path.Join(root, arg))
 }
 
-func handle(w http.ResponseWriter, arg string) error {
+func handle(w http.ResponseWriter, r *http.Request, arg, key string) error {
 	// TODO: I'm pretty sure what I actually want is a channel.
-	v, ok := work.LoadOrStore(arg, &sync.Once{})
+	v, ok := work.LoadOrStore(key, &sync.Once{})
 	if ok {
 		log.Printf("cached %s", arg)
 	}
@@ -114,20 +115,23 @@ func handle(w http.ResponseWriter, arg string) error {
 				return err
 			}
 
-			var buf bytes.Buffer
-			gdg := exec.Command("godepgraph", arg)
-			if err != nil {
-				return err
+			args := []string{}
+			for k, v := range r.URL.Query() {
+				args = append(args, fmt.Sprintf("-%s=%s", k, strings.Join(v, ",")))
 			}
+			args = append(args, arg)
 
+			gdg := exec.Command("godepgraph", args...)
+
+			var buf bytes.Buffer
 			gdg.Stderr = os.Stderr
 			gdg.Stdout = &buf
 			log.Printf("godepgraph %s", arg)
 			if err := gdg.Run(); err != nil {
-				return err
+				return fmt.Errorf("godepgraph %s: %v\nConsider using ?stoponerror=false", strings.Join(args, " "), err)
 			}
 
-			cache[arg] = &TemplateInput{
+			cache[key] = &TemplateInput{
 				Package: arg,
 				Dot:     buf.String(),
 			}
@@ -137,7 +141,7 @@ func handle(w http.ResponseWriter, arg string) error {
 	if err != nil {
 		return err
 	}
-	input, ok := cache[arg]
+	input, ok := cache[key]
 	if !ok {
 		log.Fatalf("something went very wrong: %s", arg)
 	}
