@@ -20,6 +20,11 @@ func (t *logTransport) RoundTrip(in *http.Request) (out *http.Response, err erro
 	// Inspired by: github.com/motemen/go-loghttp
 	logs.Debug.Printf("--> %s %s", in.Method, in.URL)
 	out, err = t.inner.RoundTrip(in)
-	logs.Debug.Printf("<-- %d %s", out.StatusCode, out.Request.URL)
+	if err != nil {
+		logs.Debug.Printf("<-- %v %s", err, in.URL)
+	}
+	if out != nil {
+		logs.Debug.Printf("<-- %d %s", out.StatusCode, out.Request.URL)
+	}
 	return
 }
