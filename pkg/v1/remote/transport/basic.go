@@ -15,7 +15,6 @@
 package transport
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/http"
 
@@ -48,10 +47,7 @@ func (bt *basicTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 				hdr := fmt.Sprintf("Bearer %s", bearer)
 				in.Header.Set("Authorization", hdr)
 			} else if user, pass := auth.Username, auth.Password; user != "" && pass != "" {
-				delimited := fmt.Sprintf("%s:%s", user, pass)
-				encoded := base64.StdEncoding.EncodeToString([]byte(delimited))
-				hdr := fmt.Sprintf("Basic %s", encoded)
-				in.Header.Set("Authorization", hdr)
+				in.SetBasicAuth(auth.Username, auth.Password)
 			} else if token := auth.Auth; token != "" {
 				hdr := fmt.Sprintf("Basic %s", token)
 				in.Header.Set("Authorization", hdr)
