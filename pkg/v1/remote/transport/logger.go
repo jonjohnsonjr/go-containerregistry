@@ -2,9 +2,14 @@ package transport
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/google/go-containerregistry/pkg/logs"
 )
+
+func init() {
+	logs.Debug.SetOutput(os.Stderr)
+}
 
 type logTransport struct {
 	inner http.RoundTripper
