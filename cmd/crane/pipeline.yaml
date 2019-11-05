@@ -1,0 +1,28 @@
+apiVersion: tekton.dev/v1alpha1
+kind: TaskRun
+metadata:
+  generateName: example-run-
+spec:
+  taskRef:
+    name: buildpacks-v3
+  inputs:
+    resources:
+    - name: source
+      resourceSpec:
+        type: git
+        params:
+        - name: url
+          value: https://github.com/jonjohnsonjr/go-containerregistry
+        - name: revision
+          value: buildpack-tekton
+    params:
+    - name: BUILDER_IMAGE
+      value: cloudfoundry/cnb:full
+  outputs:
+    resources:
+    - name: image
+      resourceSpec:
+        type: image
+        params:
+        - name: url
+          value: gcr.io/jonjohnson-test/buildpacks-test
