@@ -18,12 +18,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/internal/hosts"
 	"github.com/google/go-containerregistry/pkg/name"
 )
 
@@ -47,11 +47,6 @@ type bearerTransport struct {
 
 var _ http.RoundTripper = (*bearerTransport)(nil)
 
-var portMap = map[string]string{
-	"http":  "80",
-	"https": "443",
-}
-
 // RoundTrip implements http.RoundTripper
 func (bt *bearerTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 	sendRequest := func() (*http.Response, error) {
@@ -60,7 +55,7 @@ func (bt *bearerTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 		// we are redirected, only set it when the authorization header matches
 		// the registry with which we are interacting.
 		// In case of redirect http.Client can use an empty Host, check URL too.
-		if matchesHost(bt.registry, in, bt.scheme) {
+		if hosts.MatchRegistry(bt.registry, in, bt.scheme) {
 			auth, err := bt.bearer.Authorization()
 			if err != nil {
 				return nil, err
@@ -155,38 +150,6 @@ func (bt *bearerTransport) refresh() error {
 	// Replace our old bearer authenticator (if we had one) with our newly refreshed authenticator.
 	bt.bearer = &bearer
 	return nil
-}
-
-func matchesHost(reg name.Registry, in *http.Request, scheme string) bool {
-	canonicalHeaderHost := canonicalAddress(in.Host, scheme)
-	canonicalURLHost := canonicalAddress(in.URL.Host, scheme)
-	canonicalRegistryHost := canonicalAddress(reg.RegistryStr(), scheme)
-	return canonicalHeaderHost == canonicalRegistryHost || canonicalURLHost == canonicalRegistryHost
-}
-
-func canonicalAddress(host, scheme string) (address string) {
-	// The host may be any one of:
-	// - hostname
-	// - hostname:port
-	// - ipv4
-	// - ipv4:port
-	// - ipv6
-	// - [ipv6]:port
-	// As net.SplitHostPort returns an error if the host does not contain a port, we should only attempt
-	// to call it when we know that the address contains a port
-	if strings.Count(host, ":") == 1 || (strings.Count(host, ":") >= 2 && strings.Contains(host, "]:")) {
-		hostname, port, err := net.SplitHostPort(host)
-		if err != nil {
-			return host
-		}
-		if port == "" {
-			port = portMap[scheme]
-		}
-
-		return net.JoinHostPort(hostname, port)
-	}
-
-	return net.JoinHostPort(host, portMap[scheme])
 }
 
 // https://docs.docker.com/registry/spec/auth/oauth/
