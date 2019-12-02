@@ -34,8 +34,8 @@ const (
 <body>
 <h1>{{.Package}}</h1>
 <script src="//d3js.org/d3.v4.min.js"></script>
-<script src="http://viz-js.com/bower_components/viz.js/viz-lite.js"></script>
-<script src="https://github.com/magjac/d3-graphviz/releases/download/v0.0.4/d3-graphviz.min.js"></script>
+<script src="//viz-js.com/bower_components/viz.js/viz-lite.js"></script>
+<script src="//github.com/magjac/d3-graphviz/releases/download/v0.0.4/d3-graphviz.min.js"></script>
 <div id="graph" style="text-align: center;"></div>
 <script>
 d3.select("#graph").graphviz().renderDot('{{.Dot}}');
