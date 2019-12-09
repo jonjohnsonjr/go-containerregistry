@@ -18,8 +18,8 @@ const welcomeMessage = `<html>
 <p>It supports analyze and diff.</p>
 <p>Try it:
 <ul>
-	<li><a href="/analyze/ubuntu">analyze/ubuntu</a></li>
-	<li><a href="/diff/ubuntu+debian">diff/ubuntu+debian</a></li>
+	<li><a href="/ubuntu?type=apt">ubuntu?type=apt</a></li>
+	<li><a href="/debian?type=file">debian?type=file</a></li>
 </u>
 </p>
 </body>
@@ -81,8 +81,8 @@ func main() {
 	log.Print("Hello world sample started.")
 
 	r := mux.NewRouter()
-	r.HandleFunc("/{arg:.*}", handler)
 	r.HandleFunc("/", welcome)
+	r.HandleFunc("/{arg:.*}", handler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
