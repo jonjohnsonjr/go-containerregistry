@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/GoogleContainerTools/container-diff/differs"
 	"github.com/GoogleContainerTools/container-diff/pkg/util"
@@ -34,59 +33,46 @@ var (
 	tmpdir, _ = ioutil.TempDir("", "")
 )
 
-func diffHandler(w http.ResponseWriter, r *http.Request) {
+func handler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	cmd := vars["command"]
 	arg := vars["arg"]
-	command := fmt.Sprintf("container-diff %s %s", cmd, arg)
+	command := fmt.Sprintf("container-diff analyze %s", arg)
 	log.Printf(command)
-	if err := doDiff(w, r, cmd, arg); err != nil {
+	if err := analyze(w, r, arg); err != nil {
 		fmt.Fprintf(w, "%s: %v", command, err)
 	}
 }
 
-func doDiff(w http.ResponseWriter, r *http.Request, cmd, arg string) error {
+func analyze(w http.ResponseWriter, r *http.Request, arg string) error {
 	types := r.URL.Query()["type"]
 	if len(types) == 0 {
 		types = []string{"size"}
 	}
-	switch cmd {
-	case "analyze":
-		fmt.Fprintf(w, "container-diff analyze %s", arg)
-		analyzers, err := differs.GetAnalyzers(types)
-		if err != nil {
-			return err
-		}
-		if len(analyzers) == 0 {
-			return fmt.Errorf("no analyzers for %v", types)
-		}
-		img, err := util.GetImage(arg, true, tmpdir)
-		if err != nil {
-			return err
-		}
+	analyzers, err := differs.GetAnalyzers(types)
+	if err != nil {
+		return err
+	}
+	if len(analyzers) == 0 {
+		return fmt.Errorf("no analyzers for %v", types)
+	}
+	img, err := util.GetImage(arg, true, tmpdir)
+	if err != nil {
+		return err
+	}
 
-		req := differs.SingleRequest{
-			Image:        img,
-			AnalyzeTypes: analyzers,
-		}
+	req := differs.SingleRequest{
+		Image:        img,
+		AnalyzeTypes: analyzers,
+	}
 
-		analysis, err := req.GetAnalysis()
-		if err != nil {
+	analysis, err := req.GetAnalysis()
+	if err != nil {
+		return err
+	}
+	for k, result := range analysis {
+		if err := result.OutputText(w, k, ""); err != nil {
 			return err
 		}
-		for k, result := range analysis {
-			if err := result.OutputText(w, k, ""); err != nil {
-				return err
-			}
-		}
-	case "diff":
-		args := strings.Split(arg, "+")
-		if len(args) != 2 {
-			return fmt.Errorf("expected 2 args, got %v", args)
-		}
-		fmt.Fprintf(w, "container-diff diff %s %s", args[0], args[1])
-	default:
-		fmt.Fprintf(w, welcomeMessage)
 	}
 	return nil
 }
@@ -95,7 +81,7 @@ func main() {
 	log.Print("Hello world sample started.")
 
 	r := mux.NewRouter()
-	r.HandleFunc("/{command}/{arg:.*}", diffHandler)
+	r.HandleFunc("/{arg:.*}", handler)
 	r.HandleFunc("/", welcome)
 
 	port := os.Getenv("PORT")
