@@ -29,10 +29,6 @@ func welcome(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, welcomeMessage)
 }
 
-var (
-	tmpdir, _ = ioutil.TempDir("", "")
-)
-
 func handler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	arg := vars["arg"]
@@ -44,6 +40,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func analyze(w http.ResponseWriter, r *http.Request, arg string) error {
+	tmpdir, err := ioutil.TempDir("", "")
+	if err != nil {
+		return err
+	}
+
 	types := r.URL.Query()["type"]
 	if len(types) == 0 {
 		types = []string{"size"}
