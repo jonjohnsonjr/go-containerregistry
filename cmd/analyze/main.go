@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"html/template"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -12,14 +14,33 @@ import (
 	"github.com/gorilla/mux"
 )
 
-const welcomeMessage = `<html>
+var welcomeMessage string
+
+func init() {
+	analyzers := make([]string, 0, len(differs.Analyzers))
+	for k := range differs.Analyzers {
+		analyzers = append(analyzers, k)
+	}
+	type Data struct {
+		Analyzers []string
+	}
+	var buf bytes.Buffer
+	tmpl, err := template.New("manifestTemplate").Parse(welcomeTemplate)
+	if err != nil {
+		panic(err)
+	}
+	tmpl.Execute(&buf, Data{analyzers})
+	welcomeMessage = buf.String()
+}
+
+const welcomeTemplate = `<html>
 <body>
-<p>This is a web version of <a href="https://github.com/GoogleContainerTools/container-diff">container-diff</a></p>
-<p>It supports analyze and diff.</p>
+<p>This is a web version of a href="https://github.com/GoogleContainerTools/container-diff">container-diff analyze</a>.</p>
 <p>Try it:
 <ul>
-	<li><a href="/ubuntu?type=apt">ubuntu?type=apt</a></li>
-	<li><a href="/debian?type=file">debian?type=file</a></li>
+{{ range .Analyzers }}
+	<li><a href="/debian?type={{.}}">debian?type={{.}}</a></li>
+{{ end }}
 </u>
 </p>
 </body>
