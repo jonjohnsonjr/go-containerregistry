@@ -35,7 +35,7 @@ func init() {
 
 const welcomeTemplate = `<html>
 <body>
-<p>This is a web version of a href="https://github.com/GoogleContainerTools/container-diff">container-diff analyze</a>.</p>
+<p>This is a web version of <a href="https://github.com/GoogleContainerTools/container-diff">container-diff analyze</a>.</p>
 <p>Try it:
 <ul>
 {{ range .Analyzers }}
