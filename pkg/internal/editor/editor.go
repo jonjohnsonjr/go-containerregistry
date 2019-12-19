@@ -159,33 +159,6 @@ func tempFile(prefix, suffix string) (f *os.File, err error) {
 	return
 }
 
-// Launch opens the described or returns an error. The TTY will be protected, and
-// SIGQUIT, SIGTERM, and SIGINT will all be trapped.
-func (e Editor) Launch(path string) error {
-	if len(e.Args) == 0 {
-		return fmt.Errorf("no editor defined, can't open %s", path)
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-	args := e.args(abs)
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	logs.Debug.Printf("Opening file with editor %v", args)
-	if err := (term.TTY{In: os.Stdin, TryDev: true}).Safe(cmd.Run); err != nil {
-		if err, ok := err.(*exec.Error); ok {
-			if err.Err == exec.ErrNotFound {
-				return fmt.Errorf("unable to launch the editor %q", strings.Join(e.Args, " "))
-			}
-		}
-		return fmt.Errorf("there was a problem with the editor %q", strings.Join(e.Args, " "))
-	}
-	return nil
-}
-
 var letters = []rune("abcdefghijklmnopqrstuvwxyz0123456789")
 
 func randSeq(n int) string {
