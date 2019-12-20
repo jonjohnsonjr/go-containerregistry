@@ -18,13 +18,14 @@ require (
 	github.com/gorilla/mux v1.7.3 // indirect
 	github.com/konsorten/go-windows-terminal-sequences v1.0.2 // indirect
 	github.com/maxbrunsfeld/counterfeiter/v6 v6.2.2
+	github.com/mitchellh/go-wordwrap v1.0.0
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.0.1 // indirect
 	github.com/spf13/cobra v0.0.5
 	golang.org/x/lint v0.0.0-20191125180803-fdd1cda4f05f // indirect
 	golang.org/x/oauth2 v0.0.0-20190604053449-0f29369cfe45
 	golang.org/x/sync v0.0.0-20190423024810-112230192c58
-	golang.org/x/sys v0.0.0-20191010194322-b09406accb47 // indirect
+	golang.org/x/sys v0.0.0-20191010194322-b09406accb47
 	golang.org/x/tools v0.0.0-20191205215504-7b8c8591a921 // indirect
 	google.golang.org/grpc v1.24.0 // indirect
 	honnef.co/go/tools v0.0.1-2019.2.3 // indirect

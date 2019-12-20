@@ -11,9 +11,8 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/google/go-containerregistry/cmd/crane/internal/term"
 	"github.com/google/go-containerregistry/pkg/logs"
-
-	"k8s.io/kubectl/pkg/util/term"
 )
 
 const (

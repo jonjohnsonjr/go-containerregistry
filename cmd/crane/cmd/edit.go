@@ -27,8 +27,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"k8s.io/kubectl/pkg/cmd/util/editor"
-
+	"github.com/google/go-containerregistry/cmd/crane/internal/editor"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
