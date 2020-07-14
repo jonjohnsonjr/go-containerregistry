@@ -26,6 +26,9 @@ import (
 // setup to authenticate with the remote registry "reg", in the capacity
 // laid out by the specified scopes.
 func New(reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scopes []string) (http.RoundTripper, error) {
+	if t, ok := t.(*bearerTransport); ok {
+		return t, nil
+	}
 	// The handshake:
 	//  1. Use "t" to ping() the registry for the authentication challenge.
 	//
