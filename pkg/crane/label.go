@@ -1,4 +1,4 @@
-// Copyright 2018 Google LLC All Rights Reserved.
+// Copyright 2020 Google LLC All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,24 +17,24 @@ package crane
 import (
 	"fmt"
 
-	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 )
 
-// Load reads the tarball at path as a v1.Image.
-func Load(path string) (v1.Image, error) {
-	// TODO: Allow tag?
-	return tarball.ImageFromPath(path, nil)
-}
-
-// Push pushes the v1.Image img to a registry as dst.
-func Push(img v1.Image, dst string, opt ...Option) error {
-	o := makeOptions(opt...)
-	ref, err := name.ParseReference(dst, o.name...)
+// Label sets the labels on the given image.
+func Label(img v1.Image, labels map[string]string, opt ...Option) (v1.Image, error) {
+	cf, err := img.ConfigFile()
 	if err != nil {
-		return fmt.Errorf("parsing ref %q: %v", dst, err)
+		return nil, fmt.Errorf("getting config file: %v")
 	}
-	return remote.Write(ref, img, o.remote...)
+
+	if cf.Config.Labels == nil {
+		cf.Config.Labels = make(map[string]string)
+	}
+
+	for k, v := range labels {
+		cf.Config.Labels[k] = v
+	}
+
+	return mutate.ConfigFile(img, cf)
 }
