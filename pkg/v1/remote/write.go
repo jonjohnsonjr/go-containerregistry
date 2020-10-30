@@ -281,6 +281,33 @@ func (w *writer) streamBlob(blob io.ReadCloser, streamLocation string) (commitLo
 	return w.nextLocation(resp)
 }
 
+func (w *writer) monolithicUpload(blob io.ReadCloser, streamLocation, digest string, size int64) error {
+	defer blob.Close()
+
+	u, err := url.Parse(streamLocation)
+	if err != nil {
+		return err
+	}
+
+	v := u.Query()
+	v.Set("digest", digest)
+	u.RawQuery = v.Encode()
+
+	req, err := http.NewRequest(http.MethodPut, u.String(), blob)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = size
+
+	resp, err := w.client.Do(req.WithContext(w.context))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return transport.CheckError(resp, http.StatusNoContent, http.StatusAccepted, http.StatusCreated)
+}
+
 // commitBlob commits this blob by sending a PUT to the location returned from
 // streaming the blob.
 func (w *writer) commitBlob(location, digest string) error {
@@ -308,7 +335,7 @@ func (w *writer) commitBlob(location, digest string) error {
 
 // uploadOne performs a complete upload of a single layer.
 func (w *writer) uploadOne(l v1.Layer) error {
-	var from, mount string
+	var from, digest string
 	if h, err := l.Digest(); err == nil {
 		// If we know the digest, this isn't a streaming layer. Do an existence
 		// check so we can skip uploading the layer if possible.
@@ -321,7 +348,7 @@ func (w *writer) uploadOne(l v1.Layer) error {
 			return nil
 		}
 
-		mount = h.String()
+		digest = h.String()
 	}
 	if ml, ok := l.(*MountableLayer); ok {
 		if w.repo.RegistryStr() == ml.Reference.Context().RegistryStr() {
@@ -330,7 +357,7 @@ func (w *writer) uploadOne(l v1.Layer) error {
 	}
 
 	tryUpload := func() error {
-		location, mounted, err := w.initiateUpload(from, mount)
+		location, mounted, err := w.initiateUpload(from, digest)
 		if err != nil {
 			return err
 		} else if mounted {
@@ -346,19 +373,27 @@ func (w *writer) uploadOne(l v1.Layer) error {
 		if err != nil {
 			return err
 		}
-		location, err = w.streamBlob(blob, location)
-		if err != nil {
-			return err
-		}
 
-		h, err := l.Digest()
-		if err != nil {
-			return err
-		}
-		digest := h.String()
+		size, err := l.Size()
+		if err == nil && digest != "" {
+			if err := w.monolithicUpload(blob, location, digest, size); err != nil {
+				return err
+			}
+		} else {
+			location, err = w.streamBlob(blob, location)
+			if err != nil {
+				return err
+			}
 
-		if err := w.commitBlob(location, digest); err != nil {
-			return err
+			h, err := l.Digest()
+			if err != nil {
+				return err
+			}
+			digest = h.String()
+
+			if err := w.commitBlob(location, digest); err != nil {
+				return err
+			}
 		}
 		logs.Progress.Printf("pushed blob: %s", digest)
 		return nil
