@@ -17,15 +17,19 @@ package google
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/name"
 )
 
 // Keychain exports an instance of the google Keychain.
 var Keychain authn.Keychain = &googleKeychain{}
 
-type googleKeychain struct{}
+type googleKeychain struct {
+	once sync.Once
+	auth authn.Authenticator
+	err  error
+}
 
 // Resolve implements authn.Keychain a la docker-credential-gcr.
 //
@@ -48,12 +52,21 @@ type googleKeychain struct{}
 //
 // In general, we don't worry about that here because we expect to use the same
 // gcloud configuration in the scope of this one process.
-func (gk *googleKeychain) Resolve(reg name.Registry) (authn.Authenticator, error) {
-	// Only authenticate GCR so it works with authn.NewMultiKeychain to fallback.
-	if !strings.HasSuffix(reg.String(), "gcr.io") {
+func (gk *googleKeychain) Resolve(target authn.Resource) (authn.Authenticator, error) {
+	// Only authenticate GCR and AR so it works with authn.NewMultiKeychain to fallback.
+	host := target.RegistryStr()
+	if host != "gcr.io" && !strings.HasSuffix(host, ".gcr.io") && !strings.HasSuffix(host, ".pkg.dev") {
 		return authn.Anonymous, nil
 	}
 
+	gk.once.Do(func() {
+		gk.auth, gk.err = resolve()
+	})
+
+	return gk.auth, gk.err
+}
+
+func resolve() (authn.Authenticator, error) {
 	auth, envErr := NewEnvAuthenticator()
 	if envErr == nil {
 		return auth, nil

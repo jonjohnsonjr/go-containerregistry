@@ -6,23 +6,49 @@ language:
   - go
 
 go:
-  - "1.10"
-  - "1.11"
+  - "1.14"
+  - "1.15"
+
+env:
+  - "GO111MODULE=off"
+  - "GO111MODULE=on"
+
+os:
+  - windows
+  - linux
+
+jobs:
+  include:
+   - arch: amd64
+   - arch: arm
+   - arch: arm64
+   - arch: 386
+# Don't run all combos on Windows
+  exclude:
+    - os: windows
+      go: "1.14"
+    - os: windows
+      go: "1.15"
+      env: "GO111MODULE=off"
+
 
 git:
   depth: 1
+  autocrlf: input
 
-install: true
+go_import_path: github.com/google/go-containerregistry
+
+cache:
+  directories:
+    - $GOPATH/pkg/mod
+
+services:
+  - docker
 
 script:
-  # Verify that all source files are correctly formatted.
-  - find . -name "*.go" | grep -v vendor/ | xargs gofmt -d -e -l
-
-  - go clean -i
+  - ./hack/presubmit.sh
   - go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-
-  # Verify that generated crane docs are up-to-date.
-  - mkdir -p /tmp/gendoc && go run cmd/crane/help/main.go --dir /tmp/gendoc && diff -Naur /tmp/gendoc/ cmd/crane/doc/
+  - cmd/registry/test.sh
 
 after_success:
   - bash <(curl -s https://codecov.io/bash)

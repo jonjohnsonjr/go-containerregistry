@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/validate"
 )
 
 func TestManifestAndConfig(t *testing.T) {
@@ -39,6 +40,17 @@ func TestManifestAndConfig(t *testing.T) {
 	}
 	if len(config.History) != 1 {
 		t.Fatalf("history length should be 1, got %d", len(config.History))
+	}
+
+	if err := validate.Image(img); err != nil {
+		t.Errorf("Validate() = %v", err)
+	}
+}
+
+func TestNullManifest(t *testing.T) {
+	img, err := ImageFromPath("testdata/null_manifest.tar", nil)
+	if err == nil {
+		t.Fatalf("Error expected loading null image: %v", img)
 	}
 }
 
@@ -75,6 +87,10 @@ func TestBundleMultiple(t *testing.T) {
 			}
 			if _, err := img.Manifest(); err != nil {
 				t.Fatalf("Unexpected error loading manifest: %v", err)
+			}
+
+			if err := validate.Image(img); err != nil {
+				t.Errorf("Validate() = %v", err)
 			}
 		})
 	}

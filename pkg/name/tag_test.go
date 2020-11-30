@@ -15,6 +15,7 @@
 package name
 
 import (
+	"path"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,7 @@ func TestTagComponents(t *testing.T) {
 	testRegistry := "gcr.io"
 	testRepository := "project-id/image"
 	testTag := "latest"
+	fullRepo := path.Join(testRegistry, testRepository)
 
 	tagNameStr := testRegistry + "/" + testRepository + ":" + testTag
 	tag, err := NewTag(tagNameStr, StrictValidation)
@@ -98,6 +100,15 @@ func TestTagComponents(t *testing.T) {
 	actualTag := tag.TagStr()
 	if actualTag != testTag {
 		t.Errorf("TagStr() was incorrect for %v. Wanted: `%s` Got: `%s`", tag, testTag, actualTag)
+	}
+	if got, want := tag.Context().String(), fullRepo; got != want {
+		t.Errorf("Context.String() was incorrect for %v. Wanted: `%s` Got: `%s`", tag, want, got)
+	}
+	if got, want := tag.Identifier(), testTag; got != want {
+		t.Errorf("Identifier() was incorrect for %v. Wanted: `%s` Got: `%s`", tag, want, got)
+	}
+	if got, want := tag.String(), tagNameStr; got != want {
+		t.Errorf("String() was incorrect for %v. Wanted: `%s` Got: `%s`", tag, want, got)
 	}
 }
 
@@ -130,6 +141,20 @@ func TestAllDefaults(t *testing.T) {
 	}
 
 	expectedName := "index.docker.io/library/ubuntu:latest"
+	actualName := tag.Name()
+	if actualName != expectedName {
+		t.Errorf("Name() was incorrect for %v. Wanted: `%s` Got: `%s`", tag, expectedName, actualName)
+	}
+}
+
+func TestOverrideDefault(t *testing.T) {
+	tagNameStr := "ubuntu"
+	tag, err := NewTag(tagNameStr, WeakValidation, WithDefaultTag("other"))
+	if err != nil {
+		t.Fatalf("`%s` should be a valid Tag name, got error: %v", tagNameStr, err)
+	}
+
+	expectedName := "index.docker.io/library/ubuntu:other"
 	actualName := tag.Name()
 	if actualName != expectedName {
 		t.Errorf("Name() was incorrect for %v. Wanted: `%s` Got: `%s`", tag, expectedName, actualName)

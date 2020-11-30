@@ -43,8 +43,13 @@ func TestNewRegistryStrictValidation(t *testing.T) {
 	for _, name := range goodStrictValidationRegistryNames {
 		if registry, err := NewRegistry(name, StrictValidation); err != nil {
 			t.Errorf("`%s` should be a valid Registry name, got error: %v", name, err)
-		} else if registry.Name() != name {
-			t.Errorf("`%v` .Name() should reproduce the original name. Wanted: %s Got: %s", registry, name, registry.Name())
+		} else {
+			if registry.Name() != name {
+				t.Errorf("`%v` .Name() should reproduce the original name. Wanted: %s Got: %s", registry, name, registry.Name())
+			}
+			if registry.String() != name {
+				t.Errorf("`%v` .String() should reproduce the original name. Wanted: %s Got: %s", registry, name, registry.String())
+			}
 		}
 	}
 
@@ -99,6 +104,24 @@ func TestDefaultRegistryNames(t *testing.T) {
 		actualRegistry := registry.RegistryStr()
 		if actualRegistry != DefaultRegistry {
 			t.Errorf("RegistryStr() was incorrect for %v. Wanted: `%s` Got: `%s`", registry, DefaultRegistry, actualRegistry)
+		}
+	}
+}
+
+func TestOverrideDefaultRegistryNames(t *testing.T) {
+	testRegistries := []string{"docker.io", ""}
+	expectedRegistries := []string{"index.docker.io", "gcr.io"}
+	overrideDefault := "gcr.io"
+
+	for i, testRegistry := range testRegistries {
+		registry, err := NewRegistry(testRegistry, WeakValidation, WithDefaultRegistry(overrideDefault))
+		if err != nil {
+			t.Fatalf("`%s` should be a valid Registry name, got error: %v", testRegistry, err)
+		}
+
+		actualRegistry := registry.RegistryStr()
+		if actualRegistry != expectedRegistries[i] {
+			t.Errorf("RegistryStr() was incorrect for %v. Wanted: `%s` Got: `%s`", registry, expectedRegistries[i], actualRegistry)
 		}
 	}
 }

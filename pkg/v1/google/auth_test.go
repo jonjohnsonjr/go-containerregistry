@@ -15,14 +15,15 @@
 package google
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	"golang.org/x/oauth2"
 )
@@ -117,6 +118,10 @@ func TestGcloudErrors(t *testing.T) {
 }
 
 func TestGcloudSuccess(t *testing.T) {
+	// Stupid coverage to make sure it doesn't panic.
+	var b bytes.Buffer
+	logs.Debug.SetOutput(&b)
+
 	GetGcloudCmd = newGcloudCmdMock("success")
 
 	auth, err := NewGcloudAuthenticator()
@@ -129,7 +134,7 @@ func TestGcloudSuccess(t *testing.T) {
 		t.Fatalf("Authorization got error %v", err)
 	}
 
-	if want, got := "Bearer mytoken", token; want != got {
+	if got, want := token.Password, "mytoken"; got != want {
 		t.Errorf("wanted token %q, got %q", want, got)
 	}
 }
@@ -154,14 +159,30 @@ func TestKeychainDockerHub(t *testing.T) {
 	}
 }
 
-func TestKeychainGCR(t *testing.T) {
-	cases := []string{
-		"gcr.io",
-		"us.gcr.io",
-		"asia.gcr.io",
-		"eu.gcr.io",
-		"staging-k8s.gcr.io",
-		"global.gcr.io",
+func TestKeychainGCRandAR(t *testing.T) {
+	cases := []struct {
+		host       string
+		expectAuth bool
+	}{
+		// GCR hosts
+		{"gcr.io", true},
+		{"us.gcr.io", true},
+		{"eu.gcr.io", true},
+		{"asia.gcr.io", true},
+		{"staging-k8s.gcr.io", true},
+		{"global.gcr.io", true},
+		{"notgcr.io", false},
+		{"fake-gcr.io", false},
+		{"alsonot.gcr.iot", false},
+		// AR hosts
+		{"us-docker.pkg.dev", true},
+		{"asia-docker.pkg.dev", true},
+		{"europe-docker.pkg.dev", true},
+		{"us-central1-docker.pkg.dev", true},
+		{"us-docker-pkg.dev", false},
+		{"someotherpkg.dev", false},
+		{"looks-like-pkg.dev", false},
+		{"closeto.pkg.devops", false},
 	}
 
 	// Env should fail.
@@ -169,36 +190,33 @@ func TestKeychainGCR(t *testing.T) {
 		t.Fatalf("unexpected err os.Setenv: %v", err)
 	}
 
-	// Gcloud should succeed.
-	GetGcloudCmd = newGcloudCmdMock("success")
-
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("cases[%d]", i), func(t *testing.T) {
-			if auth, err := Keychain.Resolve(mustRegistry(tc)); err != nil {
-				t.Errorf("expected success, got: %v", err)
-			} else if auth == authn.Anonymous {
-				t.Errorf("expected not anonymous auth, got: %v", auth)
+			// Reset the keychain to ensure we don't cache earlier results.
+			Keychain = &googleKeychain{}
+
+			// Gcloud should succeed.
+			GetGcloudCmd = newGcloudCmdMock("success")
+
+			if auth, err := Keychain.Resolve(mustRegistry(tc.host)); err != nil {
+				t.Errorf("expected success for %v, got: %v", tc.host, err)
+			} else if tc.expectAuth && auth == authn.Anonymous {
+				t.Errorf("expected not anonymous auth for %v, got: %v", tc, auth)
+			} else if !tc.expectAuth && auth != authn.Anonymous {
+				t.Errorf("expected anonymous auth for %v, got: %v", tc, auth)
+			}
+
+			// Make gcloud fail to test that caching works.
+			GetGcloudCmd = newGcloudCmdMock("badoutput")
+
+			if auth, err := Keychain.Resolve(mustRegistry(tc.host)); err != nil {
+				t.Errorf("expected success for %v, got: %v", tc.host, err)
+			} else if tc.expectAuth && auth == authn.Anonymous {
+				t.Errorf("expected not anonymous auth for %v, got: %v", tc, auth)
+			} else if !tc.expectAuth && auth != authn.Anonymous {
+				t.Errorf("expected anonymous auth for %v, got: %v", tc, auth)
 			}
 		})
-	}
-}
-
-func TestKeychainEnv(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("unexpected err os.Getwd: %v", err)
-	}
-
-	keyFile := filepath.Join(wd, "testdata", "key.json")
-
-	if err := os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", keyFile); err != nil {
-		t.Fatalf("unexpected err os.Setenv: %v", err)
-	}
-
-	if auth, err := Keychain.Resolve(mustRegistry("gcr.io")); err != nil {
-		t.Errorf("expected success, got: %v", err)
-	} else if auth == authn.Anonymous {
-		t.Errorf("expected not anonymous auth, got: %v", auth)
 	}
 }
 
@@ -209,6 +227,8 @@ func TestKeychainError(t *testing.T) {
 
 	GetGcloudCmd = newGcloudCmdMock("badoutput")
 
+	// Reset the keychain to ensure we don't cache earlier results.
+	Keychain = &googleKeychain{}
 	if _, err := Keychain.Resolve(mustRegistry("gcr.io")); err == nil {
 		t.Fatalf("expected err, got: %v", err)
 	}
@@ -239,23 +259,5 @@ func TestNewEnvAuthenticatorFailure(t *testing.T) {
 	_, err := NewEnvAuthenticator()
 	if err == nil {
 		t.Errorf("expected err, got nil")
-	}
-}
-
-func TestNewEnvAuthenticatorSuccess(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("unexpected err os.Getwd: %v", err)
-	}
-
-	keyFile := filepath.Join(wd, "testdata", "key.json")
-
-	if err := os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", keyFile); err != nil {
-		t.Fatalf("unexpected err os.Setenv: %v", err)
-	}
-
-	_, err = NewEnvAuthenticator()
-	if err != nil {
-		t.Fatalf("unexpected err NewEnvAuthenticator: %v", err)
 	}
 }

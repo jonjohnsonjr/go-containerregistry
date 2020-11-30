@@ -15,21 +15,21 @@
 package main
 
 import (
+	"context"
 	"log"
 
+	"github.com/google/go-containerregistry/pkg/authn/k8schain"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-
-	"github.com/google/go-containerregistry/pkg/authn/k8schain"
 )
 
 func main() {
-	kc, err := k8schain.NewInCluster(k8schain.Options{})
+	kc, err := k8schain.NewInCluster(context.Background(), k8schain.Options{})
 	if err != nil {
 		log.Fatalf("k8schain.New() = %v", err)
 	}
 
-	ref, err := name.ParseReference("ubuntu:latest", name.WeakValidation)
+	ref, err := name.ParseReference("ubuntu:latest")
 	if err != nil {
 		log.Fatalf("ParseReference() = %v", err)
 	}

@@ -15,21 +15,21 @@
 package main
 
 import (
+	"context"
 	"log"
 
+	"github.com/google/go-containerregistry/pkg/authn/k8schain"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-
-	"github.com/google/go-containerregistry/pkg/authn/k8schain"
 )
 
 func main() {
-	ref, err := name.NewTag("gcr.io/build-crd-testing/secret-sauce:latest", name.WeakValidation)
+	ref, err := name.NewTag("gcr.io/build-crd-testing/secret-sauce:latest")
 	if err != nil {
 		log.Fatalf("NewTag() = %v", err)
 	}
 
-	kc, err := k8schain.NewInCluster(k8schain.Options{
+	kc, err := k8schain.NewInCluster(context.Background(), k8schain.Options{
 		Namespace: "explicit-namespace",
 		ImagePullSecrets: []string{
 			"explicit-secret",

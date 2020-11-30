@@ -15,6 +15,9 @@
 package transport
 
 import (
+	"errors"
+	"fmt"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -30,26 +33,39 @@ var (
 )
 
 func TestTransportSelectionAnonymous(t *testing.T) {
-	server := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
-	defer server.Close()
-	tprt := &http.Transport{
-		Proxy: func(req *http.Request) (*url.URL, error) {
-			return url.Parse(server.URL)
-		},
+	// Record the requests we get in the inner transport.
+	cannedResponse := http.Response{
+		Status:     http.StatusText(http.StatusOK),
+		StatusCode: http.StatusOK,
+		Body:       ioutil.NopCloser(strings.NewReader("")),
 	}
+	recorder := newRecorder(&cannedResponse, nil)
 
 	basic := &authn.Basic{Username: "foo", Password: "bar"}
+	reg := testReference.Context().Registry
 
-	tp, err := New(testReference.Context().Registry, basic, tprt, []string{testReference.Scope(PullScope)})
+	tp, err := New(reg, basic, recorder, []string{testReference.Scope(PullScope)})
 	if err != nil {
 		t.Errorf("New() = %v", err)
 	}
-	// We should get back an unmodified transport
-	if tp != tprt {
-		t.Errorf("New(); got %v, want %v", tp, tprt)
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/v2/anything", reg), nil)
+	if err != nil {
+		t.Fatalf("Unexpected error during NewRequest: %v", err)
+	}
+	if _, err := tp.RoundTrip(req); err != nil {
+		t.Fatalf("Unexpected error during RoundTrip: %v", err)
+	}
+
+	if got, want := len(recorder.reqs), 2; got != want {
+		t.Fatalf("expected %d requests, got %d", want, got)
+	}
+	recorded := recorder.reqs[1]
+	if got, want := recorded.URL.Scheme, "https"; got != want {
+		t.Errorf("wrong scheme, want %s got %s", want, got)
+	}
+	if want, got := recorded.Header.Get("User-Agent"), transportName; want != got {
+		t.Errorf("wrong useragent, want %s got %s", want, got)
 	}
 }
 
@@ -74,6 +90,30 @@ func TestTransportSelectionBasic(t *testing.T) {
 	}
 	if _, ok := tp.(*basicTransport); !ok {
 		t.Errorf("New(); got %T, want *basicTransport", tp)
+	}
+}
+
+type badAuth struct{}
+
+func (a *badAuth) Authorization() (*authn.AuthConfig, error) {
+	return nil, errors.New("sorry dave, I'm afraid I can't let you do that")
+}
+
+func TestTransportBadAuth(t *testing.T) {
+	server := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="http://foo.io"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		}))
+	defer server.Close()
+	tprt := &http.Transport{
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			return url.Parse(server.URL)
+		},
+	}
+
+	if _, err := New(testReference.Context().Registry, &badAuth{}, tprt, []string{testReference.Scope(PullScope)}); err == nil {
+		t.Errorf("New() expected err, got nil")
 	}
 }
 

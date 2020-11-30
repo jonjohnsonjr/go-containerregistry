@@ -15,6 +15,7 @@
 package transport
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -83,7 +84,7 @@ func TestPingNoChallenge(t *testing.T) {
 		},
 	}
 
-	pr, err := ping(testRegistry, tprt)
+	pr, err := ping(context.Background(), testRegistry, tprt)
 	if err != nil {
 		t.Errorf("ping() = %v", err)
 	}
@@ -108,7 +109,7 @@ func TestPingBasicChallengeNoParams(t *testing.T) {
 		},
 	}
 
-	pr, err := ping(testRegistry, tprt)
+	pr, err := ping(context.Background(), testRegistry, tprt)
 	if err != nil {
 		t.Errorf("ping() = %v", err)
 	}
@@ -123,7 +124,7 @@ func TestPingBasicChallengeNoParams(t *testing.T) {
 func TestPingBearerChallengeWithParams(t *testing.T) {
 	server := httptest.NewServer(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="http://auth.foo.io/token`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="http://auth.example.com/token"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		}))
 	defer server.Close()
@@ -133,7 +134,7 @@ func TestPingBearerChallengeWithParams(t *testing.T) {
 		},
 	}
 
-	pr, err := ping(testRegistry, tprt)
+	pr, err := ping(context.Background(), testRegistry, tprt)
 	if err != nil {
 		t.Errorf("ping() = %v", err)
 	}
@@ -148,7 +149,7 @@ func TestPingBearerChallengeWithParams(t *testing.T) {
 func TestUnsupportedStatus(t *testing.T) {
 	server := httptest.NewServer(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="http://auth.foo.io/token`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="http://auth.example.com/token`)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 		}))
 	defer server.Close()
@@ -158,7 +159,7 @@ func TestUnsupportedStatus(t *testing.T) {
 		},
 	}
 
-	pr, err := ping(testRegistry, tprt)
+	pr, err := ping(context.Background(), testRegistry, tprt)
 	if err == nil {
 		t.Errorf("ping() = %v", pr)
 	}
@@ -194,7 +195,7 @@ func TestPingHttpFallback(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		pr, err := ping(test.reg, tprt)
+		pr, err := ping(context.Background(), test.reg, tprt)
 		if err == nil {
 			t.Errorf("ping() = %v", pr)
 		}
@@ -207,7 +208,7 @@ func TestPingHttpFallback(t *testing.T) {
 }
 
 func mustRegistry(r string) name.Registry {
-	reg, err := name.NewRegistry(r, name.WeakValidation)
+	reg, err := name.NewRegistry(r)
 	if err != nil {
 		panic(err)
 	}
@@ -215,7 +216,7 @@ func mustRegistry(r string) name.Registry {
 }
 
 func mustInsecureRegistry(r string) name.Registry {
-	reg, err := name.NewInsecureRegistry(r, name.WeakValidation)
+	reg, err := name.NewRegistry(r, name.Insecure)
 	if err != nil {
 		panic(err)
 	}

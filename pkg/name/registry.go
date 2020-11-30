@@ -21,12 +21,6 @@ import (
 	"strings"
 )
 
-const (
-	// DefaultRegistry is Docker Hub, assumed when a hostname is omitted.
-	DefaultRegistry      = "index.docker.io"
-	defaultRegistryAlias = "docker.io"
-)
-
 // Detect more complex forms of local references.
 var reLocal = regexp.MustCompile(`.*\.local(?:host)?(?::\d{1,5})?$`)
 
@@ -44,10 +38,7 @@ type Registry struct {
 
 // RegistryStr returns the registry component of the Registry.
 func (r Registry) RegistryStr() string {
-	if r.registry != "" {
-		return r.registry
-	}
-	return DefaultRegistry
+	return r.registry
 }
 
 // Name returns the name from which the Registry was derived.
@@ -114,8 +105,9 @@ func checkRegistry(name string) error {
 
 // NewRegistry returns a Registry based on the given name.
 // Strict validation requires explicit, valid RFC 3986 URI authorities to be given.
-func NewRegistry(name string, strict Strictness) (Registry, error) {
-	if strict == StrictValidation && len(name) == 0 {
+func NewRegistry(name string, opts ...Option) (Registry, error) {
+	opt := makeOptions(opts...)
+	if opt.strict && len(name) == 0 {
 		return Registry{}, NewErrBadName("strict validation requires the registry to be explicitly defined")
 	}
 
@@ -123,22 +115,22 @@ func NewRegistry(name string, strict Strictness) (Registry, error) {
 		return Registry{}, err
 	}
 
+	if name == "" {
+		name = opt.defaultRegistry
+	}
 	// Rewrite "docker.io" to "index.docker.io".
 	// See: https://github.com/google/go-containerregistry/issues/68
 	if name == defaultRegistryAlias {
 		name = DefaultRegistry
 	}
 
-	return Registry{registry: name}, nil
+	return Registry{registry: name, insecure: opt.insecure}, nil
 }
 
 // NewInsecureRegistry returns an Insecure Registry based on the given name.
-// Strict validation requires explicit, valid RFC 3986 URI authorities to be given.
-func NewInsecureRegistry(name string, strict Strictness) (Registry, error) {
-	reg, err := NewRegistry(name, strict)
-	if err != nil {
-		return Registry{}, err
-	}
-	reg.insecure = true
-	return reg, nil
+//
+// Deprecated: Use the Insecure Option with NewRegistry instead.
+func NewInsecureRegistry(name string, opts ...Option) (Registry, error) {
+	opts = append(opts, Insecure)
+	return NewRegistry(name, opts...)
 }

@@ -26,6 +26,7 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
 func TestStreamVsBuffer(t *testing.T) {
@@ -82,6 +83,25 @@ func TestStreamVsBuffer(t *testing.T) {
 		t.Errorf("Size: %v", err)
 	} else if s != wantSize {
 		t.Errorf("stream Size got %d, want %d", s, wantSize)
+	}
+
+	// Test with different compression
+	l2 := NewLayer(newBlob(), WithCompressionLevel(2))
+	l2WantDigest := "sha256:c9afe7b0da6783232e463e12328cb306142548384accf3995806229c9a6a707f"
+	if c, err := l2.Compressed(); err != nil {
+		t.Errorf("Compressed: %v", err)
+	} else {
+		if _, err := io.Copy(ioutil.Discard, c); err != nil {
+			t.Errorf("error reading Compressed: %v", err)
+		}
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
+	if d, err := l2.Digest(); err != nil {
+		t.Errorf("Digest: %v", err)
+	} else if d.String() != l2WantDigest {
+		t.Errorf("stream Digest got %q, want %q", d.String(), l2WantDigest)
 	}
 }
 
@@ -199,5 +219,18 @@ func TestConsumed(t *testing.T) {
 
 	if _, err := l.Compressed(); err != ErrConsumed {
 		t.Errorf("Compressed() after consuming; got %v, want %v", err, ErrConsumed)
+	}
+}
+
+func TestMediaType(t *testing.T) {
+	l := NewLayer(ioutil.NopCloser(strings.NewReader("hello")))
+	mediaType, err := l.MediaType()
+
+	if err != nil {
+		t.Fatalf("MediaType(): %v", err)
+	}
+
+	if got, want := mediaType, types.DockerLayer; got != want {
+		t.Errorf("MediaType(): want %q, got %q", want, got)
 	}
 }

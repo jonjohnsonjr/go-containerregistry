@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mutate
+package mutate_test
 
 import (
 	"archive/tar"
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -30,8 +29,13 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/stream"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/google/go-containerregistry/pkg/v1/validate"
 )
 
 func TestExtractWhiteout(t *testing.T) {
@@ -41,7 +45,7 @@ func TestExtractWhiteout(t *testing.T) {
 	}
 	tarPath, _ := filepath.Abs("img.tar")
 	defer os.Remove(tarPath)
-	tr := tar.NewReader(Extract(img))
+	tr := tar.NewReader(mutate.Extract(img))
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -61,7 +65,7 @@ func TestExtractOverwrittenFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error loading image: %v", err)
 	}
-	tr := tar.NewReader(Extract(img))
+	tr := tar.NewReader(mutate.Extract(img))
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -80,7 +84,7 @@ func TestExtractOverwrittenFile(t *testing.T) {
 
 // TestExtractError tests that if there are any errors encountered
 func TestExtractError(t *testing.T) {
-	rc := Extract(invalidImage{})
+	rc := mutate.Extract(invalidImage{})
 	if _, err := io.Copy(ioutil.Discard, rc); err == nil {
 		t.Errorf("rc.Read; got nil error")
 	} else if !strings.Contains(err.Error(), errInvalidImage.Error()) {
@@ -91,7 +95,7 @@ func TestExtractError(t *testing.T) {
 // TestExtractPartialRead tests that the reader can be partially read (e.g.,
 // tar headers) and closed without error.
 func TestExtractPartialRead(t *testing.T) {
-	rc := Extract(invalidImage{})
+	rc := mutate.Extract(invalidImage{})
 	if _, err := io.Copy(ioutil.Discard, io.LimitReader(rc, 1)); err != nil {
 		t.Errorf("Could not read one byte from reader")
 	}
@@ -111,34 +115,10 @@ func (invalidImage) Layers() ([]v1.Layer, error) {
 	return nil, errInvalidImage
 }
 
-func TestWhiteoutDir(t *testing.T) {
-	fsMap := map[string]bool{
-		"baz":      true,
-		"red/blue": true,
-	}
-	var tests = []struct {
-		path     string
-		whiteout bool
-	}{
-		{"usr/bin", false},
-		{"baz/foo.txt", true},
-		{"baz/bar/foo.txt", true},
-		{"red/green", false},
-		{"red/yellow.txt", false},
-	}
-
-	for _, tt := range tests {
-		whiteout := inWhiteoutDir(fsMap, tt.path)
-		if whiteout != tt.whiteout {
-			t.Errorf("Whiteout %s: expected %v, but got %v", tt.path, tt.whiteout, whiteout)
-		}
-	}
-}
-
 func TestNoopCondition(t *testing.T) {
 	source := sourceImage(t)
 
-	result, err := AppendLayers(source, []v1.Layer{}...)
+	result, err := mutate.AppendLayers(source, []v1.Layer{}...)
 	if err != nil {
 		t.Fatalf("Unexpected error creating a writable image: %v", err)
 	}
@@ -152,17 +132,24 @@ func TestNoopCondition(t *testing.T) {
 	}
 }
 
-func TestAppendWithHistory(t *testing.T) {
+func TestAppendWithAddendum(t *testing.T) {
 	source := sourceImage(t)
 
-	addendum := Addendum{
+	addendum := mutate.Addendum{
 		Layer: mockLayer{},
 		History: v1.History{
 			Author: "dave",
 		},
+		URLs: []string{
+			"example.com",
+		},
+		Annotations: map[string]string{
+			"foo": "bar",
+		},
+		MediaType: types.MediaType("foo"),
 	}
 
-	result, err := Append(source, addendum)
+	result, err := mutate.Append(source, addendum)
 	if err != nil {
 		t.Fatalf("failed to append: %v", err)
 	}
@@ -182,11 +169,31 @@ func TestAppendWithHistory(t *testing.T) {
 	if diff := cmp.Diff(cf.History[1], addendum.History); diff != "" {
 		t.Fatalf("the appended history is not the same (-got, +want) %s", diff)
 	}
+
+	m, err := result.Manifest()
+	if err != nil {
+		t.Fatalf("failed to get manifest: %v", err)
+	}
+
+	if diff := cmp.Diff(m.Layers[1].URLs, addendum.URLs); diff != "" {
+		t.Fatalf("the appended URLs is not the same (-got, +want) %s", diff)
+	}
+
+	if diff := cmp.Diff(m.Layers[1].Annotations, addendum.Annotations); diff != "" {
+		t.Fatalf("the appended Annotations is not the same (-got, +want) %s", diff)
+	}
+	if diff := cmp.Diff(m.Layers[1].MediaType, addendum.MediaType); diff != "" {
+		t.Fatalf("the appended MediaType is not the same (-got, +want) %s", diff)
+	}
 }
 
 func TestAppendLayers(t *testing.T) {
 	source := sourceImage(t)
-	result, err := AppendLayers(source, mockLayer{})
+	layer, err := random.Layer(100, types.DockerLayer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := mutate.AppendLayers(source, layer)
 	if err != nil {
 		t.Fatalf("failed to append a layer: %v", err)
 	}
@@ -210,13 +217,13 @@ func TestAppendLayers(t *testing.T) {
 			"- got size %d; expected 2", len(layers))
 	}
 
-	if diff := cmp.Diff(layers[1], mockLayer{}); diff != "" {
-		t.Fatalf("correct layer was not appended (-got, +want) %v", diff)
+	if layers[1] != layer {
+		t.Errorf("correct layer was not appended: got %v; want %v", layers[1], layer)
 	}
 
-	assertLayerOrderMatchesConfig(t, result)
-	assertLayerOrderMatchesManifest(t, result)
-	assertQueryingForLayerSucceeds(t, result, layers[1])
+	if err := validate.Image(result); err != nil {
+		t.Errorf("validate.Image() = %v", err)
+	}
 }
 
 func TestMutateConfig(t *testing.T) {
@@ -228,7 +235,7 @@ func TestMutateConfig(t *testing.T) {
 
 	newEnv := []string{"foo=bar"}
 	cfg.Config.Env = newEnv
-	result, err := Config(source, cfg.Config)
+	result, err := mutate.Config(source, cfg.Config)
 	if err != nil {
 		t.Fatalf("failed to mutate a config: %v", err)
 	}
@@ -249,17 +256,19 @@ func TestMutateConfig(t *testing.T) {
 		t.Errorf("mutating the config MUST mutate the config digest")
 	}
 
-	assertAccurateManifestConfigDigest(t, result)
-
 	if !reflect.DeepEqual(cfg.Config.Env, newEnv) {
 		t.Errorf("incorrect environment set %v!=%v", cfg.Config.Env, newEnv)
+	}
+
+	if err := validate.Image(result); err != nil {
+		t.Errorf("validate.Image() = %v", err)
 	}
 }
 
 func TestMutateCreatedAt(t *testing.T) {
 	source := sourceImage(t)
 	want := time.Now().Add(-2 * time.Minute)
-	result, err := CreatedAt(source, v1.Time{want})
+	result, err := mutate.CreatedAt(source, v1.Time{Time: want})
 	if err != nil {
 		t.Fatalf("CreatedAt: %v", err)
 	}
@@ -277,7 +286,7 @@ func TestMutateCreatedAt(t *testing.T) {
 func TestMutateTime(t *testing.T) {
 	source := sourceImage(t)
 	want := time.Time{}
-	result, err := Time(source, want)
+	result, err := mutate.Time(source, want)
 	if err != nil {
 		t.Fatalf("failed to mutate a config: %v", err)
 	}
@@ -292,24 +301,78 @@ func TestMutateTime(t *testing.T) {
 	}
 }
 
-func TestLayerTime(t *testing.T) {
-	source := sourceImage(t)
-	layers := getLayers(t, source)
-	expectedTime := time.Date(1970, time.January, 1, 0, 0, 1, 0, time.UTC)
-	fmt.Printf("expectedTime %v", expectedTime)
+func TestMutateMediaType(t *testing.T) {
+	want := types.OCIManifestSchema1
+	img := mutate.MediaType(empty.Image, want)
+	got, err := img.MediaType()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != got {
+		t.Errorf("%q != %q", want, got)
+	}
+	manifest, err := img.Manifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.MediaType != "" {
+		t.Errorf("MediaType should not be set for OCI media types: %v", manifest.MediaType)
+	}
 
-	for _, layer := range layers {
-		result, err := layerTime(layer, expectedTime)
-		if err != nil {
-			t.Fatalf("setting layer time failed: %v", err)
-		}
+	want = types.DockerManifestSchema2
+	img = mutate.MediaType(img, want)
+	got, err = img.MediaType()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != got {
+		t.Errorf("%q != %q", want, got)
+	}
+	manifest, err = img.Manifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.MediaType != want {
+		t.Errorf("MediaType should be set for Docker media types: %v", manifest.MediaType)
+	}
 
-		assertMTime(t, result, expectedTime)
+	want = types.OCIImageIndex
+	idx := mutate.IndexMediaType(empty.Index, want)
+	got, err = idx.MediaType()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != got {
+		t.Errorf("%q != %q", want, got)
+	}
+	im, err := idx.IndexManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if im.MediaType != "" {
+		t.Errorf("MediaType should not be set for OCI media types: %v", im.MediaType)
+	}
+
+	want = types.DockerManifestList
+	idx = mutate.IndexMediaType(idx, want)
+	got, err = idx.MediaType()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != got {
+		t.Errorf("%q != %q", want, got)
+	}
+	im, err = idx.IndexManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if im.MediaType != want {
+		t.Errorf("MediaType should be set for Docker media types: %v", im.MediaType)
 	}
 }
 
 func TestAppendStreamableLayer(t *testing.T) {
-	img, err := AppendLayers(
+	img, err := mutate.AppendLayers(
 		sourceImage(t),
 		stream.NewLayer(ioutil.NopCloser(strings.NewReader(strings.Repeat("a", 100)))),
 		stream.NewLayer(ioutil.NopCloser(strings.NewReader(strings.Repeat("b", 100)))),
@@ -369,11 +432,57 @@ func TestAppendStreamableLayer(t *testing.T) {
 	if err != nil {
 		t.Errorf("Digest: %v", err)
 	}
-	wantDigest := "sha256:5fa010d1a9ab2cf0125a53087aed97aa327dc845123702cb2a52c844f19cc36b"
+	wantDigest := "sha256:14d140947afedc6901b490265a08bc8ebe7f9d9faed6fdf19a451f054a7dd746"
 	if h.String() != wantDigest {
 		t.Errorf("Image digest got %q, want %q", h, wantDigest)
 	}
+}
 
+func TestCanonical(t *testing.T) {
+	source := sourceImage(t)
+	img, err := mutate.Canonical(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceCf, err := source.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want, got string
+	want = cf.Architecture
+	got = sourceCf.Architecture
+	if want != got {
+		t.Errorf("%q != %q", want, got)
+	}
+	want = cf.OS
+	got = sourceCf.OS
+	if want != got {
+		t.Errorf("%q != %q", want, got)
+	}
+	want = cf.OSVersion
+	got = sourceCf.OSVersion
+	if want != got {
+		t.Errorf("%q != %q", want, got)
+	}
+	for _, s := range []string{
+		cf.Container,
+		cf.Config.Hostname,
+		cf.DockerVersion,
+	} {
+		if s != "" {
+			t.Errorf("non-zeroed string: %v", s)
+		}
+	}
+
+	expectedLayerTime := time.Unix(0, 0)
+	layers := getLayers(t, img)
+	for _, layer := range layers {
+		assertMTime(t, layer, expectedLayerTime)
+	}
 }
 
 func assertMTime(t *testing.T, layer v1.Layer, expectedTime time.Time) {
@@ -397,38 +506,6 @@ func assertMTime(t *testing.T, layer v1.Layer, expectedTime time.Time) {
 		if mtime.Equal(expectedTime) == false {
 			t.Errorf("unexpected mod time for layer. expected %v, got %v.", expectedTime, mtime)
 		}
-	}
-
-}
-func assertQueryingForLayerSucceeds(t *testing.T, image v1.Image, layer v1.Layer) {
-	t.Helper()
-
-	queryTestCases := []struct {
-		name          string
-		expectedLayer v1.Layer
-		hash          func() (v1.Hash, error)
-		query         func(v1.Hash) (v1.Layer, error)
-	}{
-		{"digest", layer, layer.Digest, image.LayerByDigest},
-		{"diff id", layer, layer.DiffID, image.LayerByDiffID},
-	}
-
-	for _, tc := range queryTestCases {
-		t.Run(fmt.Sprintf("layer by %s", tc.name), func(t *testing.T) {
-			hash, err := tc.hash()
-			if err != nil {
-				t.Fatalf("Unable to fetch %s for layer: %v", tc.name, err)
-			}
-
-			gotLayer, err := tc.query(hash)
-			if err != nil {
-				t.Fatalf("Unable to fetch layer from %s: %v", tc.name, err)
-			}
-
-			if gotLayer != tc.expectedLayer {
-				t.Fatalf("Querying layer using %s does not return the expected layer %+v %+v", tc.name, gotLayer, tc.expectedLayer)
-			}
-		})
 	}
 
 }
@@ -476,24 +553,6 @@ func getConfigFile(t *testing.T, i v1.Image) *v1.ConfigFile {
 	return c
 }
 
-func getRawConfigFile(t *testing.T, i v1.Image) []byte {
-	t.Helper()
-
-	rcfg, err := i.RawConfigFile()
-	if err != nil {
-		t.Fatalf("Unable to fetch layer raw config file: %v", err)
-	}
-	return rcfg
-}
-
-func computeDigest(t *testing.T, data []byte) v1.Hash {
-	d, _, err := v1.SHA256(bytes.NewBuffer(data))
-	if err != nil {
-		t.Fatalf("Unable to compute config digest: %v", err)
-	}
-	return d
-}
-
 func configFilesAreEqual(t *testing.T, first, second v1.Image) bool {
 	t.Helper()
 
@@ -530,68 +589,6 @@ func manifestsAreEqual(t *testing.T, first, second v1.Image) bool {
 	return cmp.Equal(fm, sm)
 }
 
-func assertLayerOrderMatchesConfig(t *testing.T, i v1.Image) {
-	t.Helper()
-
-	layers := getLayers(t, i)
-	cf := getConfigFile(t, i)
-
-	if got, want := len(layers), len(cf.RootFS.DiffIDs); got != want {
-		t.Fatalf("Difference in size between the image layers (%d) "+
-			"and the config file diff ids (%d)", got, want)
-	}
-
-	for i := range layers {
-		diffID, err := layers[i].DiffID()
-		if err != nil {
-			t.Fatalf("Unable to fetch layer diff id: %v", err)
-		}
-
-		if got, want := diffID, cf.RootFS.DiffIDs[i]; got != want {
-			t.Fatalf("Layer diff id (%v) is not at the expected index (%d) in %+v",
-				got, i, cf.RootFS.DiffIDs)
-		}
-	}
-}
-
-func assertLayerOrderMatchesManifest(t *testing.T, i v1.Image) {
-	t.Helper()
-
-	layers := getLayers(t, i)
-	mf := getManifest(t, i)
-
-	if got, want := len(layers), len(mf.Layers); got != want {
-		t.Fatalf("Difference in size between the image layers (%d) "+
-			"and the manifest layers (%d)", got, want)
-	}
-
-	for i := range layers {
-		digest, err := layers[i].Digest()
-		if err != nil {
-			t.Fatalf("Unable to fetch layer diff id: %v", err)
-		}
-
-		if got, want := digest, mf.Layers[i].Digest; got != want {
-			t.Fatalf("Layer digest (%v) is not at the expected index (%d) in %+v",
-				got, i, mf.Layers)
-		}
-	}
-}
-
-func assertAccurateManifestConfigDigest(t *testing.T, i v1.Image) {
-	t.Helper()
-
-	m := getManifest(t, i)
-	got := m.Config.Digest
-
-	rcfg := getRawConfigFile(t, i)
-	want := computeDigest(t, rcfg)
-
-	if !cmp.Equal(got, want) {
-		t.Fatalf("Manifest config digest (%v) does not match digest of config file (%v)", got, want)
-	}
-}
-
 type mockLayer struct{}
 
 func (m mockLayer) Digest() (v1.Hash, error) {
@@ -600,6 +597,10 @@ func (m mockLayer) Digest() (v1.Hash, error) {
 
 func (m mockLayer) DiffID() (v1.Hash, error) {
 	return v1.Hash{Algorithm: "fake", Hex: "diff id"}, nil
+}
+
+func (m mockLayer) MediaType() (types.MediaType, error) {
+	return "some-media-type", nil
 }
 
 func (m mockLayer) Size() (int64, error) { return 137438691328, nil }

@@ -12,18 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package tarball
+package tarball_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
+	"strings"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
-
+	"github.com/google/go-containerregistry/pkg/internal/compare"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/google/go-containerregistry/pkg/v1/validate"
 )
 
 func TestWrite(t *testing.T) {
@@ -45,33 +54,25 @@ func TestWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating test tag.")
 	}
-	if err := WriteToFile(fp.Name(), tag, randImage); err != nil {
+	if err := tarball.WriteToFile(fp.Name(), tag, randImage); err != nil {
 		t.Fatalf("Unexpected error writing tarball: %v", err)
 	}
 
 	// Make sure the image is valid and can be loaded.
 	// Load it both by nil and by its name.
 	for _, it := range []*name.Tag{nil, &tag} {
-		tarImage, err := ImageFromPath(fp.Name(), it)
+		tarImage, err := tarball.ImageFromPath(fp.Name(), it)
 		if err != nil {
 			t.Fatalf("Unexpected error reading tarball: %v", err)
 		}
 
-		tarManifest, err := tarImage.Manifest()
-		if err != nil {
-			t.Fatalf("Unexpected error reading tarball: %v", err)
-		}
-		randManifest, err := randImage.Manifest()
-		if err != nil {
-			t.Fatalf("Unexpected error reading tarball: %v", err)
+		if err := validate.Image(tarImage); err != nil {
+			t.Errorf("validate.Image: %v", err)
 		}
 
-		if diff := cmp.Diff(randManifest, tarManifest); diff != "" {
-			t.Errorf("Manifests not equal. (-rand +tar) %s", diff)
+		if err := compare.Images(randImage, tarImage); err != nil {
+			t.Errorf("compare.Images: %v", err)
 		}
-
-		assertImageLayersMatchManifestLayers(t, tarImage)
-		assertLayersAreIdentical(t, randImage, tarImage)
 	}
 
 	// Try loading a different tag, it should error.
@@ -79,7 +80,7 @@ func TestWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating tag: %v", err)
 	}
-	if _, err := ImageFromPath(fp.Name(), &fakeTag); err == nil {
+	if _, err := tarball.ImageFromPath(fp.Name(), &fakeTag); err == nil {
 		t.Errorf("Expected error loading tag %v from image", fakeTag)
 	}
 }
@@ -109,35 +110,37 @@ func TestMultiWriteSameImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating test tag2.")
 	}
-	tagToImage := make(map[name.Tag]v1.Image)
-	tagToImage[tag1] = randImage
-	tagToImage[tag2] = randImage
+	dig3, err := name.NewDigest("gcr.io/baz/baz@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", name.StrictValidation)
+	if err != nil {
+		t.Fatalf("Error creating test dig3.")
+	}
+	refToImage := make(map[name.Reference]v1.Image)
+	refToImage[tag1] = randImage
+	refToImage[tag2] = randImage
+	refToImage[dig3] = randImage
 
 	// Write the images with both tags to the tarball
-	if err := MultiWriteToFile(fp.Name(), tagToImage); err != nil {
+	if err := tarball.MultiRefWriteToFile(fp.Name(), refToImage); err != nil {
 		t.Fatalf("Unexpected error writing tarball: %v", err)
 	}
-	for tag := range tagToImage {
-		tarImage, err := ImageFromPath(fp.Name(), &tag)
+	for ref := range refToImage {
+		tag, ok := ref.(name.Tag)
+		if !ok {
+			continue
+		}
+
+		tarImage, err := tarball.ImageFromPath(fp.Name(), &tag)
 		if err != nil {
 			t.Fatalf("Unexpected error reading tarball: %v", err)
 		}
 
-		tarManifest, err := tarImage.Manifest()
-		if err != nil {
-			t.Fatalf("Unexpected error reading tarball: %v", err)
-		}
-		randManifest, err := randImage.Manifest()
-		if err != nil {
-			t.Fatalf("Unexpected error reading tarball: %v", err)
+		if err := validate.Image(tarImage); err != nil {
+			t.Errorf("validate.Image: %v", err)
 		}
 
-		if diff := cmp.Diff(randManifest, tarManifest); diff != "" {
-			t.Errorf("Manifests not equal. (-rand +tar) %s", diff)
+		if err := compare.Images(randImage, tarImage); err != nil {
+			t.Errorf("compare.Images: %v", err)
 		}
-
-		assertImageLayersMatchManifestLayers(t, tarImage)
-		assertLayersAreIdentical(t, randImage, tarImage)
 	}
 }
 
@@ -163,6 +166,12 @@ func TestMultiWriteDifferentImages(t *testing.T) {
 		t.Fatalf("Error creating random image 2.")
 	}
 
+	// Make another random image
+	randImage3, err := random.Image(256, 8)
+	if err != nil {
+		t.Fatalf("Error creating random image 3.")
+	}
+
 	// Create two tags, one pointing to each image created.
 	tag1, err := name.NewTag("gcr.io/foo/bar:latest", name.StrictValidation)
 	if err != nil {
@@ -172,120 +181,306 @@ func TestMultiWriteDifferentImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error creating test tag2.")
 	}
-	tagToImage := make(map[name.Tag]v1.Image)
-	tagToImage[tag1] = randImage1
-	tagToImage[tag2] = randImage2
+	dig3, err := name.NewDigest("gcr.io/baz/baz@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", name.StrictValidation)
+	if err != nil {
+		t.Fatalf("Error creating test dig3.")
+	}
+	refToImage := make(map[name.Reference]v1.Image)
+	refToImage[tag1] = randImage1
+	refToImage[tag2] = randImage2
+	refToImage[dig3] = randImage3
 
 	// Write both images to the tarball.
-	if err := MultiWriteToFile(fp.Name(), tagToImage); err != nil {
+	if err := tarball.MultiRefWriteToFile(fp.Name(), refToImage); err != nil {
 		t.Fatalf("Unexpected error writing tarball: %v", err)
 	}
-	for tag, img := range tagToImage {
-		tarImage, err := ImageFromPath(fp.Name(), &tag)
+	for ref, img := range refToImage {
+		tag, ok := ref.(name.Tag)
+		if !ok {
+			continue
+		}
+
+		tarImage, err := tarball.ImageFromPath(fp.Name(), &tag)
 		if err != nil {
 			t.Fatalf("Unexpected error reading tarball: %v", err)
 		}
 
-		tarManifest, err := tarImage.Manifest()
+		if err := validate.Image(tarImage); err != nil {
+			t.Errorf("validate.Image: %v", err)
+		}
+
+		if err := compare.Images(img, tarImage); err != nil {
+			t.Errorf("compare.Images: %v", err)
+		}
+	}
+}
+
+func TestWriteForeignLayers(t *testing.T) {
+	// Make a tempfile for tarball writes.
+	fp, err := ioutil.TempFile("", "")
+	if err != nil {
+		t.Fatalf("Error creating temp file.")
+	}
+	t.Log(fp.Name())
+	defer fp.Close()
+	defer os.Remove(fp.Name())
+
+	// Make a random image
+	randImage, err := random.Image(256, 1)
+	if err != nil {
+		t.Fatalf("Error creating random image.")
+	}
+	tag, err := name.NewTag("gcr.io/foo/bar:latest", name.StrictValidation)
+	if err != nil {
+		t.Fatalf("Error creating test tag.")
+	}
+	randLayer, err := random.Layer(512, types.DockerForeignLayer)
+	if err != nil {
+		t.Fatalf("random.Layer: %v", err)
+	}
+	img, err := mutate.Append(randImage, mutate.Addendum{
+		Layer: randLayer,
+		URLs: []string{
+			"example.com",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tarball.WriteToFile(fp.Name(), tag, img); err != nil {
+		t.Fatalf("Unexpected error writing tarball: %v", err)
+	}
+
+	tarImage, err := tarball.ImageFromPath(fp.Name(), &tag)
+	if err != nil {
+		t.Fatalf("Unexpected error reading tarball: %v", err)
+	}
+
+	if err := validate.Image(tarImage); err != nil {
+		t.Fatalf("validate.Image(): %v", err)
+	}
+
+	m, err := tarImage.Manifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := m.Layers[1].MediaType, types.DockerForeignLayer; got != want {
+		t.Errorf("Wrong MediaType: %s != %s", got, want)
+	}
+	if got, want := m.Layers[1].URLs[0], "example.com"; got != want {
+		t.Errorf("Wrong URLs: %s != %s", got, want)
+	}
+}
+
+func TestWriteSharedLayers(t *testing.T) {
+	// Make a tempfile for tarball writes.
+	fp, err := ioutil.TempFile("", "")
+	if err != nil {
+		t.Fatalf("Error creating temp file.")
+	}
+	t.Log(fp.Name())
+	defer fp.Close()
+	defer os.Remove(fp.Name())
+
+	// Make a random image
+	randImage, err := random.Image(256, 1)
+	if err != nil {
+		t.Fatalf("Error creating random image.")
+	}
+	tag1, err := name.NewTag("gcr.io/foo/bar:latest", name.StrictValidation)
+	if err != nil {
+		t.Fatalf("Error creating test tag1.")
+	}
+	tag2, err := name.NewTag("gcr.io/baz/bat:latest", name.StrictValidation)
+	if err != nil {
+		t.Fatalf("Error creating test tag2.")
+	}
+	randLayer, err := random.Layer(512, types.DockerLayer)
+	if err != nil {
+		t.Fatalf("random.Layer: %v", err)
+	}
+	mutatedImage, err := mutate.Append(randImage, mutate.Addendum{
+		Layer: randLayer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refToImage := make(map[name.Reference]v1.Image)
+	refToImage[tag1] = randImage
+	refToImage[tag2] = mutatedImage
+
+	// Write the images with both tags to the tarball
+	if err := tarball.MultiRefWriteToFile(fp.Name(), refToImage); err != nil {
+		t.Fatalf("Unexpected error writing tarball: %v", err)
+	}
+	for ref := range refToImage {
+		tag, ok := ref.(name.Tag)
+		if !ok {
+			continue
+		}
+
+		tarImage, err := tarball.ImageFromPath(fp.Name(), &tag)
 		if err != nil {
 			t.Fatalf("Unexpected error reading tarball: %v", err)
 		}
-		randManifest, err := img.Manifest()
-		if err != nil {
-			t.Fatalf("Unexpected error reading tarball: %v", err)
+
+		if err := validate.Image(tarImage); err != nil {
+			t.Errorf("validate.Image: %v", err)
 		}
 
-		if diff := cmp.Diff(randManifest, tarManifest); diff != "" {
-			t.Errorf("Manifests not equal. (-rand +tar) %s", diff)
+		if err := compare.Images(refToImage[tag], tarImage); err != nil {
+			t.Errorf("compare.Images: %v", err)
 		}
-
-		assertImageLayersMatchManifestLayers(t, tarImage)
-		assertLayersAreIdentical(t, img, tarImage)
 	}
-}
-
-func assertImageLayersMatchManifestLayers(t *testing.T, i v1.Image) {
-	t.Helper()
-
-	layers, err := i.Layers()
+	_, err = fp.Seek(0, io.SeekStart)
 	if err != nil {
-		t.Fatalf("error getting layers: %v", err)
+		t.Fatalf("Seek to start of file: %v", err)
 	}
-
-	digestsFromImage := make([]v1.Hash, len(layers))
-
-	for i, layer := range layers {
-		digest, err := layer.Digest()
-		if err != nil {
-			t.Fatalf("error getting digests: %v", err)
-		}
-		digestsFromImage[i] = digest
-	}
-
-	m, err := i.Manifest()
+	layers, err := randImage.Layers()
 	if err != nil {
-		t.Fatalf("error getting layers to compare: %v", err)
+		t.Fatalf("Get image layers: %v", err)
 	}
-
-	digestsFromManifest := make([]v1.Hash, 0, len(m.Layers))
-	for _, layer := range m.Layers {
-		digestsFromManifest = append(digestsFromManifest, layer.Digest)
-	}
-
-	if diff := cmp.Diff(digestsFromImage, digestsFromManifest); diff != "" {
-		t.Fatalf("image.Layers() are not in the same order as "+
-			"the image.Manifest().Layers (-image +manifest) %s", diff)
-	}
-}
-
-func assertLayersAreIdentical(t *testing.T, a, b v1.Image) {
-	t.Helper()
-
-	aLayers, err := a.Layers()
-	if err != nil {
-		t.Fatalf("error getting layers to compare: %v", err)
-	}
-
-	bLayers, err := b.Layers()
-	if err != nil {
-		t.Fatalf("error getting layers to compare: %v", err)
-	}
-
-	if diff := cmp.Diff(getDigests(t, aLayers), getDigests(t, bLayers)); diff != "" {
-		t.Fatalf("layers digests are not identical (-rand +tar) %s", diff)
-	}
-
-	if diff := cmp.Diff(getDiffIDs(t, aLayers), getDiffIDs(t, bLayers)); diff != "" {
-		t.Fatalf("layers digests are not identical (-rand +tar) %s", diff)
-	}
-}
-
-func getDigests(t *testing.T, layers []v1.Layer) []v1.Hash {
-	t.Helper()
-
-	digests := make([]v1.Hash, 0, len(layers))
+	layers = append(layers, randLayer)
+	wantDigests := make(map[string]struct{})
 	for _, layer := range layers {
-		digest, err := layer.Digest()
+		d, err := layer.Digest()
 		if err != nil {
-			t.Fatalf("error getting digests: %s", err)
+			t.Fatalf("Get layer digest: %v", err)
 		}
-		digests = append(digests, digest)
+		wantDigests[d.Hex] = struct{}{}
 	}
 
-	return digests
+	const layerFileSuffix = ".tar.gz"
+	r := tar.NewReader(fp)
+	for {
+		hdr, err := r.Next()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("Get tar header: %v", err)
+		}
+		if strings.HasSuffix(hdr.Name, layerFileSuffix) {
+			hex := hdr.Name[:len(hdr.Name)-len(layerFileSuffix)]
+			if _, ok := wantDigests[hex]; ok {
+				delete(wantDigests, hex)
+			} else {
+				t.Errorf("Found unwanted layer with digest %q", hex)
+			}
+		}
+	}
+	if len(wantDigests) != 0 {
+		for hex := range wantDigests {
+			t.Errorf("Expected to find layer with digest %q but it didn't exist", hex)
+		}
+	}
 }
 
-func getDiffIDs(t *testing.T, layers []v1.Layer) []v1.Hash {
-	t.Helper()
-
-	diffIDs := make([]v1.Hash, 0, len(layers))
-	for _, layer := range layers {
-		diffID, err := layer.DiffID()
-		if err != nil {
-			t.Fatalf("error getting diffID: %s", err)
-		}
-		diffIDs = append(diffIDs, diffID)
+func TestComputeManifest(t *testing.T) {
+	var randomTag, mutatedTag = "gcr.io/foo/bar:latest", "gcr.io/baz/bat:latest"
+	// Make a random image
+	randImage, err := random.Image(256, 1)
+	if err != nil {
+		t.Fatalf("Error creating random image.")
 	}
+	randConfig, err := randImage.ConfigName()
+	if err != nil {
+		t.Fatalf("error getting random image config: %v", err)
+	}
+	tag1, err := name.NewTag(randomTag, name.StrictValidation)
+	if err != nil {
+		t.Fatalf("Error creating test tag1.")
+	}
+	tag2, err := name.NewTag(mutatedTag, name.StrictValidation)
+	if err != nil {
+		t.Fatalf("Error creating test tag2.")
+	}
+	randLayer, err := random.Layer(512, types.DockerLayer)
+	if err != nil {
+		t.Fatalf("random.Layer: %v", err)
+	}
+	mutatedImage, err := mutate.Append(randImage, mutate.Addendum{
+		Layer: randLayer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutatedConfig, err := mutatedImage.ConfigName()
+	if err != nil {
+		t.Fatalf("error getting mutated image config: %v", err)
+	}
+	randomLayersHashes, err := getLayersHashes(randImage)
+	if err != nil {
+		t.Fatalf("error getting random image hashes: %v", err)
+	}
+	randomLayersFilenames := getLayersFilenames(randomLayersHashes)
 
-	return diffIDs
+	mutatedLayersHashes, err := getLayersHashes(mutatedImage)
+	if err != nil {
+		t.Fatalf("error getting mutated image hashes: %v", err)
+	}
+	mutatedLayersFilenames := getLayersFilenames(mutatedLayersHashes)
+
+	refToImage := make(map[name.Reference]v1.Image)
+	refToImage[tag1] = randImage
+	refToImage[tag2] = mutatedImage
+
+	// calculate the manifest
+	m, err := tarball.ComputeManifest(refToImage)
+	if err != nil {
+		t.Fatalf("Unexpected error calculating manifest: %v", err)
+	}
+	// the order of these two is based on the repo tags
+	// so mutated "gcr.io/baz/bat:latest" is before random "gcr.io/foo/bar:latest"
+	expected := []tarball.Descriptor{
+		{
+			Config:   mutatedConfig.String(),
+			RepoTags: []string{mutatedTag},
+			Layers:   mutatedLayersFilenames,
+		},
+		{
+			Config:   randConfig.String(),
+			RepoTags: []string{randomTag},
+			Layers:   randomLayersFilenames,
+		},
+	}
+	if len(m) != len(expected) {
+		t.Fatalf("mismatched manifest lengths: actual %d, expected %d", len(m), len(expected))
+	}
+	mBytes, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("unable to marshall actual manifest to json: %v", err)
+	}
+	eBytes, err := json.Marshal(expected)
+	if err != nil {
+		t.Fatalf("unable to marshall expected manifest to json: %v", err)
+	}
+	if !bytes.Equal(mBytes, eBytes) {
+		t.Errorf("mismatched manifests.\nActual: %s\nExpected: %s", string(mBytes), string(eBytes))
+	}
+}
+
+func getLayersHashes(img v1.Image) ([]string, error) {
+	hashes := []string{}
+	layers, err := img.Layers()
+	if err != nil {
+		return nil, fmt.Errorf("error getting image layers: %v", err)
+	}
+	for i, l := range layers {
+		hash, err := l.Digest()
+		if err != nil {
+			return nil, fmt.Errorf("error getting digest for layer %d: %v", i, err)
+		}
+		hashes = append(hashes, hash.Hex)
+	}
+	return hashes, nil
+}
+
+func getLayersFilenames(hashes []string) []string {
+	filenames := []string{}
+	for _, h := range hashes {
+		filenames = append(filenames, fmt.Sprintf("%s.tar.gz", h))
+	}
+	return filenames
 }

@@ -15,47 +15,28 @@
 package crane
 
 import (
-	"log"
-	"net/http"
+	"fmt"
 
-	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
-	"github.com/spf13/cobra"
 )
 
-func init() { Root.AddCommand(NewCmdPush()) }
-
-// NewCmdPush creates a new cobra.Command for the push subcommand.
-func NewCmdPush() *cobra.Command {
-	return &cobra.Command{
-		Use:   "push",
-		Short: "Push image contents as a tarball to a remote registry",
-		Args:  cobra.ExactArgs(2),
-		Run:   push,
-	}
+// Load reads the tarball at path as a v1.Image.
+func Load(path string) (v1.Image, error) {
+	// TODO: Allow tag?
+	return tarball.ImageFromPath(path, nil)
 }
 
-func push(_ *cobra.Command, args []string) {
-	src, dst := args[0], args[1]
-	t, err := name.NewTag(dst, name.WeakValidation)
+// Push pushes the v1.Image img to a registry as dst.
+func Push(img v1.Image, dst string, opt ...Option) error {
+	o := makeOptions(opt...)
+	tag, err := name.NewTag(dst, o.name...)
 	if err != nil {
-		log.Fatalf("parsing tag %q: %v", dst, err)
+		return fmt.Errorf("parsing tag %q: %v", dst, err)
 	}
-	log.Printf("Pushing %v", t)
-
-	auth, err := authn.DefaultKeychain.Resolve(t.Registry)
-	if err != nil {
-		log.Fatalf("getting creds for %q: %v", t, err)
-	}
-
-	i, err := tarball.ImageFromPath(src, nil)
-	if err != nil {
-		log.Fatalf("reading image %q: %v", src, err)
-	}
-
-	if err := remote.Write(t, i, auth, http.DefaultTransport); err != nil {
-		log.Fatalf("writing image %q: %v", t, err)
-	}
+	return remote.MultiWrite(map[name.Reference]remote.Taggable{
+		tag: img,
+	}, o.remote...)
 }

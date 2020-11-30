@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package mutate
+package mutate_test
 
 import (
 	"testing"
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 )
 
@@ -43,14 +44,15 @@ func layerDigests(t *testing.T, img v1.Image) []string {
 // random.Image layers.
 func TestRebase(t *testing.T) {
 	// Create a random old base image of 5 layers and get those layers' digests.
-	oldBase, err := random.Image(100, 5)
+	const oldBaseLayerCount = 5
+	oldBase, err := random.Image(100, oldBaseLayerCount)
 	if err != nil {
 		t.Fatalf("random.Image (oldBase): %v", err)
 	}
 	t.Log("Old base:")
 	_ = layerDigests(t, oldBase)
 
-	// Construct an image with 1 layer on top of oldBase.
+	// Construct an image with 2 layers on top of oldBase (an empty layer and a random layer).
 	top, err := random.Image(100, 1)
 	if err != nil {
 		t.Fatalf("random.Image (top): %v", err)
@@ -59,16 +61,27 @@ func TestRebase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("top.Layers: %v", err)
 	}
-	topHistory := v1.History{
-		Author:    "me",
-		Created:   v1.Time{time.Now()},
-		CreatedBy: "test",
-		Comment:   "this is a test",
-	}
-	orig, err := Append(oldBase, Addendum{
-		Layer:   topLayers[0],
-		History: topHistory,
-	})
+	orig, err := mutate.Append(oldBase,
+		mutate.Addendum{
+			Layer: nil,
+			History: v1.History{
+				Author:     "me",
+				Created:    v1.Time{Time: time.Now()},
+				CreatedBy:  "test-empty",
+				Comment:    "this is an empty test",
+				EmptyLayer: true,
+			},
+		},
+		mutate.Addendum{
+			Layer: topLayers[0],
+			History: v1.History{
+				Author:    "me",
+				Created:   v1.Time{Time: time.Now()},
+				CreatedBy: "test",
+				Comment:   "this is a test",
+			},
+		},
+	)
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -84,8 +97,22 @@ func TestRebase(t *testing.T) {
 	t.Log("New base:")
 	newBaseLayerDigests := layerDigests(t, newBase)
 
+	// Add config file os/arch property fields
+	newBaseConfigFile, err := newBase.ConfigFile()
+	if err != nil {
+		t.Fatalf("newBase.ConfigFile: %v", err)
+	}
+	newBaseConfigFile.Architecture = "arm"
+	newBaseConfigFile.OS = "windows"
+	newBaseConfigFile.OSVersion = "10.0.17763.1339"
+
+	newBase, err = mutate.ConfigFile(newBase, newBaseConfigFile)
+	if err != nil {
+		t.Fatalf("ConfigFile (newBase): %v", err)
+	}
+
 	// Rebase original image onto new base.
-	rebased, err := Rebase(orig, oldBase, newBase)
+	rebased, err := mutate.Rebase(orig, oldBase, newBase)
 	if err != nil {
 		t.Fatalf("Rebase: %v", err)
 	}
@@ -114,5 +141,39 @@ func TestRebase(t *testing.T) {
 		if got, want := rl, wantLayerDigests[i]; got != want {
 			t.Errorf("Layer %d mismatch, got %q, want %q", i, got, want)
 		}
+	}
+
+	// Compare rebased history.
+	origConfig, err := orig.ConfigFile()
+	if err != nil {
+		t.Fatalf("orig.ConfigFile: %v", err)
+	}
+	newBaseConfig, err := newBase.ConfigFile()
+	if err != nil {
+		t.Fatalf("newBase.ConfigFile: %v", err)
+	}
+	rebasedConfig, err := rebased.ConfigFile()
+	if err != nil {
+		t.Fatalf("rebased.ConfigFile: %v", err)
+	}
+	wantHistories := append(newBaseConfig.History, origConfig.History[oldBaseLayerCount:]...)
+	if len(wantHistories) != len(rebasedConfig.History) {
+		t.Fatalf("Rebased image contained %d history, want %d", len(rebasedConfig.History), len(wantHistories))
+	}
+	for i, rh := range rebasedConfig.History {
+		if got, want := rh.Comment, wantHistories[i].Comment; got != want {
+			t.Errorf("Layer %d mismatch, got %q, want %q", i, got, want)
+		}
+	}
+
+	// Compare ConfigFile property fields copied from new base.
+	if rebasedConfig.Architecture != newBaseConfig.Architecture {
+		t.Errorf("ConfigFile property Architecture mismatch, got %q, want %q", rebasedConfig.Architecture, newBaseConfig.Architecture)
+	}
+	if rebasedConfig.OS != newBaseConfig.OS {
+		t.Errorf("ConfigFile property OS mismatch, got %q, want %q", rebasedConfig.OS, newBaseConfig.OS)
+	}
+	if rebasedConfig.OSVersion != newBaseConfig.OSVersion {
+		t.Errorf("ConfigFile property OSVersion mismatch, got %q, want %q", rebasedConfig.OSVersion, newBaseConfig.OSVersion)
 	}
 }

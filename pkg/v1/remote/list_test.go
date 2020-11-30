@@ -15,6 +15,7 @@
 package remote
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,8 +23,6 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-
-	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 )
 
@@ -74,7 +73,7 @@ func TestList(t *testing.T) {
 				t.Fatalf("name.NewRepository(%v) = %v", repoName, err)
 			}
 
-			tags, err := List(repo, authn.Anonymous, http.DefaultTransport)
+			tags, err := List(repo)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("List() wrong error: %v, want %v: %v\n", (err != nil), tc.wantErr, err)
 			}
@@ -83,5 +82,77 @@ func TestList(t *testing.T) {
 				t.Errorf("List() wrong tags (-want +got) = %s", diff)
 			}
 		})
+	}
+}
+
+func TestCancelledList(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	repoName := "doesnotmatter"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("Unexpected path: %v", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("url.Parse(%v) = %v", server.URL, err)
+	}
+
+	repo, err := name.NewRepository(fmt.Sprintf("%s/%s", u.Host, repoName), name.WeakValidation)
+	if err != nil {
+		t.Fatalf("name.NewRepository(%v) = %v", repoName, err)
+	}
+
+	_, err = ListWithContext(ctx, repo)
+	if want, got := context.Canceled, err; got != want {
+		t.Errorf("wanted %v got %v", want, got)
+	}
+}
+
+func makeResp(hdr string) *http.Response {
+	return &http.Response{
+		Header: http.Header{
+			"Link": []string{hdr},
+		},
+	}
+}
+
+func TestGetNextPageURL(t *testing.T) {
+	for _, hdr := range []string{
+		"",
+		"<",
+		"><",
+		"<>",
+		fmt.Sprintf("<%c>", 0x7f), // makes url.Parse fail
+	} {
+		u, err := getNextPageURL(makeResp(hdr))
+		if err == nil && u != nil {
+			t.Errorf("Expected err, got %+v", u)
+		}
+	}
+
+	good := &http.Response{
+		Header: http.Header{
+			"Link": []string{"<example.com>"},
+		},
+		Request: &http.Request{
+			URL: &url.URL{
+				Scheme: "https",
+			},
+		},
+	}
+	u, err := getNextPageURL(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if u.Scheme != "https" {
+		t.Errorf("expected scheme to match request, got %s", u.Scheme)
 	}
 }

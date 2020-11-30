@@ -22,8 +22,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/internal/compare"
+	"github.com/google/go-containerregistry/pkg/v1/validate"
 )
 
 func TestLayerFromFile(t *testing.T) {
@@ -40,14 +40,44 @@ func TestLayerFromFile(t *testing.T) {
 		t.Fatalf("Unable to create layer from compressed tar file: %v", err)
 	}
 
-	assertDigestsAreEqual(t, tarLayer, tarGzLayer)
-	assertDiffIDsAreEqual(t, tarLayer, tarGzLayer)
-	assertCompressedStreamsAreEqual(t, tarLayer, tarGzLayer)
-	assertUncompressedStreamsAreEqual(t, tarLayer, tarGzLayer)
-	assertSizesAreEqual(t, tarLayer, tarGzLayer)
+	if err := compare.Layers(tarLayer, tarGzLayer); err != nil {
+		t.Errorf("compare.Layers: %v", err)
+	}
+
+	if err := validate.Layer(tarLayer); err != nil {
+		t.Errorf("validate.Layer(tarLayer): %v", err)
+	}
+
+	if err := validate.Layer(tarGzLayer); err != nil {
+		t.Errorf("validate.Layer(tarGzLayer): %v", err)
+	}
+
+	tarLayerDefaultCompression, err := LayerFromFile("testdata/content.tar", WithCompressionLevel(gzip.DefaultCompression))
+	if err != nil {
+		t.Fatalf("Unable to create layer with 'Default' compression from tar file: %v", err)
+	}
+
+	defaultDigest, err := tarLayerDefaultCompression.Digest()
+	if err != nil {
+		t.Fatal("Unable to generate digest with 'Default' compression", err)
+	}
+
+	tarLayerSpeedCompression, err := LayerFromFile("testdata/content.tar", WithCompressionLevel(gzip.BestSpeed))
+	if err != nil {
+		t.Fatalf("Unable to create layer with 'BestSpeed' compression from tar file: %v", err)
+	}
+
+	speedDigest, err := tarLayerSpeedCompression.Digest()
+	if err != nil {
+		t.Fatal("Unable to generate digest with 'BestSpeed' compression", err)
+	}
+
+	if defaultDigest.String() == speedDigest.String() {
+		t.Errorf("expected digests to differ: %s", defaultDigest.String())
+	}
 }
 
-func TestLayerFromReader(t *testing.T) {
+func TestLayerFromOpenerReader(t *testing.T) {
 	setupFixtures(t)
 	defer teardownFixtures(t)
 
@@ -75,120 +105,35 @@ func TestLayerFromReader(t *testing.T) {
 		t.Fatalf("Unable to create layer from tar file: %v", err)
 	}
 
-	assertDigestsAreEqual(t, tarLayer, tarGzLayer)
-	assertDiffIDsAreEqual(t, tarLayer, tarGzLayer)
-	assertCompressedStreamsAreEqual(t, tarLayer, tarGzLayer)
-	assertUncompressedStreamsAreEqual(t, tarLayer, tarGzLayer)
-	assertSizesAreEqual(t, tarLayer, tarGzLayer)
-}
-
-func assertDigestsAreEqual(t *testing.T, a, b v1.Layer) {
-	t.Helper()
-
-	sa, err := a.Digest()
-	if err != nil {
-		t.Fatalf("Unable to fetch digest for layer: %v", err)
-	}
-
-	sb, err := b.Digest()
-	if err != nil {
-		t.Fatalf("Unable to fetch digest for layer: %v", err)
-	}
-
-	if sa != sb {
-		t.Fatalf("Digest of each layer is different - %v != %v", sa, sb)
+	if err := compare.Layers(tarLayer, tarGzLayer); err != nil {
+		t.Errorf("compare.Layers: %v", err)
 	}
 }
 
-func assertDiffIDsAreEqual(t *testing.T, a, b v1.Layer) {
-	t.Helper()
+func TestLayerFromReader(t *testing.T) {
+	setupFixtures(t)
+	defer teardownFixtures(t)
 
-	sa, err := a.DiffID()
+	ucBytes, err := ioutil.ReadFile("testdata/content.tar")
 	if err != nil {
-		t.Fatalf("Unable to fetch diffID for layer: %v", err)
+		t.Fatalf("Unable to read tar file: %v", err)
 	}
-
-	sb, err := b.DiffID()
+	tarLayer, err := LayerFromReader(bytes.NewReader(ucBytes))
 	if err != nil {
-		t.Fatalf("Unable to fetch diffID for layer: %v", err)
+		t.Fatalf("Unable to create layer from tar file: %v", err)
 	}
 
-	if sa != sb {
-		t.Fatalf("diffID of each layer is different - %v != %v", sa, sb)
-	}
-}
-
-func assertCompressedStreamsAreEqual(t *testing.T, a, b v1.Layer) {
-	t.Helper()
-
-	sa, err := a.Compressed()
+	gzBytes, err := ioutil.ReadFile("gzip_content.tgz")
 	if err != nil {
-		t.Fatalf("Unable to fetch compressed for layer: %v", err)
+		t.Fatalf("Unable to read tar file: %v", err)
 	}
-
-	saBytes, err := ioutil.ReadAll(sa)
+	tarGzLayer, err := LayerFromReader(bytes.NewReader(gzBytes))
 	if err != nil {
-		t.Fatalf("Unable to read bytes for layer: %v", err)
+		t.Fatalf("Unable to create layer from tar file: %v", err)
 	}
 
-	sb, err := b.Compressed()
-	if err != nil {
-		t.Fatalf("Unable to fetch compressed for layer: %v", err)
-	}
-
-	sbBytes, err := ioutil.ReadAll(sb)
-	if err != nil {
-		t.Fatalf("Unable to read bytes for layer: %v", err)
-	}
-
-	if diff := cmp.Diff(saBytes, sbBytes); diff != "" {
-		t.Fatalf("Compressed streams were different: %v", diff)
-	}
-}
-
-func assertUncompressedStreamsAreEqual(t *testing.T, a, b v1.Layer) {
-	t.Helper()
-
-	sa, err := a.Uncompressed()
-	if err != nil {
-		t.Fatalf("Unable to fetch uncompressed for layer: %v", err)
-	}
-
-	saBytes, err := ioutil.ReadAll(sa)
-	if err != nil {
-		t.Fatalf("Unable to read bytes for layer: %v", err)
-	}
-
-	sb, err := b.Uncompressed()
-	if err != nil {
-		t.Fatalf("Unable to fetch uncompressed for layer: %v", err)
-	}
-
-	sbBytes, err := ioutil.ReadAll(sb)
-	if err != nil {
-		t.Fatalf("Unable to read bytes for layer: %v", err)
-	}
-
-	if diff := cmp.Diff(saBytes, sbBytes); diff != "" {
-		t.Fatalf("Uncompressed streams were different: %v", diff)
-	}
-}
-
-func assertSizesAreEqual(t *testing.T, a, b v1.Layer) {
-	t.Helper()
-
-	sa, err := a.Size()
-	if err != nil {
-		t.Fatalf("Unable to fetch size for layer: %v", err)
-	}
-
-	sb, err := b.Size()
-	if err != nil {
-		t.Fatalf("Unable to fetch size for layer: %v", err)
-	}
-
-	if sa != sb {
-		t.Fatalf("Size of each layer is different - %d != %d", sa, sb)
+	if err := compare.Layers(tarLayer, tarGzLayer); err != nil {
+		t.Errorf("compare.Layers: %v", err)
 	}
 }
 

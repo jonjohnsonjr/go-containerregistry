@@ -15,6 +15,8 @@
 package google
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +25,8 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 )
 
@@ -32,6 +36,93 @@ func mustParseDuration(t *testing.T, d string) time.Duration {
 		t.Fatal(err)
 	}
 	return dur
+}
+
+func TestRoundtrip(t *testing.T) {
+	raw := rawManifestInfo{
+		Size:      "100",
+		MediaType: "hi",
+		Created:   "12345678",
+		Uploaded:  "23456789",
+		Tags:      []string{"latest"},
+	}
+
+	og, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parsed := ManifestInfo{}
+	if err := json.Unmarshal(og, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	roundtripped, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if diff := cmp.Diff(og, roundtripped); diff != "" {
+		t.Errorf("ManifestInfo can't roundtrip: (-want +got) = %s", diff)
+	}
+}
+
+// GCR returns timeUploaded as string
+func TestTimeUploadedMsAsString(t *testing.T) {
+	data := []byte(`
+		{
+			"imageSizeBytes": "100",
+			"mediaType": "hi",
+	  		"tag": ["latest"],
+	  		"timeCreatedMs": "12345678",
+	  		"timeUploadedMs": "23456789"
+		}
+	`)
+
+	raw := rawManifestInfo{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+
+	expectedRaw := rawManifestInfo{
+		Size:      "100",
+		MediaType: "hi",
+		Created:   "12345678",
+		Uploaded:  "23456789",
+		Tags:      []string{"latest"},
+	}
+
+	if diff := cmp.Diff(expectedRaw, raw); diff != "" {
+		t.Errorf("Can't unmarshal rawManifestInfo with string timeUploadedMs: (-want +got) = %s", diff)
+	}
+}
+
+// AR returns timeUploaded as int64, and timeCreatedMs is missing
+func TestTimeUploadedMsAsInt64(t *testing.T) {
+	data := []byte(`
+		{
+			"imageSizeBytes": "100",
+			"mediaType": "hi",
+	  		"tag": ["latest"],
+	  		"timeUploadedMs": 23456789
+		}
+	`)
+
+	raw := rawManifestInfo{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+
+	expectedRaw := rawManifestInfo{
+		Size:      "100",
+		MediaType: "hi",
+		Uploaded:  "23456789",
+		Tags:      []string{"latest"},
+	}
+
+	if diff := cmp.Diff(expectedRaw, raw); diff != "" {
+		t.Errorf("Can't unmarshal rawManifestInfo with int64 timeUploadedMs: (-want +got) = %s", diff)
+	}
 }
 
 func TestList(t *testing.T) {
@@ -105,7 +196,7 @@ func TestList(t *testing.T) {
 				t.Fatalf("name.NewRepository(%v) = %v", repoName, err)
 			}
 
-			tags, err := List(repo)
+			tags, err := List(repo, WithAuthFromKeychain(authn.DefaultKeychain), WithTransport(http.DefaultTransport))
 			if (err != nil) != tc.wantErr {
 				t.Errorf("List() wrong error: %v, want %v: %v\n", (err != nil), tc.wantErr, err)
 			}
@@ -130,6 +221,10 @@ func (r *recorder) walk(repo name.Repository, tags *Tags, err error) error {
 }
 
 func TestWalk(t *testing.T) {
+	// Stupid coverage to make sure it doesn't panic.
+	var b bytes.Buffer
+	logs.Debug.SetOutput(&b)
+
 	cases := []struct {
 		name         string
 		responseBody []byte
@@ -203,7 +298,9 @@ func TestWalk(t *testing.T) {
 			}
 
 			r := recorder{}
-			err = Walk(repo, r.walk)
+			if err := Walk(repo, r.walk, WithAuth(authn.Anonymous)); err != nil {
+				t.Errorf("unexpected err: %v", err)
+			}
 
 			if diff := cmp.Diff(tc.wantResult, r); diff != "" {
 				t.Errorf("Walk() wrong tags (-want +got) = %s", diff)

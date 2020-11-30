@@ -37,6 +37,7 @@ var goodWeakValidationRepositoryNames = []string{
 var badRepositoryNames = []string{
 	"white space",
 	"b@char/image",
+	"",
 }
 
 func TestNewRepositoryStrictValidation(t *testing.T) {
@@ -111,5 +112,32 @@ func TestRepositoryScopes(t *testing.T) {
 	actualScope := repository.Scope(testAction)
 	if actualScope != expectedScope {
 		t.Errorf("scope was incorrect for %v. Wanted: `%s` Got: `%s`", repository, expectedScope, actualScope)
+	}
+}
+
+func TestRepositoryBadDefaulting(t *testing.T) {
+	if _, err := NewRepository("index.docker.io/foo", StrictValidation); !IsErrBadName(err) {
+		t.Errorf("IsBadErrName == false: %v", err)
+	}
+}
+
+func TestRepositoryChildren(t *testing.T) {
+	repo, err := NewRepository("example.com/repo", Insecure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag := repo.Tag("foo")
+	if got, want := tag.Scheme(), "http"; got != want {
+		t.Errorf("tag.Scheme(): got %s want %s", got, want)
+	}
+	if got, want := tag.String(), "example.com/repo:foo"; got != want {
+		t.Errorf("tag.String(): got %s want %s", got, want)
+	}
+	digest := repo.Digest("badf00d")
+	if got, want := digest.Scheme(), "http"; got != want {
+		t.Errorf("digest.Scheme(): got %s want %s", got, want)
+	}
+	if got, want := digest.String(), "example.com/repo@badf00d"; got != want {
+		t.Errorf("digest.String(): got %s want %s", got, want)
 	}
 }

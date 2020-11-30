@@ -15,22 +15,18 @@
 package k8schain
 
 import (
+	"context"
+	"fmt"
+	"sync"
+
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	credentialprovider "github.com/vdemeester/k8s-pkg-credentialprovider"
+	credentialprovidersecrets "github.com/vdemeester/k8s-pkg-credentialprovider/secrets"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/kubernetes/pkg/credentialprovider"
-	credentialprovidersecrets "k8s.io/kubernetes/pkg/credentialprovider/secrets"
-
-	// Credential providers
-	_ "k8s.io/kubernetes/pkg/credentialprovider/aws"
-	_ "k8s.io/kubernetes/pkg/credentialprovider/azure"
-	_ "k8s.io/kubernetes/pkg/credentialprovider/gcp"
-	// TODO(mattmoor): This doesn't seem to build, figure out why `dep ensure`
-	// is not working and add constraints.
-	// _ "k8s.io/kubernetes/pkg/credentialprovider/rancher"
 )
 
 // Options holds configuration data for guiding credential resolution.
@@ -46,13 +42,15 @@ type Options struct {
 	ImagePullSecrets []string
 }
 
-// origKeyRing is a variable so that testing can adjust it.
-var origKeyRing = credentialprovider.NewDockerKeyring()
+var (
+	keyring credentialprovider.DockerKeyring
+	once    sync.Once
+)
 
 // New returns a new authn.Keychain suitable for resolving image references as
 // scoped by the provided Options.  It speaks to Kubernetes through the provided
 // client interface.
-func New(client kubernetes.Interface, opt Options) (authn.Keychain, error) {
+func New(ctx context.Context, client kubernetes.Interface, opt Options) (authn.Keychain, error) {
 	if opt.Namespace == "" {
 		opt.Namespace = "default"
 	}
@@ -71,7 +69,7 @@ func New(client kubernetes.Interface, opt Options) (authn.Keychain, error) {
 	var pullSecrets []v1.Secret
 	if client != nil {
 		for _, name := range opt.ImagePullSecrets {
-			ps, err := client.CoreV1().Secrets(opt.Namespace).Get(name, metav1.GetOptions{})
+			ps, err := client.CoreV1().Secrets(opt.Namespace).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
 				return nil, err
 			}
@@ -79,12 +77,12 @@ func New(client kubernetes.Interface, opt Options) (authn.Keychain, error) {
 		}
 
 		// Second, fetch all of the pull secrets attached to our service account.
-		sa, err := client.CoreV1().ServiceAccounts(opt.Namespace).Get(opt.ServiceAccountName, metav1.GetOptions{})
+		sa, err := client.CoreV1().ServiceAccounts(opt.Namespace).Get(ctx, opt.ServiceAccountName, metav1.GetOptions{})
 		if err != nil {
 			return nil, err
 		}
 		for _, localObj := range sa.ImagePullSecrets {
-			ps, err := client.CoreV1().Secrets(opt.Namespace).Get(localObj.Name, metav1.GetOptions{})
+			ps, err := client.CoreV1().Secrets(opt.Namespace).Get(ctx, localObj.Name, metav1.GetOptions{})
 			if err != nil {
 				return nil, err
 			}
@@ -92,8 +90,12 @@ func New(client kubernetes.Interface, opt Options) (authn.Keychain, error) {
 		}
 	}
 
+	once.Do(func() {
+		keyring = credentialprovider.NewDockerKeyring()
+	})
+
 	// Third, extend the default keyring with the pull secrets.
-	kr, err := credentialprovidersecrets.MakeDockerKeyring(pullSecrets, origKeyRing)
+	kr, err := credentialprovidersecrets.MakeDockerKeyring(pullSecrets, keyring)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +107,7 @@ func New(client kubernetes.Interface, opt Options) (authn.Keychain, error) {
 // NewInCluster returns a new authn.Keychain suitable for resolving image references as
 // scoped by the provided Options, constructing a kubernetes.Interface based on in-cluster
 // authentication.
-func NewInCluster(opt Options) (authn.Keychain, error) {
+func NewInCluster(ctx context.Context, opt Options) (authn.Keychain, error) {
 	clusterConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, err
@@ -115,7 +117,7 @@ func NewInCluster(opt Options) (authn.Keychain, error) {
 	if err != nil {
 		return nil, err
 	}
-	return New(client, opt)
+	return New(ctx, client, opt)
 }
 
 // NewNoClient returns a new authn.Keychain that supports the portions of the K8s keychain
@@ -126,26 +128,29 @@ func NewInCluster(opt Options) (authn.Keychain, error) {
 // for Kubernetes authentication, but this actually targets a different use-case.  What
 // remains is an interesting sweet spot: this variant can serve as a credential provider
 // for all of the major public clouds, but in library form (vs. an executable you exec).
-func NewNoClient() (authn.Keychain, error) {
-	return New(nil, Options{})
+func NewNoClient(ctx context.Context) (authn.Keychain, error) {
+	return New(ctx, nil, Options{})
 }
 
-type lazyProvider credentialprovider.LazyAuthConfiguration
+type lazyProvider struct {
+	kc    *keychain
+	image string
+}
 
 // Authorization implements Authenticator.
-func (lp lazyProvider) Authorization() (string, error) {
-	authConfig := credentialprovider.LazyProvide(credentialprovider.LazyAuthConfiguration(lp))
-	if authConfig.Auth != "" {
-		return "Basic " + authConfig.Auth, nil
+func (lp lazyProvider) Authorization() (*authn.AuthConfig, error) {
+	creds, found := lp.kc.keyring.Lookup(lp.image)
+	if !found || len(creds) < 1 {
+		return nil, fmt.Errorf("keychain returned no credentials for %q", lp.image)
 	}
-	if authConfig.Username != "" {
-		basic := authn.Basic{
-			Username: authConfig.Username,
-			Password: authConfig.Password,
-		}
-		return basic.Authorization()
-	}
-	return authn.Anonymous.Authorization()
+	authConfig := creds[0]
+	return &authn.AuthConfig{
+		Username:      authConfig.Username,
+		Password:      authConfig.Password,
+		Auth:          authConfig.Auth,
+		IdentityToken: authConfig.IdentityToken,
+		RegistryToken: authConfig.RegistryToken,
+	}, nil
 }
 
 type keychain struct {
@@ -153,13 +158,21 @@ type keychain struct {
 }
 
 // Resolve implements authn.Keychain
-func (kc *keychain) Resolve(reg name.Registry) (authn.Authenticator, error) {
-	// TODO(mattmoor): Lookup expects an image reference and we only have a registry,
-	// find something better than this.
-	creds, found := kc.keyring.Lookup(reg.String() + "/foo/bar")
-	if !found || len(creds) < 1 {
+func (kc *keychain) Resolve(target authn.Resource) (authn.Authenticator, error) {
+	var image string
+	if repo, ok := target.(name.Repository); ok {
+		image = repo.String()
+	} else {
+		// Lookup expects an image reference and we only have a registry.
+		image = target.RegistryStr() + "/foo/bar"
+	}
+
+	if creds, found := kc.keyring.Lookup(image); !found || len(creds) < 1 {
 		return authn.Anonymous, nil
 	}
 	// TODO(mattmoor): How to support multiple credentials?
-	return lazyProvider(creds[0]), nil
+	return lazyProvider{
+		kc:    kc,
+		image: image,
+	}, nil
 }

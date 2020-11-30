@@ -15,6 +15,7 @@
 package google
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
@@ -36,6 +38,7 @@ type lister struct {
 	transport http.RoundTripper
 	repo      name.Repository
 	client    *http.Client
+	ctx       context.Context
 }
 
 func newLister(repo name.Repository, options ...ListerOption) (*lister, error) {
@@ -43,6 +46,7 @@ func newLister(repo name.Repository, options ...ListerOption) (*lister, error) {
 		auth:      authn.Anonymous,
 		transport: http.DefaultTransport,
 		repo:      repo,
+		ctx:       context.Background(),
 	}
 
 	for _, option := range options {
@@ -51,8 +55,18 @@ func newLister(repo name.Repository, options ...ListerOption) (*lister, error) {
 		}
 	}
 
+	// Wrap the transport in something that logs requests and responses.
+	// It's expensive to generate the dumps, so skip it if we're writing
+	// to nothing.
+	if logs.Enabled(logs.Debug) {
+		l.transport = transport.NewLogger(l.transport)
+	}
+
+	// Wrap the transport in something that can retry network flakes.
+	l.transport = transport.NewRetry(l.transport)
+
 	scopes := []string{repo.Scope(transport.PullScope)}
-	tr, err := transport.New(repo.Registry, l.auth, l.transport, scopes)
+	tr, err := transport.NewWithContext(l.ctx, repo.Registry, l.auth, l.transport, scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +83,11 @@ func (l *lister) list(repo name.Repository) (*Tags, error) {
 		Path:   fmt.Sprintf("/v2/%s/tags/list", repo.RepositoryStr()),
 	}
 
-	resp, err := l.client.Get(uri.String())
+	req, err := http.NewRequestWithContext(l.ctx, http.MethodGet, uri.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := l.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -87,12 +105,14 @@ func (l *lister) list(repo name.Repository) (*Tags, error) {
 	return &tags, nil
 }
 
+// Uploaded uses json.Number to work around GCR returning timeUploaded
+// as a string, while AR returns the same field as int64.
 type rawManifestInfo struct {
-	Size      string   `json:"imageSizeBytes"`
-	MediaType string   `json:"mediaType"`
-	Created   string   `json:"timeCreatedMs"`
-	Uploaded  string   `json:"timeUploadedMs"`
-	Tags      []string `json:"tag"`
+	Size      string      `json:"imageSizeBytes"`
+	MediaType string      `json:"mediaType"`
+	Created   string      `json:"timeCreatedMs"`
+	Uploaded  json.Number `json:"timeUploadedMs"`
+	Tags      []string    `json:"tag"`
 }
 
 // ManifestInfo is a Manifests entry is the output of List and Walk.
@@ -108,6 +128,21 @@ func fromUnixMs(ms int64) time.Time {
 	sec := ms / 1000
 	ns := (ms % 1000) * 1000000
 	return time.Unix(sec, ns)
+}
+
+func toUnixMs(t time.Time) string {
+	return strconv.FormatInt(t.UnixNano()/1000000, 10)
+}
+
+// MarshalJSON implements json.Marshaler
+func (m ManifestInfo) MarshalJSON() ([]byte, error) {
+	return json.Marshal(rawManifestInfo{
+		Size:      strconv.FormatUint(m.Size, 10),
+		MediaType: m.MediaType,
+		Created:   toUnixMs(m.Created),
+		Uploaded:  json.Number(toUnixMs(m.Uploaded)),
+		Tags:      m.Tags,
+	})
 }
 
 // UnmarshalJSON implements json.Unmarshaler

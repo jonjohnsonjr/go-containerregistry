@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"golang.org/x/oauth2"
 	googauth "golang.org/x/oauth2/google"
 )
@@ -52,12 +53,23 @@ func NewEnvAuthenticator() (authn.Authenticator, error) {
 		return nil, err
 	}
 
-	return &tokenSourceAuth{oauth2.ReuseTokenSource(nil, ts)}, nil
+	token, err := ts.Token()
+	if err != nil {
+		return nil, err
+	}
+
+	return &tokenSourceAuth{oauth2.ReuseTokenSource(token, ts)}, nil
 }
 
 // NewGcloudAuthenticator returns an oauth2.TokenSource that generates access
 // tokens by shelling out to the gcloud sdk.
 func NewGcloudAuthenticator() (authn.Authenticator, error) {
+	if _, err := exec.LookPath("gcloud"); err != nil {
+		// gcloud is not available, fall back to anonymous
+		logs.Warn.Println("gcloud binary not found")
+		return authn.Anonymous, nil
+	}
+
 	ts := gcloudSource{GetGcloudCmd()}
 
 	// Attempt to fetch a token to ensure gcloud is installed and we can run it.
@@ -69,19 +81,49 @@ func NewGcloudAuthenticator() (authn.Authenticator, error) {
 	return &tokenSourceAuth{oauth2.ReuseTokenSource(token, ts)}, nil
 }
 
+// NewJSONKeyAuthenticator returns a Basic authenticator which uses Service Account
+// as a way of authenticating with Google Container Registry.
+// More information: https://cloud.google.com/container-registry/docs/advanced-authentication#json_key_file
+func NewJSONKeyAuthenticator(serviceAccountJSON string) authn.Authenticator {
+	return &authn.Basic{
+		Username: "_json_key",
+		Password: serviceAccountJSON,
+	}
+}
+
+// NewTokenAuthenticator returns an oauth2.TokenSource that generates access
+// tokens by using the Google SDK to produce JWT tokens from a Service Account.
+// More information: https://godoc.org/golang.org/x/oauth2/google#JWTAccessTokenSourceFromJSON
+func NewTokenAuthenticator(serviceAccountJSON string, scope string) (authn.Authenticator, error) {
+	ts, err := googauth.JWTAccessTokenSourceFromJSON([]byte(serviceAccountJSON), string(scope))
+	if err != nil {
+		return nil, err
+	}
+
+	return &tokenSourceAuth{oauth2.ReuseTokenSource(nil, ts)}, nil
+}
+
+// NewTokenSourceAuthenticator converts an oauth2.TokenSource into an authn.Authenticator.
+func NewTokenSourceAuthenticator(ts oauth2.TokenSource) authn.Authenticator {
+	return &tokenSourceAuth{ts}
+}
+
 // tokenSourceAuth turns an oauth2.TokenSource into an authn.Authenticator.
 type tokenSourceAuth struct {
 	oauth2.TokenSource
 }
 
 // Authorization implements authn.Authenticator.
-func (tsa *tokenSourceAuth) Authorization() (string, error) {
+func (tsa *tokenSourceAuth) Authorization() (*authn.AuthConfig, error) {
 	token, err := tsa.Token()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return "Bearer " + token.AccessToken, nil
+	return &authn.AuthConfig{
+		Username: "_token",
+		Password: token.AccessToken,
+	}, nil
 }
 
 // gcloudOutput represents the output of the gcloud command we invoke.

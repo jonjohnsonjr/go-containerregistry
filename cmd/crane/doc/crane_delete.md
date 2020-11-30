@@ -7,13 +7,21 @@ Delete an image reference from its registry
 Delete an image reference from its registry
 
 ```
-crane delete [flags]
+crane delete IMAGE [flags]
 ```
 
 ### Options
 
 ```
   -h, --help   help for delete
+```
+
+### Options inherited from parent commands
+
+```
+      --insecure            Allow image references to be fetched without TLS
+      --platform platform   Specifies the platform in the form os/arch[/variant] (e.g. linux/amd64). (default all)
+  -v, --verbose             Enable debug logs
 ```
 
 ### SEE ALSO

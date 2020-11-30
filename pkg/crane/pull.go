@@ -16,13 +16,15 @@ package crane
 
 import (
 	"fmt"
-	"log"
+	"os"
 
-	"github.com/google/go-containerregistry/pkg/authn"
+	legacy "github.com/google/go-containerregistry/pkg/legacy/tarball"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
-	"github.com/spf13/cobra"
 )
 
 // Tag applied to images that were pulled by digest. This denotes that the
@@ -30,30 +32,22 @@ import (
 // ":latest" tag which might be misleading.
 const iWasADigestTag = "i-was-a-digest"
 
-func init() { Root.AddCommand(NewCmdPull()) }
-
-// NewCmdPull creates a new cobra.Command for the pull subcommand.
-func NewCmdPull() *cobra.Command {
-	return &cobra.Command{
-		Use:   "pull",
-		Short: "Pull a remote image by reference and store its contents in a tarball",
-		Args:  cobra.ExactArgs(2),
-		Run:   pull,
+// Pull returns a v1.Image of the remote image src.
+func Pull(src string, opt ...Option) (v1.Image, error) {
+	o := makeOptions(opt...)
+	ref, err := name.ParseReference(src, o.name...)
+	if err != nil {
+		return nil, fmt.Errorf("parsing tag %q: %v", src, err)
 	}
+
+	return remote.Image(ref, o.remote...)
 }
 
-func pull(_ *cobra.Command, args []string) {
-	src, dst := args[0], args[1]
-
-	ref, err := name.ParseReference(src, name.WeakValidation)
+// Save writes the v1.Image img as a tarball at path with tag src.
+func Save(img v1.Image, src, path string) error {
+	ref, err := name.ParseReference(src)
 	if err != nil {
-		log.Fatalf("parsing tag %q: %v", src, err)
-	}
-	log.Printf("Pulling %v", ref)
-
-	i, err := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
-	if err != nil {
-		log.Fatalf("reading image %q: %v", ref, err)
+		return fmt.Errorf("parsing ref %q: %v", src, err)
 	}
 
 	// WriteToFile wants a tag to write to the tarball, but we might have
@@ -64,16 +58,51 @@ func pull(_ *cobra.Command, args []string) {
 	if !ok {
 		d, ok := ref.(name.Digest)
 		if !ok {
-			log.Fatal("ref wasn't a tag or digest")
+			return fmt.Errorf("ref wasn't a tag or digest")
 		}
-		s := fmt.Sprintf("%s:%s", d.Repository.Name(), iWasADigestTag)
-		tag, err = name.NewTag(s, name.WeakValidation)
-		if err != nil {
-			log.Fatalf("parsing digest as tag (%s): %v", s, err)
-		}
+		tag = d.Repository.Tag(iWasADigestTag)
 	}
 
-	if err := tarball.WriteToFile(dst, tag, i); err != nil {
-		log.Fatalf("writing image %q: %v", dst, err)
+	// no progress channel (for now)
+	return tarball.WriteToFile(path, tag, img)
+}
+
+// PullLayer returns the given layer from a registry.
+func PullLayer(ref string, opt ...Option) (v1.Layer, error) {
+	o := makeOptions(opt...)
+	digest, err := name.NewDigest(ref, o.name...)
+	if err != nil {
+		return nil, err
 	}
+
+	return remote.Layer(digest, o.remote...)
+}
+
+// SaveLegacy writes the v1.Image img as a legacy tarball at path with tag src.
+func SaveLegacy(img v1.Image, src, path string) error {
+	ref, err := name.ParseReference(src)
+	if err != nil {
+		return fmt.Errorf("parsing ref %q: %v", src, err)
+	}
+
+	w, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+
+	return legacy.Write(ref, img, w)
+}
+
+// SaveOCI writes the v1.Image img as an OCI Image Layout at path. If a layout
+// already exists at that path, it will add the image to the index.
+func SaveOCI(img v1.Image, path string) error {
+	p, err := layout.FromPath(path)
+	if err != nil {
+		p, err = layout.Write(path, empty.Index)
+		if err != nil {
+			return err
+		}
+	}
+	return p.AppendImage(img)
 }
