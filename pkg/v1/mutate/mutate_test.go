@@ -32,15 +32,15 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/match"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/stream"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/google/go-containerregistry/pkg/v1/validate"
 )
 
 func TestExtractWhiteout(t *testing.T) {
-	img, err := tarball.ImageFromPath("testdata/whiteout_image.tar", nil)
+	img, err := partial.ImageFromPath("testdata/whiteout_image.tar", nil)
 	if err != nil {
 		t.Errorf("Error loading image: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestExtractWhiteout(t *testing.T) {
 }
 
 func TestExtractOverwrittenFile(t *testing.T) {
-	img, err := tarball.ImageFromPath("testdata/overwritten_file.tar", nil)
+	img, err := partial.ImageFromPath("testdata/overwritten_file.tar", nil)
 	if err != nil {
 		t.Fatalf("Error loading image: %v", err)
 	}
@@ -547,7 +547,7 @@ func assertMTime(t *testing.T, layer v1.Layer, expectedTime time.Time) {
 func sourceImage(t *testing.T) v1.Image {
 	t.Helper()
 
-	image, err := tarball.ImageFromPath("testdata/source_image.tar", nil)
+	image, err := partial.ImageFromPath("testdata/source_image.tar", nil)
 	if err != nil {
 		t.Fatalf("Error loading image: %v", err)
 	}

@@ -28,7 +28,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/internal/gzip"
 	"github.com/google/go-containerregistry/pkg/v1/match"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
@@ -305,8 +305,8 @@ func Time(img v1.Image, t time.Time) (v1.Image, error) {
 	return ConfigFile(newImage, cfg)
 }
 
-func layerTime(layer v1.Layer, t time.Time) (v1.Layer, error) {
-	layerReader, err := layer.Uncompressed()
+func layerTime(l v1.Layer, t time.Time) (v1.Layer, error) {
+	layerReader, err := l.Uncompressed()
 	if err != nil {
 		return nil, fmt.Errorf("getting layer: %v", err)
 	}
@@ -346,12 +346,12 @@ func layerTime(layer v1.Layer, t time.Time) (v1.Layer, error) {
 	opener := func() (io.ReadCloser, error) {
 		return gzip.ReadCloser(ioutil.NopCloser(bytes.NewReader(b))), nil
 	}
-	layer, err = tarball.LayerFromOpener(opener)
+	l, err = partial.LayerFromOpener(opener)
 	if err != nil {
 		return nil, fmt.Errorf("creating layer: %v", err)
 	}
 
-	return layer, nil
+	return l, nil
 }
 
 // Canonical is a helper function to combine Time and configFile

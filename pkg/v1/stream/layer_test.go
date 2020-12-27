@@ -25,7 +25,7 @@ import (
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
@@ -64,8 +64,8 @@ func TestStreamVsBuffer(t *testing.T) {
 	}
 
 	// Test that buffering the same contents and using
-	// tarball.LayerFromOpener results in the same digest/diffID/size.
-	tl, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) { return newBlob(), nil })
+	// partial.LayerFromOpener results in the same digest/diffID/size.
+	tl, err := partial.LayerFromOpener(func() (io.ReadCloser, error) { return newBlob(), nil })
 	if err != nil {
 		t.Fatalf("LayerFromOpener: %v", err)
 	}

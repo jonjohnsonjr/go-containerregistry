@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/random"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
@@ -182,8 +182,8 @@ func TestErrUnexpectedEOF(t *testing.T) {
 	c := NewFilesystemCache(dir)
 
 	// make sure LayerFromFile returns UnexpectedEOF
-	if _, err := tarball.LayerFromFile(p); err != io.ErrUnexpectedEOF {
-		t.Fatalf("tarball.LayerFromFile(%s): expected %v, got %v", p, io.ErrUnexpectedEOF, err)
+	if _, err := partial.LayerFromFile(p); err != io.ErrUnexpectedEOF {
+		t.Fatalf("partial.LayerFromFile(%s): expected %v, got %v", p, io.ErrUnexpectedEOF, err)
 	}
 
 	// Try to Get the layer

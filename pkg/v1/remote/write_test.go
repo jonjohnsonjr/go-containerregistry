@@ -41,7 +41,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/stream"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/google/go-containerregistry/pkg/v1/validate"
 )
@@ -424,7 +423,7 @@ func TestDedupeLayers(t *testing.T) {
 	// Append three identical tarball.Layers, which should be deduped
 	// because contents can be hashed before uploading.
 	for i := 0; i < 3; i++ {
-		tl, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) { return newBlob(), nil })
+		tl, err := partial.LayerFromOpener(func() (io.ReadCloser, error) { return newBlob(), nil })
 		if err != nil {
 			t.Fatalf("LayerFromOpener(#%d): %v", i, err)
 		}

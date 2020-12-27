@@ -8,7 +8,7 @@ import (
 	"runtime"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/partial"
 )
 
 type fscache struct {
@@ -103,7 +103,7 @@ func (rc *readcloser) Close() error {
 }
 
 func (fs *fscache) Get(h v1.Hash) (v1.Layer, error) {
-	l, err := tarball.LayerFromFile(cachepath(fs.path, h))
+	l, err := partial.LayerFromFile(cachepath(fs.path, h))
 	if os.IsNotExist(err) {
 		return nil, ErrNotFound
 	}
