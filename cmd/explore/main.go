@@ -2,20 +2,27 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"errors"
 	"fmt"
 	"html/template"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"path"
+	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/google/go-containerregistry/pkg/v1/v1util"
 )
+
+const debug = false
 
 const indexTemplate = `
 <div style="font-family: monospace;">
@@ -132,7 +139,7 @@ const manifestTemplate = `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": <a href="/?blob={{$.Repo}}@{{.Digest}}">{{.Digest}}</a>,
+		"digest": <a href="/fs/{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>,
 		</div>
 		</div>
 	},
@@ -168,6 +175,7 @@ func main() {
 	log.Print("Hello world sample started.")
 
 	http.HandleFunc("/", handler)
+	http.HandleFunc("/fs/", fsHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -177,12 +185,8 @@ func main() {
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 
-func renderResponse(w io.Writer, r *http.Request) error {
+func renderResponse(w http.ResponseWriter, r *http.Request) error {
 	qs := r.URL.Query()
-
-	if blobs, ok := qs["blob"]; ok {
-		return renderBlob(w, blobs[0])
-	}
 
 	if configs, ok := qs["config"]; ok {
 		return renderConfig(w, configs[0])
@@ -259,7 +263,44 @@ func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference) error
 	return tmpl.Execute(w, data)
 }
 
-func renderBlob(w io.Writer, ref string) error {
+func renderConfig(w io.Writer, ref string) error {
+	cfgRef, err := name.ParseReference(ref, name.StrictValidation)
+	if err != nil {
+		return err
+	}
+
+	blob, err := remote.Blob(cfgRef)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(w, blob)
+	return err
+}
+
+func fsHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("%v", r.URL)
+
+	ref := strings.TrimPrefix(r.URL.Path, "/fs/")
+	if err := renderBlob(w, r, ref); err != nil {
+		fmt.Fprintf(w, "failed: %v", err)
+	}
+}
+
+func renderBlob(w http.ResponseWriter, r *http.Request, path string) error {
+	chunks := strings.Split(path, "@")
+	if len(chunks) != 2 {
+		return fmt.Errorf("not enough chunks: %s", path)
+	}
+	// 71 = len("sha256:") + 64
+	if len(chunks[1]) < 71 {
+		return fmt.Errorf("second chunk too short: %s", chunks[1])
+	}
+
+	ref := strings.Join([]string{chunks[0], chunks[1][:71]}, "@")
+	if ref == "" {
+		return nil
+	}
 	blobRef, err := name.ParseReference(ref, name.StrictValidation)
 	if err != nil {
 		return err
@@ -276,32 +317,161 @@ func renderBlob(w io.Writer, ref string) error {
 	}
 	defer zr.Close()
 
-	tr := tar.NewReader(zr)
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(w, header.Name)
+	fs := &layerFs{
+		ref: ref,
+		tr:  tar.NewReader(zr),
 	}
+
+	http.FileServer(fs).ServeHTTP(w, r)
 
 	return nil
 }
 
-func renderConfig(w io.Writer, ref string) error {
-	cfgRef, err := name.ParseReference(ref, name.StrictValidation)
-	if err != nil {
-		return err
+type layerFs struct {
+	ref     string
+	tr      *tar.Reader
+	headers []*tar.Header
+}
+
+func (fs *layerFs) Open(name string) (http.File, error) {
+	log.Printf("Open(%q)", name)
+	name = strings.TrimPrefix(name, "/fs/"+fs.ref)
+	for {
+		header, err := fs.tr.Next()
+		if err == io.EOF {
+			log.Printf("Open(%q): EOF", name)
+			break
+		}
+		if debug {
+			log.Printf("Open(%q): header.Name = %q", name, header.Name)
+		}
+		fs.headers = append(fs.headers, header)
+		if err != nil {
+			return nil, err
+		}
+		if path.Clean("/"+header.Name) == name {
+			return &layerFile{
+				name:   name,
+				header: header,
+				fs:     fs,
+			}, nil
+		}
 	}
 
-	blob, err := remote.Blob(cfgRef)
-	if err != nil {
-		return err
+	if path.Base(name) == "index.html" {
+		return nil, fmt.Errorf("nope: %s", name)
 	}
 
-	_, err = io.Copy(w, blob)
-	return err
+	// Assume we're listing the top level, return this thing.
+	return &layerFile{
+		name: name,
+		fs:   fs,
+	}, nil
+}
+
+type layerFile struct {
+	name   string
+	header *tar.Header
+	fs     *layerFs
+	br     *bytes.Reader
+	bytes  []byte
+}
+
+func (f *layerFile) Seek(offset int64, whence int) (int64, error) {
+	log.Printf("Seek(%q, %d, %d)", f.name, offset, whence)
+	if whence == io.SeekEnd {
+		return f.header.Size, nil
+	}
+	if whence == io.SeekStart {
+		f.br = bytes.NewReader(f.bytes)
+		log.Printf("f.br = bytes.NewReader(f.bytes)")
+		return 0, nil
+	}
+
+	return 0, fmt.Errorf("Seek(%q, %d, %d)", f.name, offset, whence)
+}
+
+func (f *layerFile) Read(b []byte) (int, error) {
+	if f.br == nil {
+		b, err := ioutil.ReadAll(f.fs.tr)
+		if err != nil {
+			return 0, err
+		}
+		log.Printf("ReadAll(%q) = %d bytes", f.name, len(b))
+		f.bytes = b
+		f.br = bytes.NewReader(f.bytes)
+	}
+	n, err := f.br.Read(b)
+	log.Printf("Read(%q) = (%d, %v)", f.name, n, err)
+	return n, err
+}
+
+func (f *layerFile) Close() error {
+	log.Printf("Close(%q)", f.name)
+	return nil
+}
+
+func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
+	log.Printf("ReadDir(%q)", f.name)
+	prefix := path.Clean("/" + f.name)
+	if f.Root() {
+		prefix = "/"
+	}
+	// TODO: respect count
+	fis := []os.FileInfo{}
+	for _, hdr := range f.fs.headers {
+		name := path.Clean("/" + hdr.Name)
+		dir := path.Dir(strings.TrimPrefix(name, prefix))
+		if debug {
+			log.Printf("hdr.Name=%q prefix=%q name=%q dir=%q", hdr.Name, prefix, name, dir)
+		}
+		// inDir := path.Clean("/"+dir+"/") == path.Clean("/"+name+"/")
+		if strings.HasPrefix(name, prefix) && (f.Root() && dir == "." || dir == "/") {
+			if debug {
+				log.Printf("Readdir(%q) -> %q match!", f.name, hdr.Name)
+			}
+			fis = append(fis, hdr.FileInfo())
+		}
+	}
+	return fis, nil
+}
+
+func (f *layerFile) Stat() (os.FileInfo, error) {
+	log.Printf("Stat(%q)", f.name)
+	if f.Root() {
+		return fileInfo{f.name}, nil
+	}
+	return f.header.FileInfo(), nil
+}
+
+func (f *layerFile) Root() bool {
+	return f.name == "" || f.name == "/" || f.name == "/index.html"
+}
+
+type fileInfo struct {
+	name string
+}
+
+func (f fileInfo) Name() string {
+	return f.name
+}
+
+func (f fileInfo) Size() int64 {
+	return 0
+}
+
+func (f fileInfo) Mode() os.FileMode {
+	return os.ModeDir
+}
+
+func (f fileInfo) ModTime() time.Time {
+	return time.Now()
+}
+
+func (f fileInfo) IsDir() bool {
+	return true
+}
+
+func (f fileInfo) Sys() interface{} {
+	return nil
 }
