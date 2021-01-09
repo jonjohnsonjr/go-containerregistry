@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,12 +33,14 @@ const indexTemplate = `
 	<div>
 	"schemaVersion": {{.SchemaVersion}},
 	</div>
+	{{ if .MediaType }}
 	<div>
 	"mediaType": "{{.MediaType}}",
 	</div>
+	{{end}}
 	<div>
 	"manifests": [
-	{{ range .Manifests }}
+	{{ range $i, $manifest := .Manifests }}
 	<div style="margin-left: 2em;">
 	{
 		<div style="margin-left: 2em;">
@@ -47,7 +51,7 @@ const indexTemplate = `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": <a href="/?image={{$.Repo}}@{{.Digest}}">{{.Digest}}</a>,
+		"digest": <a href="/?image={{$.Repo}}@{{.Digest}}">{{.Digest}}</a>{{ if (or .Platform .Annotations) }},{{ end }}
 		</div>
 		{{ if .Platform }}
 		{{ with .Platform }}
@@ -69,9 +73,9 @@ const indexTemplate = `
 			<div>
 			"os.features": [
 				<div style="margin-left: 2em;">
-				{{range .OSFeatures}}
+				{{range $i, $e := .OSFeatures}}
 					<div>
-					"{{.}}",
+					"{{.}}"{{ if not (last $i .OSFeatures) }},{{ end }}
 					</div>
 				{{end}}
 			</div>
@@ -84,15 +88,52 @@ const indexTemplate = `
 			</div>
 			{{end}}
 			</div>
+			{{ if .Features }}
+			<div>
+			"features": [
+				<div style="margin-left: 2em;">
+				{{range $i, $e := .Features}}
+					<div>
+					"{{.}}"{{ if not (last $i $.Features) }},{{ end }}
+					</div>
+				{{end}}
+			</div>
+			],
+			</div>
+			{{end}}
+		}{{ if $manifest.Annotations }},{{ end }}
+		{{end}}
+		</div>
+		{{ if $manifest.Annotations }}
+		<div>
+		"annotations": {
+			<div style="margin-left: 2em;">
+			{{range $k, $v := $manifest.Annotations}}
+				<div>
+				"{{$k}}": "{{$v}}"{{ if not (mapLast $k $manifest.Annotations) }},{{ end }}
+				</div>
+			{{end}}
+		</div>
 		}
 		</div>
 		{{end}}
 		{{end}}
 		</div>
-	},
+	}{{ if not (last $i $.Manifests) }},{{ end }}
 	</div>
 	{{ end }}
-	]
+	]{{ if $.Annotations }},
+	<div>
+	"annotations": {
+		<div style="margin-left: 2em;">
+		{{range $k, $v := $.Annotations}}
+			<div>
+			"{{$k}}": "{{$v}}"{{ if not (mapLast $k $.Annotations) }},{{ end }}
+			</div>
+		{{end}}
+	}
+	</div>
+	{{end}}
 	</div>
 	</div>
 }
@@ -120,15 +161,28 @@ const manifestTemplate = `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": <a href="/?config={{$.Repo}}@{{.Digest}}&image={{$.Image}}">{{.Digest}}</a>,
+		"digest": <a href="/?config={{$.Repo}}@{{.Digest}}&image={{$.Image}}">{{.Digest}}</a>{{ if .Annotations }},{{end}}
 		</div>
+		{{ if .Annotations }}
+		<div>
+		"annotations": {
+			<div style="margin-left: 2em;">
+			{{range $k, $v := .Annotations}}
+				<div>
+				"{{$k}}": "{{$v}}"{{ if not (mapLast $k .Annotations) }},{{ end }}
+				</div>
+			{{end}}
+		</div>
+		}
+		</div>
+		{{end}}
 		</div>
 		{{ end }}
 	}
 	</div>
 	<div>
 	"layers": [
-	{{ range .Layers }}
+	{{ range $i, $layer := .Layers }}
 	<div style="margin-left: 2em;">
 	{
 		<div style="margin-left: 2em;">
@@ -139,18 +193,66 @@ const manifestTemplate = `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": <a href="/fs/{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>,
+		"digest": <a href="/fs/{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>{{ if $layer.Annotations }},{{end}}
 		</div>
+		{{ if $layer.Annotations }}
+		<div>
+		"annotations": {
+			<div style="margin-left: 2em;">
+			{{range $k, $v := .Annotations}}
+				<div>
+				"{{$k}}": "{{$v}}"{{ if not (mapLast $k $layer.Annotations) }},{{ end }}
+				</div>
+			{{end}}
 		</div>
-	},
+		}
+		</div>
+		{{end}}
+		</div>
+	}{{ if not (last $i $.Layers) }},{{ end }}
 	</div>
 	{{ end }}
-	]
+	]{{ if $.Annotations }},
+	<div>
+	"annotations": {
+		<div style="margin-left: 2em;">
+		{{range $k, $v := $.Annotations}}
+			<div>
+			"{{$k}}": "{{$v}}"{{ if not (mapLast $k $.Annotations) }},{{ end }}
+			</div>
+		{{end}}
+	}
+	</div>
+	{{end}}
+
 	</div>
 	</div>
 }
 </div>
 `
+
+var fns = template.FuncMap{
+	"last": func(x int, a interface{}) bool {
+		return x == reflect.ValueOf(a).Len()-1
+	},
+	"mapLast": func(x string, a interface{}) bool {
+		// We know this is only used for map[string]string
+		vs := reflect.ValueOf(a).MapKeys()
+		ss := make([]string, 0, len(vs))
+		for _, v := range vs {
+			ss = append(ss, v.String())
+		}
+		sort.Strings(ss)
+		return x == ss[len(ss)-1]
+	},
+}
+
+var indexTmpl, manifestTmpl *template.Template
+
+func init() {
+	indexTmpl = template.Must(template.New("indexTemplate").Funcs(fns).Parse(indexTemplate))
+	manifestTmpl = template.Must(template.New("manifestTemplate").Funcs(fns).Parse(manifestTemplate))
+}
 
 type IndexData struct {
 	Repo string
@@ -232,11 +334,7 @@ func renderIndex(w io.Writer, desc *remote.Descriptor, ref name.Reference) error
 		IndexManifest: *manifest,
 	}
 
-	tmpl, err := template.New("indexTemplate").Parse(indexTemplate)
-	if err != nil {
-		return err
-	}
-	return tmpl.Execute(w, data)
+	return indexTmpl.Execute(w, data)
 }
 
 func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference) error {
@@ -256,11 +354,8 @@ func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference) error
 		Manifest: *manifest,
 	}
 
-	tmpl, err := template.New("manifestTemplate").Parse(manifestTemplate)
-	if err != nil {
-		return err
-	}
-	return tmpl.Execute(w, data)
+	return manifestTmpl.Execute(w, data)
+
 }
 
 func renderConfig(w io.Writer, ref string) error {
