@@ -336,15 +336,18 @@ type layerFs struct {
 func (fs *layerFs) Open(name string) (http.File, error) {
 	log.Printf("Open(%q)", name)
 	name = strings.TrimPrefix(name, "/fs/"+fs.ref)
+	chunks := strings.Split(name, " -> ")
+	if len(chunks) == 2 {
+		name = chunks[1]
+		log.Printf("Open(%q) (scrubbed)", name)
+	}
 	for {
 		header, err := fs.tr.Next()
 		if err == io.EOF {
 			log.Printf("Open(%q): EOF", name)
 			break
 		}
-		if debug {
-			log.Printf("Open(%q): header.Name = %q", name, header.Name)
-		}
+		log.Printf("Open(%q): header.Name = %q", name, header.Name)
 		fs.headers = append(fs.headers, header)
 		if err != nil {
 			return nil, err
@@ -430,10 +433,29 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 			if debug {
 				log.Printf("Readdir(%q) -> %q match!", f.name, hdr.Name)
 			}
-			fis = append(fis, hdr.FileInfo())
+			fi := hdr.FileInfo()
+			if isLink(hdr) {
+				link := hdr.Linkname
+				if !path.IsAbs(hdr.Linkname) {
+					if f.Root() && dir == "." {
+						dir = "/"
+					}
+					link = path.Clean(path.Join(dir, link))
+				}
+				fi = symlink{
+					FileInfo: fi,
+					name:     fi.Name(),
+					link:     link,
+				}
+			}
+			fis = append(fis, fi)
 		}
 	}
 	return fis, nil
+}
+
+func isLink(hdr *tar.Header) bool {
+	return hdr.Linkname != ""
 }
 
 func (f *layerFile) Stat() (os.FileInfo, error) {
@@ -474,4 +496,14 @@ func (f fileInfo) IsDir() bool {
 
 func (f fileInfo) Sys() interface{} {
 	return nil
+}
+
+type symlink struct {
+	os.FileInfo
+	name string
+	link string
+}
+
+func (s symlink) Name() string {
+	return fmt.Sprintf("%s -> %s", s.name, s.link)
 }
