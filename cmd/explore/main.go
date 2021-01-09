@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -368,9 +369,19 @@ func renderConfig(w io.Writer, ref string) error {
 	if err != nil {
 		return err
 	}
+	defer blob.Close()
 
-	_, err = io.Copy(w, blob)
-	return err
+	dec := json.NewDecoder(blob)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "   ")
+
+	// TODO: Is there a way to just stream indentation without decoding?
+	var m v1.ConfigFile
+	if err := dec.Decode(&m); err != nil {
+		return err
+	}
+
+	return enc.Encode(m)
 }
 
 func fsHandler(w http.ResponseWriter, r *http.Request) {
