@@ -337,17 +337,17 @@ func (fs *layerFs) Open(name string) (http.File, error) {
 	log.Printf("Open(%q)", name)
 	name = strings.TrimPrefix(name, "/fs/"+fs.ref)
 	chunks := strings.Split(name, " -> ")
-	if len(chunks) == 2 {
-		name = chunks[1]
-		log.Printf("Open(%q) (scrubbed)", name)
-	}
+	name = chunks[len(chunks)-1]
+	log.Printf("Open(%q) (scrubbed)", name)
 	for {
 		header, err := fs.tr.Next()
 		if err == io.EOF {
 			log.Printf("Open(%q): EOF", name)
 			break
 		}
-		log.Printf("Open(%q): header.Name = %q", name, header.Name)
+		if debug {
+			log.Printf("Open(%q): header.Name = %q", name, header.Name)
+		}
 		fs.headers = append(fs.headers, header)
 		if err != nil {
 			return nil, err
@@ -436,11 +436,11 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 			fi := hdr.FileInfo()
 			if isLink(hdr) {
 				link := hdr.Linkname
+				if debug {
+					log.Printf("name = %q, hdr.Linkname = %q, dir = %q", name, link, dir)
+				}
 				if !path.IsAbs(hdr.Linkname) {
-					if f.Root() && dir == "." {
-						dir = "/"
-					}
-					link = path.Clean(path.Join(dir, link))
+					link = path.Clean(path.Join(path.Dir(name), link))
 				}
 				fi = symlink{
 					FileInfo: fi,
