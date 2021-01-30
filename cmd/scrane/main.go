@@ -59,25 +59,56 @@ func main() {
 		logs.Debug.SetOutput(os.Stderr)
 	}
 
-	// PEM-encoded x509 thingy.
-	b, err := ioutil.ReadFile(*keyPath)
+	ref, err := name.ParseReference(flag.Args()[0])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	output, err := buildImage(b, flag.Args()[0])
+	output, err := pushIndex(ref)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println(output)
 }
 
-func buildImage(key []byte, img string) (string, error) {
-	ref, err := name.ParseReference(img)
+func sign(payload []byte) ([]byte, error) {
+	b, err := ioutil.ReadFile(*keyPath)
 	if err != nil {
-		return "", err
+		log.Fatal(err)
+	}
+	p, _ := pem.Decode(b)
+	if p == nil {
+		return nil, errors.New("pem.Decode failed")
 	}
 
+	if p.Type != "PRIVATE KEY" && p.Type != "RSA PRIVATE KEY" {
+		return nil, fmt.Errorf("not private: %q", p.Type)
+	}
+
+	pk, err := x509.ParsePKCS8PrivateKey(p.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO: probably want an interface for this
+	h := sha256.Sum256(payload)
+	var signature []byte
+	switch k := pk.(type) {
+	case *rsa.PrivateKey:
+		signature, err = rsa.SignPKCS1v15(rand.Reader, k, crypto.SHA256, h[:])
+	case *ecdsa.PrivateKey:
+		signature, err = ecdsa.SignASN1(rand.Reader, k, h[:])
+	case ed25519.PrivateKey:
+		signature = ed25519.Sign(k, payload)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return signature, nil
+}
+
+func pushIndex(ref name.Reference) (string, error) {
 	get, err := remote.Get(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
 		return "", err
@@ -90,30 +121,7 @@ func buildImage(key []byte, img string) (string, error) {
 		return "", err
 	}
 
-	p, _ := pem.Decode(key)
-	if p == nil {
-		return "", errors.New("DECODE")
-	}
-
-	if p.Type != "PRIVATE KEY" && p.Type != "RSA PRIVATE KEY" {
-		return "", fmt.Errorf("not private: %q", p.Type)
-	}
-
-	pk, err := x509.ParsePKCS8PrivateKey(p.Bytes)
-	if err != nil {
-		return "", err
-	}
-
-	h := sha256.Sum256(b)
-	var signature []byte
-	switch k := pk.(type) {
-	case *rsa.PrivateKey:
-		signature, err = rsa.SignPKCS1v15(rand.Reader, k, crypto.SHA256, h[:])
-	case *ecdsa.PrivateKey:
-		signature, err = ecdsa.SignASN1(rand.Reader, k, h[:])
-	case ed25519.PrivateKey:
-		signature = ed25519.Sign(k, b)
-	}
+	signature, err := sign(b)
 	if err != nil {
 		return "", err
 	}
