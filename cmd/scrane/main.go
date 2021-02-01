@@ -48,6 +48,7 @@ import (
 // TODO: Adopt standard flags for this stuff, maybe use cobra.
 // TODO: Different kinds of signatures.
 var keyPath = flag.String("key", "", "private key")
+var annotation = flag.String("a", "", "annotation")
 var verbose = flag.Bool("v", false, "log lots of stuff")
 
 func main() {
@@ -116,6 +117,15 @@ func pushIndex(ref name.Reference) (string, error) {
 
 	desc := get.Descriptor
 
+	if *annotation != "" {
+		parts := strings.SplitN(*annotation, "=", 2)
+		if len(parts) == 2 {
+			if desc.Annotations == nil {
+				desc.Annotations = map[string]string{}
+			}
+			desc.Annotations[parts[0]] = parts[1]
+		}
+	}
 	b, err := json.Marshal(desc)
 	if err != nil {
 		return "", err
