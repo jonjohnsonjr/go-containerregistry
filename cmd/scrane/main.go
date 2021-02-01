@@ -32,6 +32,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 
@@ -42,6 +43,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
@@ -50,6 +52,8 @@ import (
 var keyPath = flag.String("key", "", "private key")
 var annotation = flag.String("a", "", "annotation")
 var verbose = flag.Bool("v", false, "log lots of stuff")
+
+const sigkey = "dev.ggcr.crane/signature"
 
 func main() {
 	flag.Parse()
@@ -60,59 +64,171 @@ func main() {
 		logs.Debug.SetOutput(os.Stderr)
 	}
 
-	ref, err := name.ParseReference(flag.Args()[0])
+	ref, err := name.ParseReference(flag.Args()[1])
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	output, err := pushIndex(ref)
-	if err != nil {
-		log.Fatal(err)
+	subcommand := flag.Args()[0]
+	if subcommand == "sign" {
+		output, err := pushIndex(ref)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(output)
+	} else if subcommand == "verify" {
+		err := verifyIndex(ref)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Println("Verified OK")
+	} else {
+		log.Fatalf("unexpected subcommand: %s", subcommand)
 	}
-	fmt.Println(output)
 }
 
-func sign(payload []byte) ([]byte, string, error) {
+func sign(payload []byte) ([]byte, error) {
 	b, err := ioutil.ReadFile(*keyPath)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	p, _ := pem.Decode(b)
 	if p == nil {
-		return nil, "", errors.New("pem.Decode failed")
+		return nil, errors.New("pem.Decode failed")
 	}
 
-	if p.Type != "PRIVATE KEY" && p.Type != "RSA PRIVATE KEY" {
-		return nil, "", fmt.Errorf("not private: %q", p.Type)
+	if p.Type != "PRIVATE KEY" {
+		return nil, fmt.Errorf("not private: %q", p.Type)
 	}
 
 	pk, err := x509.ParsePKCS8PrivateKey(p.Bytes)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	// TODO: probably want an interface for this
 	h := sha256.Sum256(payload)
-	var (
-		signature []byte
-		kind      string
-	)
+	var signature []byte
 	switch k := pk.(type) {
 	case *rsa.PrivateKey:
 		signature, err = rsa.SignPKCS1v15(rand.Reader, k, crypto.SHA256, h[:])
-		kind = "rsa"
 	case *ecdsa.PrivateKey:
 		signature, err = ecdsa.SignASN1(rand.Reader, k, h[:])
-		kind = "ecdsa"
 	case ed25519.PrivateKey:
 		signature = ed25519.Sign(k, payload)
-		kind = "ed25519"
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
-	return signature, kind, nil
+	return signature, nil
+}
+
+func verify(base64sig string, payload []byte) error {
+	signature, err := base64.StdEncoding.DecodeString(base64sig)
+	if err != nil {
+		return err
+	}
+
+	b, err := ioutil.ReadFile(*keyPath)
+	if err != nil {
+		return err
+	}
+	p, _ := pem.Decode(b)
+	if p == nil {
+		return errors.New("pem.Decode failed")
+	}
+
+	if p.Type != "PUBLIC KEY" {
+		return fmt.Errorf("not public: %q", p.Type)
+	}
+
+	pk, err := x509.ParsePKIXPublicKey(p.Bytes)
+	if err != nil {
+		return err
+	}
+
+	// TODO: probably want an interface for this
+	h := sha256.Sum256(payload)
+	switch k := pk.(type) {
+	case *rsa.PublicKey:
+		return rsa.VerifyPKCS1v15(k, crypto.SHA256, h[:], signature)
+	case *ecdsa.PublicKey:
+		if !ecdsa.VerifyASN1(k, h[:], signature) {
+			return errors.New("unable to verify whatever")
+		}
+	case ed25519.PublicKey:
+		if !ed25519.Verify(k, payload, signature) {
+			return errors.New("unable to verify whatever")
+		}
+	default:
+		return fmt.Errorf("invalid public key type: %T", k)
+	}
+
+	return nil
+}
+
+func verifyIndex(ref name.Reference) error {
+	// Find the magic tag that points to the signatures.
+	var idxRef name.Reference
+	if tag, ok := ref.(name.Tag); ok {
+		desc, err := remote.Get(tag, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if err != nil {
+			return err
+		}
+		munged := strings.ReplaceAll(desc.Digest.String(), ":", "-")
+		idxRef = ref.Context().Tag(munged)
+	} else if dgst, ok := ref.(name.Digest); ok {
+		munged := strings.ReplaceAll(dgst.Identifier(), ":", "-")
+		idxRef = ref.Context().Tag(munged)
+	}
+
+	idx, err := remote.Index(idxRef, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		return err
+	}
+	m, err := idx.IndexManifest()
+	if err != nil {
+		return err
+	}
+
+	// Emit any signed payloads (descriptors) to stdout for jq parsing.
+	// If we don't find any signed payloads, return an error.
+	// If any signatures don't validate, return an error.
+	verified := false
+	errs := []string{}
+	for _, desc := range m.Manifests {
+		base64sig, ok := desc.Annotations[sigkey]
+		if !ok {
+			continue
+		}
+		// TODO: get from desc?
+		l, err := remote.Layer(ref.Context().Digest(desc.Digest.String()), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if err != nil {
+			return err
+		}
+
+		r, err := l.Compressed()
+		if err != nil {
+			return err
+		}
+
+		payload, err := ioutil.ReadAll(r)
+		if err != nil {
+			return err
+		}
+
+		if err := verify(base64sig, payload); err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		fmt.Println(string(payload))
+		verified = true
+	}
+	if !verified {
+		return fmt.Errorf("no matching signatures:\n%s", strings.Join(errs, "\n  "))
+	}
+	return nil
 }
 
 func pushIndex(ref name.Reference) (string, error) {
@@ -137,7 +253,7 @@ func pushIndex(ref name.Reference) (string, error) {
 		return "", err
 	}
 
-	signature, kind, err := sign(b)
+	signature, err := sign(b)
 	if err != nil {
 		return "", err
 	}
@@ -147,20 +263,31 @@ func pushIndex(ref name.Reference) (string, error) {
 		mt: types.OCIContentDescriptor,
 	}
 
-	k := fmt.Sprintf("dev.ggcr.crane/%s", kind)
-
-	idx := mutate.AppendManifests(empty.Index, mutate.IndexAddendum{
-		Add: l,
-		Descriptor: v1.Descriptor{
-			Annotations: map[string]string{
-				k: base64.StdEncoding.EncodeToString(signature),
-			},
-		},
-	})
-
 	// sha256:... -> sha256-...
 	munged := strings.ReplaceAll(desc.Digest.String(), ":", "-")
 	tag := ref.Context().Tag(munged)
+
+	base, err := remote.Index(tag, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		if te, ok := err.(*transport.Error); ok {
+			if te.StatusCode != http.StatusNotFound {
+				return "", te
+			} else {
+				base = empty.Index
+			}
+		} else {
+			return "", err
+		}
+	}
+
+	idx := mutate.AppendManifests(base, mutate.IndexAddendum{
+		Add: l,
+		Descriptor: v1.Descriptor{
+			Annotations: map[string]string{
+				sigkey: base64.StdEncoding.EncodeToString(signature),
+			},
+		},
+	})
 
 	if err := remote.WriteIndex(tag, idx, remote.WithAuthFromKeychain(authn.DefaultKeychain)); err != nil {
 		return "", err
