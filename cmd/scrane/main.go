@@ -72,41 +72,47 @@ func main() {
 	fmt.Println(output)
 }
 
-func sign(payload []byte) ([]byte, error) {
+func sign(payload []byte) ([]byte, string, error) {
 	b, err := ioutil.ReadFile(*keyPath)
 	if err != nil {
-		log.Fatal(err)
+		return nil, "", err
 	}
 	p, _ := pem.Decode(b)
 	if p == nil {
-		return nil, errors.New("pem.Decode failed")
+		return nil, "", errors.New("pem.Decode failed")
 	}
 
 	if p.Type != "PRIVATE KEY" && p.Type != "RSA PRIVATE KEY" {
-		return nil, fmt.Errorf("not private: %q", p.Type)
+		return nil, "", fmt.Errorf("not private: %q", p.Type)
 	}
 
 	pk, err := x509.ParsePKCS8PrivateKey(p.Bytes)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// TODO: probably want an interface for this
 	h := sha256.Sum256(payload)
-	var signature []byte
+	var (
+		signature []byte
+		kind      string
+	)
 	switch k := pk.(type) {
 	case *rsa.PrivateKey:
 		signature, err = rsa.SignPKCS1v15(rand.Reader, k, crypto.SHA256, h[:])
+		kind = "rsa"
 	case *ecdsa.PrivateKey:
 		signature, err = ecdsa.SignASN1(rand.Reader, k, h[:])
+		kind = "ecdsa"
 	case ed25519.PrivateKey:
 		signature = ed25519.Sign(k, payload)
+		kind = "ed25519"
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return signature, nil
+	return signature, kind, nil
 }
 
 func pushIndex(ref name.Reference) (string, error) {
@@ -131,7 +137,7 @@ func pushIndex(ref name.Reference) (string, error) {
 		return "", err
 	}
 
-	signature, err := sign(b)
+	signature, kind, err := sign(b)
 	if err != nil {
 		return "", err
 	}
@@ -141,11 +147,13 @@ func pushIndex(ref name.Reference) (string, error) {
 		mt: types.OCIContentDescriptor,
 	}
 
+	k := fmt.Sprintf("dev.ggcr.crane/%s", kind)
+
 	idx := mutate.AppendManifests(empty.Index, mutate.IndexAddendum{
 		Add: l,
 		Descriptor: v1.Descriptor{
 			Annotations: map[string]string{
-				"TODO": base64.StdEncoding.EncodeToString(signature),
+				k: base64.StdEncoding.EncodeToString(signature),
 			},
 		},
 	})
