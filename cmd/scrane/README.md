@@ -148,7 +148,7 @@ I'm going to call this thing a **signature index**, for lack of a better name.
 Let's look at that signature index.
 Similarly to the ubuntu image, it's a manifest list.
 Each descriptor here points to an [`application/vnd.oci.descriptor.v1+json`](https://github.com/opencontainers/image-spec/blob/master/descriptor.md).
-There is an [annotation](https://github.com/opencontainers/image-spec/blob/master/annotations.md), `dev.ggcr.crane/signature`, that contains a bas64-encoded signature.
+There is an [annotation](https://github.com/opencontainers/image-spec/blob/master/annotations.md), `dev.ggcr.crane/signature`, that contains a base64-encoded signature.
 That string is arbitrary, we'd probably want it to be some OCI standard thing.
 We may also need additional annotations here to help clients understand what they need to do, but only as a hint -- nothing in here should be trusted.
 
@@ -225,7 +225,31 @@ $ openssl dgst -sha256 -verify public.key \
 Verified OK
 ```
 
-## Caveats
+## Pictures
+
+If you can't follow the wall of text, here's a picture.
+Note that I've just got a normal image here, instead of a manifest list (as in the example above), but that's not an interesting difference beyond the fact that this supports both trivially.
+
+<p align="center">
+  <img src="/images/signatures.dot.svg" />
+</p>
+
+I've also published these images publicly if you'd like to play with this:
+
+`us-docker.pkg.dev/jonjohnson-test/public/scrane@sha256:703218c0465075f4425e58fac086e09e1de5c340b12976ab9eb8ad26615c3715`
+
+`us-docker.pkg.dev/jonjohnson-test/public/scrane:sha256-703218c0465075f4425e58fac086e09e1de5c340b12976ab9eb8ad26615c3715`
+
+Here's the public key:
+
+```
+-----BEGIN PUBLIC KEY-----
+MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANFTtjZspuz/hmpT6/dcRFZV2dLtilv8
+PzM2Xer3/945pqawvtBSWIW41zhkwagSNN/3BOnq1xwjNUZ1qrFSDCkCAwEAAQ==
+-----END PUBLIC KEY-----
+```
+
+## Caveats and Considerations
 
 ### Hiding from the garbage collector
 
@@ -266,25 +290,35 @@ If we could rely on `ETag` semantics, the fan-in could be coordinated with the r
 
 I propose we add this to the distribution spec in some way, since it's already an existing HTTP RFC -- we just need to call it out.
 
-## Pictures
+### Client-side coordination
 
-If you can't follow the wall of text:
+The previous section makes this obvious, but I want to specifically call out that this implementation asks a lot of clients.
+This has the benefit of working, today, without changing the registry at all (beyond fixing race conditions), but at the cost of pushing all the complexity down to clients.
+I think this is a reasonable trade-off, given that we will need to modify clients to support this _anyway_.
 
-<p align="center">
-  <img src="/images/signatures.dot.svg" />
-</p>
+Any implementations that require coordination with the registry are non-starters, in my opinion:
 
-I've also published these images publicly if you'd like to play with this:
+1. Most clients are open source, whereas many registries are closed source.
 
-`us-docker.pkg.dev/jonjohnson-test/public/scrane@sha256:703218c0465075f4425e58fac086e09e1de5c340b12976ab9eb8ad26615c3715`
+If we want to land non-trivial changes to the registry protocol, we need to convince other people to do the work.
+With client-side changes, we can do most of that work ourselves.
 
-`us-docker.pkg.dev/jonjohnson-test/public/scrane:sha256-703218c0465075f4425e58fac086e09e1de5c340b12976ab9eb8ad26615c3715`
+2. Registries are also very stateful.
 
-Here's the public key:
+Any requirements of the registry to store or index new data will likely force registry operators to perform a migration (and often a backfill).
+These things can take _years_.
 
-```
------BEGIN PUBLIC KEY-----
-MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANFTtjZspuz/hmpT6/dcRFZV2dLtilv8
-PzM2Xer3/945pqawvtBSWIW41zhkwagSNN/3BOnq1xwjNUZ1qrFSDCkCAwEAAQ==
------END PUBLIC KEY-----
-```
+3. Registries are production services.
+
+Rolling out any public-facing changes is a deliciate procedure, and we should not force this upon registry operators without careful consideration.
+
+4. New semantics are unreliable.
+
+The cross-product of client and registry behavior is _enormous_.
+Any deviation from docker or Docker Hub can lead to unexpected behavior.
+Given the first point, we're going to have many different implementations of whatever we produce in the spec.
+Unless that spec is _perfect_, there will likely be slight differences in behavior, which we _don't_ want _at all_ for something like signatures.
+(See the vulnerability factory that is JWT.)
+
+The existing registry behavior has been pretty well tested, for years, and we can generally rely on it.
+If we build on top of that, we can be pretty confident that things will work.
