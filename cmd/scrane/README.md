@@ -4,6 +4,56 @@ A very scrappy concept implementation of OCI signatures.
 
 This is roughly what I proposed at the original notary meetup at Amazon.
 
+## Scope
+
+For the sake of a tidy demo, some batteries are included in `scrane`, and some hands are waved around many details.
+This blurs the lines between the implementation details and what's actually being proposed.
+
+So, to be explicit:
+
+### In scope
+
+A common format for signing artifacts and associated metadata that follows OCI conventions.
+In particular, the use of a "signature index" where signatures are stored as a well-known annotation on a descriptor that points to another artifact within the CAS.
+For some examples of what this means, see [Variants](#variants).
+
+### Out of scope or implementation details
+
+#### PKI
+
+This does not attempt to solve the general problem of PKI or key management.
+It might make sense to have a well-known annotations next to the signature containing hints or fingerprints to help locate public keys.
+
+This does not dictate any particular digital signature algorithm, but should be flexible enough to support anything.
+
+#### Metadata discovery
+
+For the demo, we use a naming convention (tag based on the sha256 of what we're signing) for locating the signature index.
+
+`reg.example.com/ubuntu@sha256:703218c0465075f4425e58fac086e09e1de5c340b12976ab9eb8ad26615c3715` has signatures located at `reg.example.com/ubuntu:sha256-703218c0465075f4425e58fac086e09e1de5c340b12976ab9eb8ad26615c3715`
+
+Roughly (ignoring ports in the hostname): `s/:/-/g` and `s/@/:/g` to find the signature index.
+
+See [Race conditions](#race-conditions) for some caveats around this strategy.
+
+Alternative implementations could use transparency logs, local filesystem, a separate repository/registry, an explicit reference to a signature index, a new registry API, grafeas, etc.
+
+#### Signing subjects
+
+This demo only works for artifacts stored as "manifests" in the registry.
+The proposed mechanism is flexible enough to support signing arbitrary things.
+
+#### Registry-first
+
+The registry is an obvious choice for both storage and distribution of signatures, but artifacts have many other non-registry representations.
+The proposed mechanism is flexible enough to work for on-disk artifacts, but the demo assumes we're using the registry for everything.
+
+## Overview
+
+<p align="center">
+  <img src="/images/signatures.dot.svg" />
+</p>
+
 ## Demo
 
 First, we need some keys.
@@ -225,16 +275,9 @@ $ openssl dgst -sha256 -verify public.key \
 Verified OK
 ```
 
-## Pictures
+### Try it yourself
 
-If you can't follow the wall of text, here's a picture.
-Note that I've just got a normal image here, instead of a manifest list (as in the example above), but that's not an interesting difference beyond the fact that this supports both trivially.
-
-<p align="center">
-  <img src="/images/signatures.dot.svg" />
-</p>
-
-I've also published these images publicly if you'd like to play with this:
+I've published these images publicly if you'd like to play with this:
 
 `us-docker.pkg.dev/jonjohnson-test/public/scrane@sha256:703218c0465075f4425e58fac086e09e1de5c340b12976ab9eb8ad26615c3715`
 
@@ -322,3 +365,56 @@ Unless that spec is _perfect_, there will likely be slight differences in behavi
 
 The existing registry behavior has been pretty well tested, for years, and we can generally rely on it.
 If we build on top of that, we can be pretty confident that things will work.
+
+## Variants
+
+### Direct image reference
+
+Rather than signing a descriptor, we could just have the signature index directly point to what we're signing.
+
+For example:
+
+```json
+{
+  "schemaVersion": 2,
+  "manifests": [
+    {
+      "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+      "size": 1201,
+      "digest": "sha256:703218c0465075f4425e58fac086e09e1de5c340b12976ab9eb8ad26615c3715",
+      "annotations": {
+        "dev.ggcr.crane/signature": "JRD8ETJfTUZKFAQe84IgiAVoCE6jqH5KTlHsE0TZoOd87Wa58AYFyBV5EWsHDJ3ooGk2MA9x+qV0SqnxW1dotQ=="
+      }
+    }
+  ]
+}
+```
+
+(That signature is invalid, but use your imagination.)
+
+There are a couple drawbacks to this:
+
+1. This will tend to pin the image that we signed, since registries do GC.
+2. We can't sign arbitrary metadata as `annotations` anymore unless those annotations are on the image (changes the digest).
+
+One nice thing about this approach is that you could point normal clients at _this_ instead of the image, and they would know how to fetch it.
+As part of normal index resolution, we could collect any signatures that we find and use them to enforce our policy.
+
+Unfortunately, a lot of people see this as "changing the digest" of the image, because the top-level digest of what the client first fetches (this signature index) would not match the digest of the image (of course) even though this _points to_ that image, by the correct digest.
+
+### Signed blobs
+
+TODO: Direct, same drawbacks as above
+TODO: Indirect, need to make sure we pin the blob so registry doesn't GC
+
+### Simple signature red hat thing
+
+TODO
+
+### More interesting topologies
+
+TODO: Nested signatures
+
+### Pointer analogy
+
+TODO: go interfaces
