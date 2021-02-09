@@ -38,7 +38,7 @@ digraph {
       l1 [label="layer", shape="folder"];
       l2 [label="layer", shape="folder"];
       desc1 [label="descriptor", shape="rect", color="green"];
-      desc2 [label="descriptor", shape="rect", color="green"];
+      desc2 [label="simple signature", shape="rect", color="green"];
     }
 
     layers -> l1;
