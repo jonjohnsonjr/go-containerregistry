@@ -52,7 +52,7 @@ const indexTemplate = `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": <a href="/?image={{$.Repo}}@{{.Digest}}">{{.Digest}}</a>{{ if (or .Platform .Annotations) }},{{ end }}
+		"digest": "<a href="/?image={{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{ end }}
 		</div>
 		{{ if .Platform }}
 		{{ with .Platform }}
@@ -60,14 +60,14 @@ const indexTemplate = `
 		"platform": {
 			<div style="margin-left: 2em;">
 			<div>
-			"architecture": "{{.Architecture}}",
+			"architecture": "{{.Architecture}}"{{ if .OS }},{{end}}
 			</div>
 			<div>
-			"os": "{{.OS}}",
+			"os": "{{.OS}}"{{ if .OSVersion }},{{end}}
 			</div>
 			{{ if .OSVersion }}
 			<div>
-			"os.version": "{{.OSVersion}}",
+			"os.version": "{{.OSVersion}}"{{ if .OSFeatures }},{{end}}
 			</div>
 			{{end}}
 			{{ if .OSFeatures }}
@@ -80,12 +80,12 @@ const indexTemplate = `
 					</div>
 				{{end}}
 			</div>
-			],
+			]{{if .Variant}},{{end}}
 			</div>
 			{{end}}
 			{{ if .Variant }}
 			<div>
-			"variant": "{{.Variant}}"
+			"variant": "{{.Variant}}"{{if .Features}},{{end}}
 			</div>
 			{{end}}
 			</div>
@@ -99,7 +99,7 @@ const indexTemplate = `
 					</div>
 				{{end}}
 			</div>
-			],
+			]
 			</div>
 			{{end}}
 		}{{ if $manifest.Annotations }},{{ end }}
@@ -162,7 +162,7 @@ const manifestTemplate = `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": <a href="/?config={{$.Repo}}@{{.Digest}}&image={{$.Image}}">{{.Digest}}</a>{{ if .Annotations }},{{end}}
+		"digest": "<a href="/?config={{$.Repo}}@{{.Digest}}&image={{$.Image}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{end}}
 		</div>
 		{{ if .Annotations }}
 		<div>
@@ -179,7 +179,7 @@ const manifestTemplate = `
 		{{end}}
 		</div>
 		{{ end }}
-	}
+	},
 	</div>
 	<div>
 	"layers": [
@@ -194,13 +194,26 @@ const manifestTemplate = `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": <a href="/fs/{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>{{ if $layer.Annotations }},{{end}}
+		"digest": "<a href="/fs/{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or $layer.Annotations $layer.Platform $layer.URLs) }},{{end}}
 		</div>
+		{{ if $layer.URLs }}
+		<div>
+		"urls": [
+			<div style="margin-left: 2em;">
+			{{range $j, $url := $layer.URLs}}
+				<div>
+				"{{$url}}"{{ if not (last $j $layer.URLs) }},{{ end }}
+				</div>
+			{{end}}
+		</div>
+		]{{ if $layer.Annotations }},{{end}}
+		</div>
+		{{end}}
 		{{ if $layer.Annotations }}
 		<div>
 		"annotations": {
 			<div style="margin-left: 2em;">
-			{{range $k, $v := .Annotations}}
+			{{range $k, $v := $layer.Annotations}}
 				<div>
 				"{{$k}}": "{{$v}}"{{ if not (mapLast $k $layer.Annotations) }},{{ end }}
 				</div>
