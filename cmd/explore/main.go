@@ -80,7 +80,7 @@ const indexTemplate = headerTemplate + `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": "<a href="/?image={{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{ end }}
+		"digest": "<a href="/{{handlerForMT .MediaType}}{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{ end }}
 		</div>
 		{{ if .Platform }}
 		{{ with .Platform }}
@@ -190,7 +190,7 @@ const manifestTemplate = headerTemplate + `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": "<a href="/?config={{$.Repo}}@{{.Digest}}&image={{$.Image}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{end}}
+		"digest": "<a href="/{{handlerForMT .MediaType}}{{$.Repo}}@{{.Digest}}&image={{$.Image}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{end}}
 		</div>
 		{{ if .Annotations }}
 		<div>
@@ -222,7 +222,7 @@ const manifestTemplate = headerTemplate + `
 		"size": {{.Size}},
 		</div>
 		<div>
-		"digest": "<a href="/fs/{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or $layer.Annotations $layer.Platform $layer.URLs) }},{{end}}
+		"digest": "<a href="/{{handlerForMT .MediaType}}{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or $layer.Annotations $layer.Platform $layer.URLs) }},{{end}}
 		</div>
 		{{ if $layer.URLs }}
 		<div>
@@ -290,6 +290,40 @@ var fns = template.FuncMap{
 		mt := reflect.ValueOf(a).String()
 		return getLink(mt)
 	},
+	"handlerForMT": func(a interface{}) string {
+		mt := reflect.ValueOf(a).String()
+		return handlerForMT(mt)
+	},
+}
+
+func handlerForMT(s string) string {
+	mt := types.MediaType(s)
+	if !mt.IsDistributable() {
+		// TODO
+		return `fs`
+	}
+	if mt.IsImage() {
+		return `?image=`
+	}
+	if mt.IsIndex() {
+		return `?image=`
+	}
+	switch mt {
+	case types.OCIConfigJSON, types.DockerConfigJSON:
+		return `?config=`
+	case types.OCILayer, types.OCIUncompressedLayer, types.DockerLayer, types.DockerUncompressedLayer:
+		return `fs/`
+	case types.OCIContentDescriptor:
+		// TODO: Descriptor with links.
+		return `?config=`
+	case `application/vnd.dev.cosign.simplesigning.v1+json`:
+		// TODO: Simple signing.
+		return `?config=`
+	}
+	if strings.HasSuffix(s, "+json") {
+		return `?config=`
+	}
+	return `fs/`
 }
 
 func getLink(s string) string {
@@ -452,7 +486,7 @@ func renderConfig(w io.Writer, ref string) error {
 	enc.SetIndent("", "   ")
 
 	// TODO: Is there a way to just stream indentation without decoding?
-	var m v1.ConfigFile
+	var m interface{}
 	if err := dec.Decode(&m); err != nil {
 		return err
 	}
