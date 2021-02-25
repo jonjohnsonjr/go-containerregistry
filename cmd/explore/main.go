@@ -27,7 +27,35 @@ import (
 
 const debug = false
 
-const indexTemplate = `
+const headerTemplate = `
+<html>
+<body>
+<head>
+<style>
+.mt:hover {
+	text-decoration: underline;
+}
+	
+.mt {
+  color: inherit;
+	text-decoration: inherit; 
+}
+</style>
+</head>
+<div style="font-family: monospace;">
+<h2>{{.Reference}}</h2>
+Docker-Content-Digest: {{.Descriptor.Digest}}<br>
+Content-Length: {{.Descriptor.Size}}<br>
+Content-Type: {{.Descriptor.MediaType}}<br>
+</div>
+<hr>
+`
+const footerTemplate = `
+</body>
+</html>
+`
+
+const indexTemplate = headerTemplate + `
 <div style="font-family: monospace;">
 {
 	<div style="margin-left: 2em;">
@@ -36,7 +64,7 @@ const indexTemplate = `
 	</div>
 	{{ if .MediaType }}
 	<div>
-	"mediaType": "{{.MediaType}}",
+	"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
 	</div>
 	{{end}}
 	<div>
@@ -46,7 +74,7 @@ const indexTemplate = `
 	{
 		<div style="margin-left: 2em;">
 		<div>
-		"mediaType": "{{.MediaType}}",
+		"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
 		</div>
 		<div>
 		"size": {{.Size}},
@@ -139,9 +167,9 @@ const indexTemplate = `
 	</div>
 }
 </div>
-`
+` + footerTemplate
 
-const manifestTemplate = `
+const manifestTemplate = headerTemplate + `
 <div style="font-family: monospace;">
 {
 	<div style="margin-left: 2em;">
@@ -149,14 +177,14 @@ const manifestTemplate = `
 	"schemaVersion": {{.SchemaVersion}},
 	</div>
 	<div>
-	"mediaType": "{{.MediaType}}",
+	"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
 	</div>
 	<div>
 	"config": {
 		{{ with .Config }}
 		<div style="margin-left: 2em;">
 		<div>
-		"mediaType": "{{.MediaType}}",
+		"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
 		</div>
 		<div>
 		"size": {{.Size}},
@@ -188,7 +216,7 @@ const manifestTemplate = `
 	{
 		<div style="margin-left: 2em;">
 		<div>
-		"mediaType": "{{.MediaType}}",
+		"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
 		</div>
 		<div>
 		"size": {{.Size}},
@@ -242,8 +270,7 @@ const manifestTemplate = `
 	</div>
 	</div>
 }
-</div>
-`
+` + footerTemplate
 
 var fns = template.FuncMap{
 	"last": func(x int, a interface{}) bool {
@@ -259,6 +286,34 @@ var fns = template.FuncMap{
 		sort.Strings(ss)
 		return x == ss[len(ss)-1]
 	},
+	"mediaTypeLink": func(a interface{}) string {
+		mt := reflect.ValueOf(a).String()
+		return getLink(mt)
+	},
+}
+
+func getLink(s string) string {
+	mt := types.MediaType(s)
+	if !mt.IsDistributable() {
+		return `https://github.com/opencontainers/image-spec/blob/master/layer.md#non-distributable-layers`
+	}
+	if mt.IsImage() {
+		return `https://github.com/opencontainers/image-spec/blob/master/manifest.md`
+	}
+	if mt.IsIndex() {
+		return `https://github.com/opencontainers/image-spec/blob/master/image-index.md`
+	}
+	switch mt {
+	case types.OCIConfigJSON, types.DockerConfigJSON:
+		return `https://github.com/opencontainers/image-spec/blob/master/config.md`
+	case types.OCILayer, types.OCIUncompressedLayer, types.DockerLayer, types.DockerUncompressedLayer:
+		return `https://github.com/opencontainers/image-spec/blob/master/layer.md`
+	case types.OCIContentDescriptor:
+		return `https://github.com/opencontainers/image-spec/blob/master/descriptor.md`
+	case `application/vnd.dev.cosign.simplesigning.v1+json`:
+		return `https://github.com/containers/image/blob/master/docs/containers-signature.5.md`
+	}
+	return `https://github.com/opencontainers/image-spec/blob/master/media-types.md`
 }
 
 var indexTmpl, manifestTmpl *template.Template
@@ -269,13 +324,17 @@ func init() {
 }
 
 type IndexData struct {
-	Repo string
+	Repo       string
+	Reference  name.Reference
+	Descriptor *remote.Descriptor
 	v1.IndexManifest
 }
 
 type ManifestData struct {
-	Repo  string
-	Image string
+	Repo       string
+	Image      string
+	Reference  name.Reference
+	Descriptor *remote.Descriptor
 	v1.Manifest
 }
 
@@ -345,6 +404,8 @@ func renderIndex(w io.Writer, desc *remote.Descriptor, ref name.Reference) error
 
 	data := IndexData{
 		Repo:          ref.Context().String(),
+		Reference:     ref,
+		Descriptor:    desc,
 		IndexManifest: *manifest,
 	}
 
@@ -363,9 +424,11 @@ func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference) error
 	}
 
 	data := ManifestData{
-		Repo:     ref.Context().String(),
-		Image:    ref.String(),
-		Manifest: *manifest,
+		Repo:       ref.Context().String(),
+		Image:      ref.String(),
+		Reference:  ref,
+		Descriptor: desc,
+		Manifest:   *manifest,
 	}
 
 	return manifestTmpl.Execute(w, data)
