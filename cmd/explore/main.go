@@ -272,6 +272,109 @@ const manifestTemplate = headerTemplate + `
 }
 ` + footerTemplate
 
+const cosignTemplate = `
+<html>
+<body>
+<head>
+<style>
+.mt:hover {
+	text-decoration: underline;
+}
+	
+.mt {
+  color: inherit;
+	text-decoration: inherit; 
+}
+</style>
+</head>
+
+<div style="font-family: monospace;">
+{
+	<div style="margin-left: 2em;">
+	<div>
+	"Critical": {
+		<div style="margin-left: 2em;">
+		<div>
+		"Identity": {
+			<div style="margin-left: 2em;">
+				"docker-reference": "{{.Critical.Identity.DockerReference}}"
+			</div>
+		},
+		</div>
+		<div>
+		"Image": {
+			<div style="margin-left: 2em;">
+				"Docker-manifest-digest": "<a href="/?image={{$.Repo}}@sha256:{{.Critical.Image.DockerManifestDigest}}">{{.Critical.Image.DockerManifestDigest}}</a>"
+			</div>
+		},
+		</div>
+		<div>
+		"Type": "{{.Critical.Type}}"
+		</div>
+	</div>
+	<div>
+	"Optional": {
+		<div style="margin-left: 2em;">
+		{{range $k, $v := $.Optional}}
+			<div>
+			"{{$k}}": "{{$v}}"{{ if not (mapLast $k $.Optional) }},{{ end }}
+			</div>
+		{{end}}
+		</div>
+	}
+	</div>
+	</div>
+	</div>
+}
+</div>
+` + footerTemplate
+
+const descriptorTemplate = `
+<html>
+<body>
+<head>
+<style>
+.mt:hover {
+	text-decoration: underline;
+}
+	
+.mt {
+  color: inherit;
+	text-decoration: inherit; 
+}
+</style>
+</head>
+
+<div style="font-family: monospace;">
+{
+	<div style="margin-left: 2em;">
+	<div>
+	"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
+	</div>
+	<div>
+	"size": {{.Size}},
+	</div>
+	<div>
+	"digest": "<a href="/{{handlerForMT .MediaType}}{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{end}}
+	</div>
+	{{ if .Annotations }}
+	<div>
+	"annotations": {
+		<div style="margin-left: 2em;">
+		{{range $k, $v := .Annotations}}
+			<div>
+			"{{$k}}": "{{$v}}"{{ if not (mapLast $k $.Annotations) }},{{ end }}
+			</div>
+		{{end}}
+	</div>
+	}
+	</div>
+	{{end}}
+	</div>
+}
+</div>
+` + footerTemplate
+
 var fns = template.FuncMap{
 	"last": func(x int, a interface{}) bool {
 		return x == reflect.ValueOf(a).Len()-1
@@ -314,11 +417,9 @@ func handlerForMT(s string) string {
 	case types.OCILayer, types.OCIUncompressedLayer, types.DockerLayer, types.DockerUncompressedLayer:
 		return `fs/`
 	case types.OCIContentDescriptor:
-		// TODO: Descriptor with links.
-		return `?config=`
+		return `?descriptor=`
 	case `application/vnd.dev.cosign.simplesigning.v1+json`:
-		// TODO: Simple signing.
-		return `?config=`
+		return `?cosign=`
 	}
 	if strings.HasSuffix(s, "+json") {
 		return `?config=`
@@ -350,11 +451,13 @@ func getLink(s string) string {
 	return `https://github.com/opencontainers/image-spec/blob/master/media-types.md`
 }
 
-var indexTmpl, manifestTmpl *template.Template
+var indexTmpl, manifestTmpl, descriptorTmpl, cosignTmpl *template.Template
 
 func init() {
 	indexTmpl = template.Must(template.New("indexTemplate").Funcs(fns).Parse(indexTemplate))
 	manifestTmpl = template.Must(template.New("manifestTemplate").Funcs(fns).Parse(manifestTemplate))
+	descriptorTmpl = template.Must(template.New("descriptorTemplate").Funcs(fns).Parse(descriptorTemplate))
+	cosignTmpl = template.Must(template.New("cosignTemplate").Funcs(fns).Parse(cosignTemplate))
 }
 
 type IndexData struct {
@@ -370,6 +473,18 @@ type ManifestData struct {
 	Reference  name.Reference
 	Descriptor *remote.Descriptor
 	v1.Manifest
+}
+
+type DescriptorData struct {
+	Repo      string
+	Reference name.Reference
+	v1.Descriptor
+}
+
+type CosignData struct {
+	Repo      string
+	Reference name.Reference
+	SimpleSigning
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +514,12 @@ func renderResponse(w http.ResponseWriter, r *http.Request) error {
 
 	if configs, ok := qs["config"]; ok {
 		return renderConfig(w, configs[0])
+	}
+	if cosigns, ok := qs["cosign"]; ok {
+		return renderCosign(w, cosigns[0])
+	}
+	if descs, ok := qs["descriptor"]; ok {
+		return renderDescriptor(w, descs[0])
 	}
 
 	images, ok := qs["image"]
@@ -466,7 +587,6 @@ func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference) error
 	}
 
 	return manifestTmpl.Execute(w, data)
-
 }
 
 func renderConfig(w io.Writer, ref string) error {
@@ -492,6 +612,62 @@ func renderConfig(w io.Writer, ref string) error {
 	}
 
 	return enc.Encode(m)
+}
+
+func renderDescriptor(w io.Writer, r string) error {
+	ref, err := name.ParseReference(r, name.StrictValidation)
+	if err != nil {
+		return err
+	}
+
+	blob, err := remote.Blob(ref)
+	if err != nil {
+		return err
+	}
+	defer blob.Close()
+
+	dec := json.NewDecoder(blob)
+
+	var desc v1.Descriptor
+
+	if err := dec.Decode(&desc); err != nil {
+		return err
+	}
+	data := DescriptorData{
+		Repo:       ref.Context().String(),
+		Reference:  ref,
+		Descriptor: desc,
+	}
+
+	return descriptorTmpl.Execute(w, data)
+}
+
+func renderCosign(w io.Writer, r string) error {
+	ref, err := name.ParseReference(r, name.StrictValidation)
+	if err != nil {
+		return err
+	}
+
+	blob, err := remote.Blob(ref)
+	if err != nil {
+		return err
+	}
+	defer blob.Close()
+
+	dec := json.NewDecoder(blob)
+
+	var ss SimpleSigning
+
+	if err := dec.Decode(&ss); err != nil {
+		return err
+	}
+	data := CosignData{
+		Repo:          ref.Context().String(),
+		Reference:     ref,
+		SimpleSigning: ss,
+	}
+
+	return cosignTmpl.Execute(w, data)
 }
 
 func fsHandler(w http.ResponseWriter, r *http.Request) {
@@ -722,4 +898,24 @@ type symlink struct {
 
 func (s symlink) Name() string {
 	return fmt.Sprintf("%s -> %s", s.name, s.link)
+}
+
+// Cosign simple signing stuff
+type SimpleSigning struct {
+	Critical Critical
+	Optional map[string]string
+}
+
+type Critical struct {
+	Identity Identity
+	Image    Image
+	Type     string
+}
+
+type Identity struct {
+	DockerReference string `json:"docker-reference"`
+}
+
+type Image struct {
+	DockerManifestDigest string `json:"Docker-manifest-digest"`
 }
