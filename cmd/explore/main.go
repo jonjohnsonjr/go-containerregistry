@@ -43,7 +43,7 @@ const headerTemplate = `
 </style>
 </head>
 <div style="font-family: monospace;">
-<h2>{{.Reference}}</h2>
+<h2>{{.Reference}}{{ if .CosignTag }} (<a href="?image={{.Repo}}:{{.CosignTag}}">cosign</a>){{end}}</h2>
 Docker-Content-Digest: {{.Descriptor.Digest}}<br>
 Content-Length: {{.Descriptor.Size}}<br>
 Content-Type: {{.Descriptor.MediaType}}<br>
@@ -304,7 +304,7 @@ const cosignTemplate = `
 		<div>
 		"Image": {
 			<div style="margin-left: 2em;">
-				"Docker-manifest-digest": "<a href="/?image={{$.Repo}}@sha256:{{.Critical.Image.DockerManifestDigest}}">{{.Critical.Image.DockerManifestDigest}}</a>"
+				"Docker-manifest-digest": "<a href="/?image={{$.Repo}}@sha256:{{.Critical.Image.DockerManifestDigest}}&discovery=true">{{.Critical.Image.DockerManifestDigest}}</a>"
 			</div>
 		},
 		</div>
@@ -464,6 +464,7 @@ func init() {
 
 type IndexData struct {
 	Repo       string
+	CosignTag  string
 	Reference  name.Reference
 	Descriptor *remote.Descriptor
 	v1.IndexManifest
@@ -472,6 +473,7 @@ type IndexData struct {
 type ManifestData struct {
 	Repo       string
 	Image      string
+	CosignTag  string
 	Reference  name.Reference
 	Descriptor *remote.Descriptor
 	v1.Manifest
@@ -539,16 +541,38 @@ func renderResponse(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	cosign := false
+
+	if _, ok := qs["discovery"]; ok {
+		// TODO: Just pass this down.
+		cosignRef, err := munge(ref.Context().Digest(desc.Digest.String()))
+		if err != nil {
+			return err
+		}
+		if _, err := remote.Head(cosignRef); err != nil {
+			log.Printf("remote.Head(%q): %v", cosignRef.String(), err)
+		} else {
+			cosign = true
+		}
+	}
+
 	if desc.MediaType == types.DockerManifestList || desc.MediaType == types.OCIImageIndex {
-		return renderIndex(w, desc, ref)
+		return renderIndex(w, desc, ref, cosign)
 	} else if desc.MediaType == types.DockerManifestSchema2 || desc.MediaType == types.OCIManifestSchema1 {
-		return renderImage(w, desc, ref)
+		return renderImage(w, desc, ref, cosign)
 	}
 
 	return fmt.Errorf("unimplemented mediaType: %s", desc.MediaType)
 }
 
-func renderIndex(w io.Writer, desc *remote.Descriptor, ref name.Reference) error {
+func munge(ref name.Reference) (name.Reference, error) {
+	munged := strings.ReplaceAll(ref.String(), "@sha256:", "@sha256-")
+	munged = strings.ReplaceAll(munged, "@", ":")
+	munged = munged + ".cosign"
+	return name.ParseReference(munged)
+}
+
+func renderIndex(w io.Writer, desc *remote.Descriptor, ref name.Reference, cosign bool) error {
 	index, err := desc.ImageIndex()
 	if err != nil {
 		return err
@@ -566,10 +590,17 @@ func renderIndex(w io.Writer, desc *remote.Descriptor, ref name.Reference) error
 		IndexManifest: *manifest,
 	}
 
+	if cosign {
+		cr, err := munge(ref.Context().Digest(desc.Digest.String()))
+		if err == nil {
+			data.CosignTag = cr.Identifier()
+		}
+	}
+
 	return indexTmpl.Execute(w, data)
 }
 
-func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference) error {
+func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference, cosign bool) error {
 	img, err := desc.Image()
 	if err != nil {
 		return err
@@ -586,6 +617,13 @@ func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference) error
 		Reference:  ref,
 		Descriptor: desc,
 		Manifest:   *manifest,
+	}
+
+	if cosign {
+		cr, err := munge(ref.Context().Digest(desc.Digest.String()))
+		if err == nil {
+			data.CosignTag = cr.Identifier()
+		}
 	}
 
 	return manifestTmpl.Execute(w, data)
