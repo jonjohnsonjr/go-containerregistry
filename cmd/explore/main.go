@@ -312,6 +312,8 @@ const cosignTemplate = `
 		"Type": "{{.Critical.Type}}"
 		</div>
 	</div>
+	},
+	</div>
 	<div>
 	"Optional": {
 		<div style="margin-left: 2em;">
