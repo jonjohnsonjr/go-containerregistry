@@ -304,7 +304,7 @@ const cosignTemplate = `
 		<div>
 		"Image": {
 			<div style="margin-left: 2em;">
-				"Docker-manifest-digest": "<a href="/?image={{$.Repo}}@sha256:{{.Critical.Image.DockerManifestDigest}}&discovery=true">{{.Critical.Image.DockerManifestDigest}}</a>"
+				"Docker-manifest-digest": "<a href="/?image={{$.Repo}}@{{.Critical.Image.DockerManifestDigest}}&discovery=true">{{.Critical.Image.DockerManifestDigest}}</a>"
 			</div>
 		},
 		</div>
@@ -315,7 +315,7 @@ const cosignTemplate = `
 	},
 	</div>
 	<div>
-	"Optional": {
+	"Optional": {{if .Optional}}{
 		<div style="margin-left: 2em;">
 		{{range $k, $v := $.Optional}}
 			<div>
@@ -323,7 +323,7 @@ const cosignTemplate = `
 			</div>
 		{{end}}
 		</div>
-	}
+	}{{else}}null{{end}}
 	</div>
 	</div>
 	</div>
@@ -700,6 +700,11 @@ func renderCosign(w io.Writer, r string) error {
 
 	if err := dec.Decode(&ss); err != nil {
 		return err
+	}
+
+	// TODO: Remove me. Janky workaround for old artifacts.
+	if !strings.HasPrefix(ss.Critical.Image.DockerManifestDigest, "sha256:") {
+		ss.Critical.Image.DockerManifestDigest = "sha256:" + ss.Critical.Image.DockerManifestDigest
 	}
 	data := CosignData{
 		Repo:          ref.Context().String(),
