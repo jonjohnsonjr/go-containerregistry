@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
 	"io/ioutil"
@@ -12,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -25,6 +25,324 @@ import (
 )
 
 const debug = false
+
+const (
+	CosignMediaType = `application/vnd.dev.cosign.simplesigning.v1+json`
+	cosignPointee   = `application/vnd.dev.ggcr.magic/cosign-thing+json`
+)
+
+type Outputter interface {
+	Key(string)
+	Value([]byte)
+	StartMap()
+	EndMap()
+	StartArray()
+	EndArray()
+	Doc(url string, mt types.MediaType)
+	Linkify(handler string, h v1.Hash)
+}
+
+type simpleOutputter struct {
+	w     io.Writer
+	repo  string
+	fresh []bool
+	key   bool
+}
+
+func (w *simpleOutputter) Doc(url string, mt types.MediaType) {
+	w.tabf()
+	w.Printf(`"<a class="mt" href="%s">%s</a>"`, url, html.EscapeString(string(mt)))
+	w.unfresh()
+	w.key = false
+}
+
+func (w *simpleOutputter) Linkify(handler string, digest v1.Hash) {
+	w.tabf()
+	w.Printf(`"<a href="%s%s@%s">%s</a>"`, handler, w.repo, digest.String(), html.EscapeString(digest.String()))
+	w.unfresh()
+	w.key = false
+}
+
+func (w *simpleOutputter) Key(k string) {
+	w.tabf()
+	w.Printf("%q:", k)
+	w.key = true
+}
+
+func (w *simpleOutputter) Value(b []byte) {
+	w.tabf()
+	w.Printf(string(b))
+	w.unfresh()
+	w.key = false
+}
+
+func (w *simpleOutputter) StartMap() {
+	w.tabf()
+	w.Printf("{")
+	w.newline()
+	w.push()
+	w.key = false
+}
+
+func (w *simpleOutputter) EndMap() {
+	if !w.Fresh() {
+		w.undiv()
+	}
+	w.pop()
+	w.newline()
+	w.Printf(w.tabs() + "}")
+	w.key = false
+	w.unfresh()
+}
+
+func (w *simpleOutputter) StartArray() {
+	w.tabf()
+	w.Printf("[")
+	w.newline()
+	w.push()
+	w.key = false
+}
+
+func (w *simpleOutputter) EndArray() {
+	if !w.Fresh() {
+		w.undiv()
+	}
+	w.pop()
+	w.newline()
+	w.Printf(w.tabs() + "]")
+	w.key = false
+	w.unfresh()
+}
+
+func (w *simpleOutputter) Printf(s string, arg ...interface{}) {
+	fmt.Fprintf(w.w, s, arg...)
+}
+
+func (w *simpleOutputter) tabf() {
+	if !w.key {
+		if !w.Fresh() {
+			w.Printf(",")
+			w.undiv()
+			w.newline()
+		}
+		w.div()
+		//w.Printf(w.tabs())
+	} else {
+		w.Printf(" ")
+	}
+}
+
+func (w *simpleOutputter) Fresh() bool {
+	if len(w.fresh) == 0 {
+		return true
+	}
+	return w.fresh[len(w.fresh)-1]
+}
+
+func (w *simpleOutputter) push() {
+	w.Printf(w.tabs() + `<div class="indent">` + "\n")
+	w.fresh = append(w.fresh, true)
+}
+
+func (w *simpleOutputter) pop() {
+	w.fresh = w.fresh[:len(w.fresh)-1]
+	w.newline()
+	w.Printf(w.tabs())
+	w.undiv()
+}
+
+func (w *simpleOutputter) tabs() string {
+	return strings.Repeat("  ", len(w.fresh))
+	//return ""
+}
+
+func (w *simpleOutputter) newline() {
+	w.Printf("\n")
+}
+
+func (w *simpleOutputter) div() {
+	w.Printf(w.tabs() + "<div>")
+}
+
+func (w *simpleOutputter) undiv() {
+	w.Printf("</div>")
+}
+
+func (w *simpleOutputter) unfresh() {
+	if len(w.fresh) == 0 {
+		return
+	}
+	w.fresh[len(w.fresh)-1] = false
+}
+
+func (w *simpleOutputter) refresh() {
+	w.fresh[len(w.fresh)-1] = true
+}
+
+// renderJSON formats some JSON bytes in an OCI-specific way.
+//
+// We try to convert maps to meaningful values based on a Descriptor:
+// - mediaType: well-known links to their definitions.
+// - digest: links to raw content or well-known handlers:
+//		1. Well-known OCI types get rendered as renderJSON
+//		2. Layers get rendered as a filesystem via http.FileSystem
+//		3. Blobs ending in +json get rendered as formatted JSON
+//		4. Cosign blobs (SimpleSigning) get rendered specially
+//		5. Everything else is raw content
+//
+// If we see a map, try to parse as Descriptor and use those values.
+//
+// Anything else, recursively look for maps to try to parse as descriptors.
+//
+// Keep the rest of the RawMessage in tact.
+//
+// []byte -> json.RawMessage
+// json.RawMessage -> map[string]json.RawMessage (v1.Desciptor?)
+// json.RawMessage -> {map[string]raw, []raw, float64, string, bool, nil}
+func renderJSON(w Outputter, b []byte) error {
+	raw := json.RawMessage(b)
+	return renderRaw(w, &raw)
+}
+
+func renderRaw(w Outputter, raw *json.RawMessage) error {
+	var v interface{}
+	if err := json.Unmarshal(*raw, &v); err != nil {
+		return err
+	}
+	switch vv := v.(type) {
+	case []interface{}:
+		if err := renderList(w, raw); err != nil {
+			return err
+		}
+	case map[string]interface{}:
+		if err := renderMap(w, vv, raw); err != nil {
+			return err
+		}
+	default:
+		b, err := raw.MarshalJSON()
+		if err != nil {
+			return err
+		}
+		safeBuf := bytes.Buffer{}
+		json.HTMLEscape(&safeBuf, b)
+		w.Value(safeBuf.Bytes())
+	}
+	return nil
+}
+
+// Make sure we see things in this order.
+var precedence = []string{"schemaVersion", "mediaType", "config", "layers", "manifests", "size", "digest", "platform", "urls", "annotations"}
+var ociMap map[string]int
+
+func init() {
+	ociMap = map[string]int{}
+	for i, s := range precedence {
+		ociMap[s] = i
+	}
+}
+
+func compare(a, b string) bool {
+	i, ok := ociMap[a]
+	j, kk := ociMap[b]
+
+	// Inter-OCI comparison.
+	if ok && kk {
+		return i < j
+	}
+
+	// Straight string comparison.
+	if !ok && !kk {
+		return a < b
+	}
+
+	// If ok == true,  a = OCI, b = string
+	// If ok == false, a = string, b = OCI
+	return ok
+}
+
+func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) error {
+	rawMap := map[string]json.RawMessage{}
+	if err := json.Unmarshal(*raw, &rawMap); err != nil {
+		return err
+	}
+
+	w.StartMap()
+
+	// Make this a stable order.
+	keys := make([]string, 0, len(rawMap))
+	for k := range rawMap {
+		keys = append(keys, k)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		return compare(keys[i], keys[j])
+	})
+
+	for _, k := range keys {
+		v := rawMap[k]
+		w.Key(k)
+
+		switch k {
+		case "digest":
+			if mt, ok := o["mediaType"]; ok {
+				if s, ok := mt.(string); ok {
+					h := v1.Hash{}
+					if err := json.Unmarshal(v, &h); err != nil {
+						log.Printf("Unmarshal digest %q: %v", string(v), err)
+					} else {
+						w.Linkify("/"+handlerForMT(s), h)
+
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
+			}
+		case "mediaType":
+			mt := ""
+			if err := json.Unmarshal(v, &mt); err != nil {
+				log.Printf("Unmarshal mediaType %q: %v", string(v), err)
+			} else {
+				w.Doc(getLink(mt), types.MediaType(mt))
+
+				// Don't fall through to renderRaw.
+				continue
+			}
+		case "Docker-manifest-digest":
+			h := v1.Hash{}
+			if err := json.Unmarshal(v, &h); err != nil {
+				log.Printf("Unmarshal digest %q: %v", string(v), err)
+			} else {
+				// TODO: This could maybe be better but we don't have a MT.
+				w.Linkify("/"+handlerForMT(cosignPointee), h)
+
+				// Don't fall through to renderRaw.
+				continue
+			}
+		}
+
+		if err := renderRaw(w, &v); err != nil {
+			return err
+		}
+	}
+	w.EndMap()
+
+	return nil
+}
+
+func renderList(w Outputter, raw *json.RawMessage) error {
+	rawList := []json.RawMessage{}
+	if err := json.Unmarshal(*raw, &rawList); err != nil {
+		return err
+	}
+	w.StartArray()
+	for _, v := range rawList {
+		if err := renderRaw(w, &v); err != nil {
+			return err
+		}
+	}
+	w.EndArray()
+
+	return nil
+}
 
 const landingPage = `
 <html>
@@ -56,9 +374,8 @@ Enter a <strong>public</strong> image, e.g. <tt>"ubuntu"</tt>:
 </html>
 `
 
-const headerTemplate = `
+const header = `
 <html>
-<body>
 <head>
 <style>
 .mt:hover {
@@ -69,9 +386,21 @@ const headerTemplate = `
   color: inherit;
 	text-decoration: inherit; 
 }
+
+body {
+	font-family: monospace;
+}
+
+.indent {
+  margin-left: 2em;
+}
 </style>
 </head>
-<div style="font-family: monospace;">
+`
+
+const bodyTemplate = `
+<body>
+<div>
 <h2>{{.Reference}}{{ if .CosignTag }} (<a href="?image={{.Repo}}:{{.CosignTag}}">cosign</a>){{end}}</h2>
 Docker-Content-Digest: {{.Descriptor.Digest}}<br>
 Content-Length: {{.Descriptor.Size}}<br>
@@ -79,356 +408,10 @@ Content-Type: {{.Descriptor.MediaType}}<br>
 </div>
 <hr>
 `
-const footerTemplate = `
+const footer = `
 </body>
 </html>
 `
-
-const indexTemplate = headerTemplate + `
-<div style="font-family: monospace;">
-{
-	<div style="margin-left: 2em;">
-	<div>
-	"schemaVersion": {{.SchemaVersion}},
-	</div>
-	{{ if .MediaType }}
-	<div>
-	"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
-	</div>
-	{{end}}
-	<div>
-	"manifests": [
-	{{ range $i, $manifest := .Manifests }}
-	<div style="margin-left: 2em;">
-	{
-		<div style="margin-left: 2em;">
-		<div>
-		"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
-		</div>
-		<div>
-		"size": {{.Size}},
-		</div>
-		<div>
-		"digest": "<a href="/{{handlerForMT .MediaType}}{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{ end }}
-		</div>
-		{{ if .Platform }}
-		{{ with .Platform }}
-		<div>
-		"platform": {
-			<div style="margin-left: 2em;">
-			<div>
-			"architecture": "{{.Architecture}}"{{ if .OS }},{{end}}
-			</div>
-			<div>
-			"os": "{{.OS}}"{{ if .OSVersion }},{{end}}
-			</div>
-			{{ if .OSVersion }}
-			<div>
-			"os.version": "{{.OSVersion}}"{{ if .OSFeatures }},{{end}}
-			</div>
-			{{end}}
-			{{ if .OSFeatures }}
-			<div>
-			"os.features": [
-				<div style="margin-left: 2em;">
-				{{range $i, $e := .OSFeatures}}
-					<div>
-					"{{.}}"{{ if not (last $i .OSFeatures) }},{{ end }}
-					</div>
-				{{end}}
-			</div>
-			]{{if .Variant}},{{end}}
-			</div>
-			{{end}}
-			{{ if .Variant }}
-			<div>
-			"variant": "{{.Variant}}"{{if .Features}},{{end}}
-			</div>
-			{{end}}
-			</div>
-			{{ if .Features }}
-			<div>
-			"features": [
-				<div style="margin-left: 2em;">
-				{{range $i, $e := .Features}}
-					<div>
-					"{{.}}"{{ if not (last $i $.Features) }},{{ end }}
-					</div>
-				{{end}}
-			</div>
-			]
-			</div>
-			{{end}}
-		}{{ if $manifest.Annotations }},{{ end }}
-		{{end}}
-		</div>
-		{{ if $manifest.Annotations }}
-		<div>
-		"annotations": {
-			<div style="margin-left: 2em;">
-			{{range $k, $v := $manifest.Annotations}}
-				<div>
-				"{{$k}}": "{{$v}}"{{ if not (mapLast $k $manifest.Annotations) }},{{ end }}
-				</div>
-			{{end}}
-		</div>
-		}
-		</div>
-		{{end}}
-		{{end}}
-		</div>
-	}{{ if not (last $i $.Manifests) }},{{ end }}
-	</div>
-	{{ end }}
-	]{{ if $.Annotations }},
-	<div>
-	"annotations": {
-		<div style="margin-left: 2em;">
-		{{range $k, $v := $.Annotations}}
-			<div>
-			"{{$k}}": "{{$v}}"{{ if not (mapLast $k $.Annotations) }},{{ end }}
-			</div>
-		{{end}}
-	}
-	</div>
-	{{end}}
-	</div>
-	</div>
-}
-</div>
-` + footerTemplate
-
-const manifestTemplate = headerTemplate + `
-<div style="font-family: monospace;">
-{
-	<div style="margin-left: 2em;">
-	<div>
-	"schemaVersion": {{.SchemaVersion}},
-	</div>
-	<div>
-	"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
-	</div>
-	<div>
-	"config": {
-		{{ with .Config }}
-		<div style="margin-left: 2em;">
-		<div>
-		"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
-		</div>
-		<div>
-		"size": {{.Size}},
-		</div>
-		<div>
-		"digest": "<a href="/{{handlerForMT .MediaType}}{{$.Repo}}@{{.Digest}}&image={{$.Image}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{end}}
-		</div>
-		{{ if .Annotations }}
-		<div>
-		"annotations": {
-			<div style="margin-left: 2em;">
-			{{range $k, $v := .Annotations}}
-				<div>
-				"{{$k}}": "{{$v}}"{{ if not (mapLast $k .Annotations) }},{{ end }}
-				</div>
-			{{end}}
-		</div>
-		}
-		</div>
-		{{end}}
-		</div>
-		{{ end }}
-	},
-	</div>
-	<div>
-	"layers": [
-	{{ range $i, $layer := .Layers }}
-	<div style="margin-left: 2em;">
-	{
-		<div style="margin-left: 2em;">
-		<div>
-		"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
-		</div>
-		<div>
-		"size": {{.Size}},
-		</div>
-		<div>
-		"digest": "<a href="/{{handlerForMT .MediaType}}{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or $layer.Annotations $layer.Platform $layer.URLs) }},{{end}}
-		</div>
-		{{ if $layer.URLs }}
-		<div>
-		"urls": [
-			<div style="margin-left: 2em;">
-			{{range $j, $url := $layer.URLs}}
-				<div>
-				"{{$url}}"{{ if not (last $j $layer.URLs) }},{{ end }}
-				</div>
-			{{end}}
-		</div>
-		]{{ if $layer.Annotations }},{{end}}
-		</div>
-		{{end}}
-		{{ if $layer.Annotations }}
-		<div>
-		"annotations": {
-			<div style="margin-left: 2em;">
-			{{range $k, $v := $layer.Annotations}}
-				<div>
-				"{{$k}}": "{{$v}}"{{ if not (mapLast $k $layer.Annotations) }},{{ end }}
-				</div>
-			{{end}}
-		</div>
-		}
-		</div>
-		{{end}}
-		</div>
-	}{{ if not (last $i $.Layers) }},{{ end }}
-	</div>
-	{{ end }}
-	]{{ if $.Annotations }},
-	<div>
-	"annotations": {
-		<div style="margin-left: 2em;">
-		{{range $k, $v := $.Annotations}}
-			<div>
-			"{{$k}}": "{{$v}}"{{ if not (mapLast $k $.Annotations) }},{{ end }}
-			</div>
-		{{end}}
-	}
-	</div>
-	{{end}}
-
-	</div>
-	</div>
-}
-` + footerTemplate
-
-const cosignTemplate = `
-<html>
-<body>
-<head>
-<style>
-.mt:hover {
-	text-decoration: underline;
-}
-	
-.mt {
-  color: inherit;
-	text-decoration: inherit; 
-}
-</style>
-</head>
-
-<div style="font-family: monospace;">
-{
-	<div style="margin-left: 2em;">
-	<div>
-	"Critical": {
-		<div style="margin-left: 2em;">
-		<div>
-		"Identity": {
-			<div style="margin-left: 2em;">
-				"docker-reference": "{{.Critical.Identity.DockerReference}}"
-			</div>
-		},
-		</div>
-		<div>
-		"Image": {
-			<div style="margin-left: 2em;">
-				"Docker-manifest-digest": "<a href="/?image={{$.Repo}}@{{.Critical.Image.DockerManifestDigest}}&discovery=true">{{.Critical.Image.DockerManifestDigest}}</a>"
-			</div>
-		},
-		</div>
-		<div>
-		"Type": "{{.Critical.Type}}"
-		</div>
-	</div>
-	},
-	</div>
-	<div>
-	"Optional": {{if .Optional}}{
-		<div style="margin-left: 2em;">
-		{{range $k, $v := $.Optional}}
-			<div>
-			"{{$k}}": "{{$v}}"{{ if not (mapLast $k $.Optional) }},{{ end }}
-			</div>
-		{{end}}
-		</div>
-	}{{else}}null{{end}}
-	</div>
-	</div>
-	</div>
-}
-</div>
-` + footerTemplate
-
-const descriptorTemplate = `
-<html>
-<body>
-<head>
-<style>
-.mt:hover {
-	text-decoration: underline;
-}
-	
-.mt {
-  color: inherit;
-	text-decoration: inherit; 
-}
-</style>
-</head>
-
-<div style="font-family: monospace;">
-{
-	<div style="margin-left: 2em;">
-	<div>
-	"mediaType": "<a class="mt" href="{{ mediaTypeLink .MediaType }}">{{.MediaType}}</a>",
-	</div>
-	<div>
-	"size": {{.Size}},
-	</div>
-	<div>
-	"digest": "<a href="/{{handlerForMT .MediaType}}{{$.Repo}}@{{.Digest}}">{{.Digest}}</a>"{{ if (or .Platform .Annotations .URLs) }},{{end}}
-	</div>
-	{{ if .Annotations }}
-	<div>
-	"annotations": {
-		<div style="margin-left: 2em;">
-		{{range $k, $v := .Annotations}}
-			<div>
-			"{{$k}}": "{{$v}}"{{ if not (mapLast $k $.Annotations) }},{{ end }}
-			</div>
-		{{end}}
-	</div>
-	}
-	</div>
-	{{end}}
-	</div>
-}
-</div>
-` + footerTemplate
-
-var fns = template.FuncMap{
-	"last": func(x int, a interface{}) bool {
-		return x == reflect.ValueOf(a).Len()-1
-	},
-	"mapLast": func(x string, a interface{}) bool {
-		// We know this is only used for map[string]string
-		vs := reflect.ValueOf(a).MapKeys()
-		ss := make([]string, 0, len(vs))
-		for _, v := range vs {
-			ss = append(ss, v.String())
-		}
-		sort.Strings(ss)
-		return x == ss[len(ss)-1]
-	},
-	"mediaTypeLink": func(a interface{}) string {
-		mt := reflect.ValueOf(a).String()
-		return getLink(mt)
-	},
-	"handlerForMT": func(a interface{}) string {
-		mt := reflect.ValueOf(a).String()
-		return handlerForMT(mt)
-	},
-}
 
 func handlerForMT(s string) string {
 	mt := types.MediaType(s)
@@ -449,12 +432,16 @@ func handlerForMT(s string) string {
 		return `fs/`
 	case types.OCIContentDescriptor:
 		return `?descriptor=`
-	case `application/vnd.dev.cosign.simplesigning.v1+json`:
+	case cosignPointee:
+		return `?discovery=true&image=`
+	case CosignMediaType:
 		return `?cosign=`
 	}
 	if strings.HasSuffix(s, "+json") {
 		return `?config=`
 	}
+
+	// TODO: raw?
 	return `fs/`
 }
 
@@ -482,42 +469,18 @@ func getLink(s string) string {
 	return `https://github.com/opencontainers/image-spec/blob/master/media-types.md`
 }
 
-var indexTmpl, manifestTmpl, descriptorTmpl, cosignTmpl *template.Template
+var bodyTmpl *template.Template
 
 func init() {
-	indexTmpl = template.Must(template.New("indexTemplate").Funcs(fns).Parse(indexTemplate))
-	manifestTmpl = template.Must(template.New("manifestTemplate").Funcs(fns).Parse(manifestTemplate))
-	descriptorTmpl = template.Must(template.New("descriptorTemplate").Funcs(fns).Parse(descriptorTemplate))
-	cosignTmpl = template.Must(template.New("cosignTemplate").Funcs(fns).Parse(cosignTemplate))
+	bodyTmpl = template.Must(template.New("bodyTemplate").Parse(bodyTemplate))
 }
 
-type IndexData struct {
-	Repo       string
-	CosignTag  string
-	Reference  name.Reference
-	Descriptor *remote.Descriptor
-	v1.IndexManifest
-}
-
-type ManifestData struct {
+type HeaderData struct {
 	Repo       string
 	Image      string
 	CosignTag  string
 	Reference  name.Reference
 	Descriptor *remote.Descriptor
-	v1.Manifest
-}
-
-type DescriptorData struct {
-	Repo      string
-	Reference name.Reference
-	v1.Descriptor
-}
-
-type CosignData struct {
-	Repo      string
-	Reference name.Reference
-	SimpleSigning
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -547,24 +510,43 @@ func renderLanding(w http.ResponseWriter) error {
 	return err
 }
 
+func getBlob(r *http.Request) (string, bool) {
+	qs := r.URL.Query()
+	if q, ok := qs["config"]; ok {
+		return q[0], ok
+	}
+	if q, ok := qs["cosign"]; ok {
+		return q[0], ok
+	}
+	if q, ok := qs["descriptor"]; ok {
+		return q[0], ok
+	}
+
+	return "", false
+}
+
+func munge(ref name.Reference) (name.Reference, error) {
+	munged := strings.ReplaceAll(ref.String(), "@sha256:", "@sha256-")
+	munged = strings.ReplaceAll(munged, "@", ":")
+	munged = munged + ".cosign"
+	return name.ParseReference(munged)
+}
+
 func renderResponse(w http.ResponseWriter, r *http.Request) error {
 	qs := r.URL.Query()
 
-	if configs, ok := qs["config"]; ok {
-		return renderConfig(w, configs[0])
+	if images, ok := qs["image"]; ok {
+		return renderManifest(w, r, images[0])
 	}
-	if cosigns, ok := qs["cosign"]; ok {
-		return renderCosign(w, cosigns[0])
-	}
-	if descs, ok := qs["descriptor"]; ok {
-		return renderDescriptor(w, descs[0])
+	if blob, ok := getBlob(r); ok {
+		return renderBlobJSON(w, blob)
 	}
 
-	images, ok := qs["image"]
-	if !ok {
-		return renderLanding(w)
-	}
-	image := images[0]
+	return renderLanding(w)
+}
+
+func renderManifest(w http.ResponseWriter, r *http.Request, image string) error {
+	qs := r.URL.Query()
 
 	ref, err := name.ParseReference(image, name.WeakValidation)
 	if err != nil {
@@ -575,10 +557,14 @@ func renderResponse(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	cosign := false
+	data := HeaderData{
+		Repo:       ref.Context().String(),
+		Image:      ref.String(),
+		Reference:  ref,
+		Descriptor: desc,
+	}
 
 	if _, ok := qs["discovery"]; ok {
-		// TODO: Just pass this down.
 		cosignRef, err := munge(ref.Context().Digest(desc.Digest.String()))
 		if err != nil {
 			return err
@@ -586,110 +572,33 @@ func renderResponse(w http.ResponseWriter, r *http.Request) error {
 		if _, err := remote.Head(cosignRef); err != nil {
 			log.Printf("remote.Head(%q): %v", cosignRef.String(), err)
 		} else {
-			cosign = true
+			data.CosignTag = cosignRef.Identifier()
 		}
 	}
 
-	if desc.MediaType == types.DockerManifestList || desc.MediaType == types.OCIImageIndex {
-		return renderIndex(w, desc, ref, cosign)
-	} else if desc.MediaType == types.DockerManifestSchema2 || desc.MediaType == types.OCIManifestSchema1 {
-		return renderImage(w, desc, ref, cosign)
-	}
+	fmt.Fprintf(w, header)
 
-	return fmt.Errorf("unimplemented mediaType: %s", desc.MediaType)
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
+	output := &simpleOutputter{
+		w:     w,
+		fresh: []bool{},
+		repo:  ref.Context().String(),
+	}
+	if err := renderJSON(output, desc.Manifest); err != nil {
+		return err
+	}
+	// TODO: This is janky.
+	output.undiv()
+
+	fmt.Fprintf(w, footer)
+
+	return nil
 }
 
-func munge(ref name.Reference) (name.Reference, error) {
-	munged := strings.ReplaceAll(ref.String(), "@sha256:", "@sha256-")
-	munged = strings.ReplaceAll(munged, "@", ":")
-	munged = munged + ".cosign"
-	return name.ParseReference(munged)
-}
-
-func renderIndex(w io.Writer, desc *remote.Descriptor, ref name.Reference, cosign bool) error {
-	index, err := desc.ImageIndex()
-	if err != nil {
-		return err
-	}
-
-	manifest, err := index.IndexManifest()
-	if err != nil {
-		return err
-	}
-
-	data := IndexData{
-		Repo:          ref.Context().String(),
-		Reference:     ref,
-		Descriptor:    desc,
-		IndexManifest: *manifest,
-	}
-
-	if cosign {
-		cr, err := munge(ref.Context().Digest(desc.Digest.String()))
-		if err == nil {
-			data.CosignTag = cr.Identifier()
-		}
-	}
-
-	return indexTmpl.Execute(w, data)
-}
-
-func renderImage(w io.Writer, desc *remote.Descriptor, ref name.Reference, cosign bool) error {
-	img, err := desc.Image()
-	if err != nil {
-		return err
-	}
-
-	manifest, err := img.Manifest()
-	if err != nil {
-		return err
-	}
-
-	data := ManifestData{
-		Repo:       ref.Context().String(),
-		Image:      ref.String(),
-		Reference:  ref,
-		Descriptor: desc,
-		Manifest:   *manifest,
-	}
-
-	if cosign {
-		cr, err := munge(ref.Context().Digest(desc.Digest.String()))
-		if err == nil {
-			data.CosignTag = cr.Identifier()
-		}
-	}
-
-	return manifestTmpl.Execute(w, data)
-}
-
-func renderConfig(w io.Writer, ref string) error {
-	cfgRef, err := name.ParseReference(ref, name.StrictValidation)
-	if err != nil {
-		return err
-	}
-
-	blob, err := remote.Blob(cfgRef)
-	if err != nil {
-		return err
-	}
-	defer blob.Close()
-
-	dec := json.NewDecoder(blob)
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "   ")
-
-	// TODO: Is there a way to just stream indentation without decoding?
-	var m interface{}
-	if err := dec.Decode(&m); err != nil {
-		return err
-	}
-
-	return enc.Encode(m)
-}
-
-func renderDescriptor(w io.Writer, r string) error {
-	ref, err := name.ParseReference(r, name.StrictValidation)
+func renderBlobJSON(w http.ResponseWriter, blobRef string) error {
+	ref, err := name.ParseReference(blobRef, name.StrictValidation)
 	if err != nil {
 		return err
 	}
@@ -700,53 +609,29 @@ func renderDescriptor(w io.Writer, r string) error {
 	}
 	defer blob.Close()
 
-	dec := json.NewDecoder(blob)
+	fmt.Fprintf(w, header)
 
-	var desc v1.Descriptor
-
-	if err := dec.Decode(&desc); err != nil {
-		return err
-	}
-	data := DescriptorData{
-		Repo:       ref.Context().String(),
-		Reference:  ref,
-		Descriptor: desc,
+	output := &simpleOutputter{
+		w:     w,
+		fresh: []bool{},
+		repo:  ref.Context().String(),
 	}
 
-	return descriptorTmpl.Execute(w, data)
-}
-
-func renderCosign(w io.Writer, r string) error {
-	ref, err := name.ParseReference(r, name.StrictValidation)
+	// TODO: I need blob.Stat with a limit and a hard-coded size limit.
+	// TODO: Can we do this in a streaming way?
+	b, err := ioutil.ReadAll(blob)
 	if err != nil {
 		return err
 	}
-
-	blob, err := remote.Blob(ref)
-	if err != nil {
+	if err := renderJSON(output, b); err != nil {
 		return err
 	}
-	defer blob.Close()
+	// TODO: This is janky.
+	output.undiv()
 
-	dec := json.NewDecoder(blob)
+	fmt.Fprintf(w, footer)
 
-	var ss SimpleSigning
-
-	if err := dec.Decode(&ss); err != nil {
-		return err
-	}
-
-	// TODO: Remove me. Janky workaround for old artifacts.
-	if !strings.HasPrefix(ss.Critical.Image.DockerManifestDigest, "sha256:") {
-		ss.Critical.Image.DockerManifestDigest = "sha256:" + ss.Critical.Image.DockerManifestDigest
-	}
-	data := CosignData{
-		Repo:          ref.Context().String(),
-		Reference:     ref,
-		SimpleSigning: ss,
-	}
-
-	return cosignTmpl.Execute(w, data)
+	return nil
 }
 
 func fsHandler(w http.ResponseWriter, r *http.Request) {
