@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -26,6 +25,24 @@ import (
 )
 
 const debug = false
+
+const landingPage = `
+<html>
+<body>
+<h2>explore.ggcr.dev</h2>
+<p>
+This janky tool allows you to <em>explore</em> the contents of a registry interactively.
+</p>
+<p>
+Enter a <strong>public</strong> image, e.g. <tt>"ubuntu"</tt>:
+</p>
+<form action="/" method="GET">
+<input type="text" name="image" value="ubuntu"/>
+<input type="submit" />
+</form>
+</body>
+</html>
+`
 
 const headerTemplate = `
 <html>
@@ -513,6 +530,11 @@ func main() {
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 
+func renderLanding(w http.ResponseWriter) error {
+	_, err := io.Copy(w, strings.NewReader(landingPage))
+	return err
+}
+
 func renderResponse(w http.ResponseWriter, r *http.Request) error {
 	qs := r.URL.Query()
 
@@ -528,7 +550,7 @@ func renderResponse(w http.ResponseWriter, r *http.Request) error {
 
 	images, ok := qs["image"]
 	if !ok {
-		return errors.New("expected 'image' in query string")
+		return renderLanding(w)
 	}
 	image := images[0]
 
