@@ -29,7 +29,19 @@ const debug = false
 const landingPage = `
 <html>
 <body>
-<h2>explore.ggcr.dev</h2>
+<head>
+<style>
+.mt:hover {
+	text-decoration: underline;
+}
+	
+.mt {
+  color: inherit;
+	text-decoration: inherit; 
+}
+</style>
+</head>
+<h2>explore.<a class="mt" href="https://github.com/google/go-containerregistry">ggcr</a>.dev</h2>
 <p>
 This janky tool allows you to <em>explore</em> the contents of a registry interactively.
 </p>
