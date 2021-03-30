@@ -417,7 +417,7 @@ func handlerForMT(s string) string {
 	mt := types.MediaType(s)
 	if !mt.IsDistributable() {
 		// TODO
-		return `fs`
+		return `fs/`
 	}
 	if mt.IsImage() {
 		return `?image=`
