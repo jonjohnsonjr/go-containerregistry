@@ -39,6 +39,7 @@ type Outputter interface {
 	StartArray()
 	EndArray()
 	Doc(url string, mt types.MediaType)
+	URL(handler string, path, original string, h v1.Hash)
 	Linkify(handler string, h v1.Hash)
 }
 
@@ -52,6 +53,13 @@ type simpleOutputter struct {
 func (w *simpleOutputter) Doc(url string, mt types.MediaType) {
 	w.tabf()
 	w.Printf(`"<a class="mt" href="%s">%s</a>"`, url, html.EscapeString(string(mt)))
+	w.unfresh()
+	w.key = false
+}
+
+func (w *simpleOutputter) URL(handler string, path, original string, digest v1.Hash) {
+	w.tabf()
+	w.Printf(`"<a href="%s%s@%s">%s</a>"`, handler, path, digest.String(), html.EscapeString(original))
 	w.unfresh()
 	w.key = false
 }
@@ -306,6 +314,53 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 				// Don't fall through to renderRaw.
 				continue
 			}
+		case "urls":
+			if digest, ok := rawMap["digest"]; ok {
+				h := v1.Hash{}
+				if err := json.Unmarshal(digest, &h); err != nil {
+					log.Printf("Unmarshal digest %q: %v", string(digest), err)
+				} else {
+					// We got a digest, so we can link to some blob.
+					if urls, ok := o["urls"]; ok {
+						if ii, ok := urls.([]interface{}); ok {
+							log.Printf("urls is []interface{}")
+							w.StartArray()
+							for _, iface := range ii {
+								if original, ok := iface.(string); ok {
+									scheme := "https"
+									u := original
+									if strings.HasPrefix(original, "https://") {
+										u = strings.TrimPrefix(original, "https://")
+									} else if strings.HasPrefix(original, "http://") {
+										u = strings.TrimPrefix(original, "http://")
+										scheme = "http"
+									}
+									// Chrome redirection breaks without this, possibly because it interprets:
+									// "sha256:abcd" as a hostname?
+									if !strings.HasSuffix(u, "/") {
+										u = u + "/"
+									}
+									w.URL("/"+scheme+"/", u, original, h)
+								} else {
+									// This wasn't a list of strings, render whatever we found.
+									b, err := json.Marshal(iface)
+									if err != nil {
+										return err
+									}
+									raw := json.RawMessage(b)
+									if err := renderRaw(w, &raw); err != nil {
+										return err
+									}
+								}
+							}
+							w.EndArray()
+						}
+					}
+				}
+			}
+			// Don't fall through to renderRaw.
+			continue
+
 		case "Docker-manifest-digest":
 			h := v1.Hash{}
 			if err := json.Unmarshal(v, &h); err != nil {
@@ -416,7 +471,7 @@ const footer = `
 func handlerForMT(s string) string {
 	mt := types.MediaType(s)
 	if !mt.IsDistributable() {
-		// TODO
+		// TODO?
 		return `fs/`
 	}
 	if mt.IsImage() {
@@ -496,6 +551,8 @@ func main() {
 
 	http.HandleFunc("/", handler)
 	http.HandleFunc("/fs/", fsHandler)
+	http.HandleFunc("/http/", fsHandler)
+	http.HandleFunc("/https/", fsHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -634,44 +691,89 @@ func renderBlobJSON(w http.ResponseWriter, blobRef string) error {
 	return nil
 }
 
-func fsHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v", r.URL)
-
-	ref := strings.TrimPrefix(r.URL.Path, "/fs/")
-	if err := renderBlob(w, r, ref); err != nil {
-		fmt.Fprintf(w, "failed: %v", err)
+func fetchBlob(r *http.Request) (io.ReadCloser, string, error) {
+	path, root, err := splitFsURL(r.URL.Path)
+	if err != nil {
+		return nil, "", err
 	}
-}
 
-func renderBlob(w http.ResponseWriter, r *http.Request, path string) error {
 	chunks := strings.Split(path, "@")
 	if len(chunks) != 2 {
-		return fmt.Errorf("not enough chunks: %s", path)
+		return nil, "", fmt.Errorf("not enough chunks: %s", path)
 	}
 	// 71 = len("sha256:") + 64
 	if len(chunks[1]) < 71 {
-		return fmt.Errorf("second chunk too short: %s", chunks[1])
+		return nil, "", fmt.Errorf("second chunk too short: %s", chunks[1])
 	}
 
 	ref := strings.Join([]string{chunks[0], chunks[1][:71]}, "@")
 	if ref == "" {
-		return nil
+		return nil, "", fmt.Errorf("bad ref: %s", path)
 	}
+
+	if root == "/http/" || root == "/https/" {
+		log.Printf("chunks[0]: %v", chunks[0])
+
+		u := chunks[0]
+
+		scheme := "https://"
+		if root == "/http/" {
+			scheme = "http://"
+		}
+		u = scheme + u
+		log.Printf("GET %v", u)
+
+		// TODO: wrap in digest verification?
+		resp, err := http.Get(u)
+		if err != nil {
+			return nil, "", err
+		}
+		if resp.StatusCode == http.StatusOK {
+			return resp.Body, root + ref, nil
+		}
+		resp.Body.Close()
+		log.Printf("GET %s failed: %s", u, resp.Status)
+	}
+
 	blobRef, err := name.ParseReference(ref, name.StrictValidation)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 
-	blob, err := remote.Blob(blobRef)
+	rc, err := remote.Blob(blobRef)
+	return rc, root + ref, err
+}
+
+func fsHandler(w http.ResponseWriter, r *http.Request) {
+	if err := renderBlob(w, r); err != nil {
+		fmt.Fprintf(w, "failed: %v", err)
+	}
+}
+
+func splitFsURL(p string) (string, string, error) {
+	for _, prefix := range []string{"/fs/", "/https/", "/http/"} {
+		if strings.HasPrefix(p, prefix) {
+			return strings.TrimPrefix(p, prefix), prefix, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("unexpected path: %v", p)
+}
+
+func renderBlob(w http.ResponseWriter, r *http.Request) error {
+	log.Printf("%v", r.URL)
+
+	blob, ref, err := fetchBlob(r)
 	if err != nil {
 		return err
 	}
-
 	zr, err := v1util.GunzipReadCloser(blob)
 	if err != nil {
 		return err
 	}
 	defer zr.Close()
+
+	log.Printf("ref: %v", ref)
 
 	fs := &layerFs{
 		ref: ref,
@@ -685,13 +787,14 @@ func renderBlob(w http.ResponseWriter, r *http.Request, path string) error {
 
 type layerFs struct {
 	ref     string
+	url     string
 	tr      *tar.Reader
 	headers []*tar.Header
 }
 
 func (fs *layerFs) Open(name string) (http.File, error) {
 	log.Printf("Open(%q)", name)
-	name = strings.TrimPrefix(name, "/fs/"+fs.ref)
+	name = strings.TrimPrefix(name, fs.ref)
 	chunks := strings.Split(name, " -> ")
 	name = chunks[len(chunks)-1]
 	log.Printf("Open(%q) (scrubbed)", name)
@@ -795,9 +898,25 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 				if debug {
 					log.Printf("name = %q, hdr.Linkname = %q, dir = %q", name, link, dir)
 				}
-				if !path.IsAbs(hdr.Linkname) {
-					link = path.Clean(path.Join(path.Dir(name), link))
+
+				// For symlinks, assume relative. Hardlinks seem absolute?
+				if hdr.Typeflag == tar.TypeSymlink {
+					if !path.IsAbs(hdr.Linkname) {
+						link = path.Clean(path.Join(path.Dir(name), link))
+					}
+					if debug {
+						log.Printf("symlink: %v -> %v", hdr.Linkname, link)
+					}
 				}
+
+				if hdr.Typeflag == tar.TypeLink {
+					link = path.Clean("/" + link)
+
+					if debug {
+						log.Printf("hardlink: %v -> %v", hdr.Linkname, link)
+					}
+				}
+
 				fi = symlink{
 					FileInfo: fi,
 					name:     fi.Name(),
@@ -817,7 +936,13 @@ func isLink(hdr *tar.Header) bool {
 func (f *layerFile) Stat() (os.FileInfo, error) {
 	log.Printf("Stat(%q)", f.name)
 	if f.Root() {
+		if debug {
+			log.Printf("Stat(%q): root!", f.name)
+		}
 		return fileInfo{f.name}, nil
+	}
+	if debug {
+		log.Printf("Stat(%q): nonroot!", f.name)
 	}
 	return f.header.FileInfo(), nil
 }
@@ -831,26 +956,44 @@ type fileInfo struct {
 }
 
 func (f fileInfo) Name() string {
+	if debug {
+		log.Printf("%q.Name()", f.name)
+	}
 	return f.name
 }
 
 func (f fileInfo) Size() int64 {
+	if debug {
+		log.Printf("%q.Size()", f.name)
+	}
 	return 0
 }
 
 func (f fileInfo) Mode() os.FileMode {
+	if debug {
+		log.Printf("%q.Mode()", f.name)
+	}
 	return os.ModeDir
 }
 
 func (f fileInfo) ModTime() time.Time {
+	if debug {
+		log.Printf("%q.ModTime()", f.name)
+	}
 	return time.Now()
 }
 
 func (f fileInfo) IsDir() bool {
+	if debug {
+		log.Printf("%q.IsDir()", f.name)
+	}
 	return true
 }
 
 func (f fileInfo) Sys() interface{} {
+	if debug {
+		log.Printf("%q.Sys()", f.name)
+	}
 	return nil
 }
 
