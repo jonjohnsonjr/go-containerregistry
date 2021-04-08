@@ -11,6 +11,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"sort"
@@ -59,7 +60,7 @@ func (w *simpleOutputter) Doc(url string, mt types.MediaType) {
 
 func (w *simpleOutputter) URL(handler string, path, original string, digest v1.Hash) {
 	w.tabf()
-	w.Printf(`"<a href="%s%s@%s">%s</a>"`, handler, path, digest.String(), html.EscapeString(original))
+	w.Printf(`"<a href="%s%s@%s/">%s</a>"`, handler, url.PathEscape(path), digest.String(), html.EscapeString(original))
 	w.unfresh()
 	w.key = false
 }
@@ -334,11 +335,6 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 									} else if strings.HasPrefix(original, "http://") {
 										u = strings.TrimPrefix(original, "http://")
 										scheme = "http"
-									}
-									// Chrome redirection breaks without this, possibly because it interprets:
-									// "sha256:abcd" as a hostname?
-									if !strings.HasSuffix(u, "/") {
-										u = u + "/"
 									}
 									w.URL("/"+scheme+"/", u, original, h)
 								} else {
@@ -715,7 +711,10 @@ func fetchBlob(r *http.Request) (io.ReadCloser, string, error) {
 	if root == "/http/" || root == "/https/" {
 		log.Printf("chunks[0]: %v", chunks[0])
 
-		u := chunks[0]
+		u, err := url.PathUnescape(chunks[0])
+		if err != nil {
+			return nil, "", err
+		}
 
 		scheme := "https://"
 		if root == "/http/" {
