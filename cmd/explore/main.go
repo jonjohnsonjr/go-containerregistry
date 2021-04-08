@@ -25,7 +25,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/v1util"
 )
 
-const debug = true
+const debug = false
 
 const (
 	CosignMediaType = `application/vnd.dev.cosign.simplesigning.v1+json`
@@ -815,7 +815,7 @@ func (fs *layerFs) Open(name string) (http.File, error) {
 			return nil, err
 		}
 		if debug {
-			log.Printf("Open(%q): header.Name = %q", name, header.Name)
+			log.Printf("Open(%q): header.Name = %q, header.Size = %d", name, header.Name, header.Size)
 		}
 		fs.headers = append(fs.headers, header)
 		if path.Clean("/"+header.Name) == name {
