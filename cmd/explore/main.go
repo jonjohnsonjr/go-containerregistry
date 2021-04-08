@@ -24,7 +24,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/v1util"
 )
 
-const debug = false
+const debug = true
 
 const (
 	CosignMediaType = `application/vnd.dev.cosign.simplesigning.v1+json`
@@ -553,6 +553,7 @@ func main() {
 	http.HandleFunc("/fs/", fsHandler)
 	http.HandleFunc("/http/", fsHandler)
 	http.HandleFunc("/https/", fsHandler)
+	http.HandleFunc("/gzip/", fsHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -751,7 +752,7 @@ func fsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func splitFsURL(p string) (string, string, error) {
-	for _, prefix := range []string{"/fs/", "/https/", "/http/"} {
+	for _, prefix := range []string{"/fs/", "/https/", "/http/", "/gzip/"} {
 		if strings.HasPrefix(p, prefix) {
 			return strings.TrimPrefix(p, prefix), prefix, nil
 		}
@@ -774,6 +775,12 @@ func renderBlob(w http.ResponseWriter, r *http.Request) error {
 	defer zr.Close()
 
 	log.Printf("ref: %v", ref)
+
+	// Bit of a hack for tekton bundles...
+	if strings.HasPrefix(ref, "/gzip/") {
+		_, err := io.Copy(w, zr)
+		return err
+	}
 
 	fs := &layerFs{
 		ref: ref,
@@ -804,13 +811,14 @@ func (fs *layerFs) Open(name string) (http.File, error) {
 			log.Printf("Open(%q): EOF", name)
 			break
 		}
+		if err != nil {
+			log.Printf("Open(%q): %v", name, err)
+			return nil, err
+		}
 		if debug {
 			log.Printf("Open(%q): header.Name = %q", name, header.Name)
 		}
 		fs.headers = append(fs.headers, header)
-		if err != nil {
-			return nil, err
-		}
 		if path.Clean("/"+header.Name) == name {
 			return &layerFile{
 				name:   name,
