@@ -76,8 +76,8 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 
 	commands := []*cobra.Command{
 		NewCmdAppend(&options),
-		NewCmdBlob(&options),
 		NewCmdAuth("crane", "auth"),
+		NewCmdBlob(&options),
 		NewCmdCatalog(&options),
 		NewCmdConfig(&options),
 		NewCmdCopy(&options),
@@ -86,14 +86,15 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 		NewCmdExport(&options),
 		NewCmdList(&options),
 		NewCmdManifest(&options),
+		NewCmdMutate(&options),
 		NewCmdOptimize(&options),
 		NewCmdPull(&options),
 		NewCmdPush(&options),
 		NewCmdRebase(&options),
 		NewCmdTag(&options),
+		NewCmdUpload(&options),
 		NewCmdValidate(&options),
 		NewCmdVersion(),
-		NewCmdMutate(&options),
 	}
 
 	root.AddCommand(commands...)

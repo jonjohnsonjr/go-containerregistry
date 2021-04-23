@@ -24,10 +24,31 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
+
+func TestUncompressed(t *testing.T) {
+	want := bytes.Repeat([]byte{'a'}, int(10))
+	newBlob := func() io.ReadCloser { return ioutil.NopCloser(bytes.NewReader(want)) }
+	l := NewLayer(newBlob(), WithNoCompression)
+
+	rc, err := l.Compressed()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ioutil.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("input != Uncompressed() (-want +got): %s", diff)
+	}
+}
 
 func TestStreamVsBuffer(t *testing.T) {
 	var n, wantSize int64 = 10000, 49
@@ -205,20 +226,37 @@ func TestNotComputed(t *testing.T) {
 // TestConsumed tests that Compressed returns ErrConsumed when the stream has
 // already been consumed.
 func TestConsumed(t *testing.T) {
-	l := NewLayer(ioutil.NopCloser(strings.NewReader("hello")))
-	rc, err := l.Compressed()
-	if err != nil {
-		t.Errorf("Compressed: %v", err)
-	}
-	if _, err := io.Copy(ioutil.Discard, rc); err != nil {
-		t.Errorf("Error reading contents: %v", err)
-	}
-	if err := rc.Close(); err != nil {
-		t.Errorf("Close: %v", err)
-	}
+	for _, tc := range []struct {
+		name string
+		opts []LayerOption
+	}{{
+		name: "defaults",
+		opts: []LayerOption{},
+	}, {
+		name: "uncompressed",
+		opts: []LayerOption{WithNoCompression},
+	}} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			l := NewLayer(ioutil.NopCloser(strings.NewReader("hello")), tc.opts...)
+			rc, err := l.Compressed()
+			if err != nil {
+				t.Errorf("Compressed: %v", err)
+			}
+			if _, err := io.Copy(ioutil.Discard, rc); err != nil {
+				t.Errorf("Error reading contents: %v", err)
+			}
+			if err := rc.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
 
-	if _, err := l.Compressed(); err != ErrConsumed {
-		t.Errorf("Compressed() after consuming; got %v, want %v", err, ErrConsumed)
+			if _, err := l.Compressed(); err != ErrConsumed {
+				t.Errorf("Compressed() after consuming; got %v, want %v", err, ErrConsumed)
+			}
+			if _, err := l.Uncompressed(); err != ErrConsumed {
+				t.Errorf("Uncompressed() after consuming; got %v, want %v", err, ErrConsumed)
+			}
+		})
 	}
 }
 
@@ -231,6 +269,16 @@ func TestMediaType(t *testing.T) {
 	}
 
 	if got, want := mediaType, types.DockerLayer; got != want {
+		t.Errorf("MediaType(): want %q, got %q", want, got)
+	}
+
+	l = NewLayer(ioutil.NopCloser(strings.NewReader("hello")), WithMediaType(types.OCILayer))
+	mediaType, err = l.MediaType()
+	if err != nil {
+		t.Fatalf("MediaType(): %v", err)
+	}
+
+	if got, want := mediaType, types.OCILayer; got != want {
 		t.Errorf("MediaType(): want %q, got %q", want, got)
 	}
 }

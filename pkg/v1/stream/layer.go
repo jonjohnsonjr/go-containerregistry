@@ -43,7 +43,10 @@ var (
 type Layer struct {
 	blob        io.ReadCloser
 	consumed    bool
+	compress    bool
 	compression int
+
+	mediaType types.MediaType
 
 	mu             sync.Mutex
 	digest, diffID *v1.Hash
@@ -62,11 +65,26 @@ func WithCompressionLevel(level int) LayerOption {
 	}
 }
 
+// WithNoCompression causes stream.Layer not to compress the input, so the
+// Compressed() io.ReadCloser returns the original input stream.
+func WithNoCompression(l *Layer) {
+	l.compress = false
+}
+
+// WithMediaType sets the mediaType for this layer.
+func WithMediaType(mt types.MediaType) LayerOption {
+	return func(l *Layer) {
+		l.mediaType = mt
+	}
+}
+
 // NewLayer creates a Layer from an io.ReadCloser.
 func NewLayer(rc io.ReadCloser, opts ...LayerOption) *Layer {
 	layer := &Layer{
 		blob:        rc,
+		compress:    true,
 		compression: gzip.BestSpeed,
+		mediaType:   types.DockerLayer,
 	}
 
 	for _, opt := range opts {
@@ -106,16 +124,17 @@ func (l *Layer) Size() (int64, error) {
 	return l.size, nil
 }
 
-// MediaType implements v1.Layer
+// MediaType implements v1.Layer.
 func (l *Layer) MediaType() (types.MediaType, error) {
-	// We return DockerLayer for now as uncompressed layers
-	// are unimplemented
-	return types.DockerLayer, nil
+	return l.mediaType, nil
 }
 
 // Uncompressed implements v1.Layer.
 func (l *Layer) Uncompressed() (io.ReadCloser, error) {
-	return nil, errors.New("NYI: stream.Layer.Uncompressed is not implemented")
+	if l.consumed {
+		return nil, ErrConsumed
+	}
+	return newUncompressedReader(l), nil
 }
 
 // Compressed implements v1.Layer.
@@ -123,7 +142,54 @@ func (l *Layer) Compressed() (io.ReadCloser, error) {
 	if l.consumed {
 		return nil, ErrConsumed
 	}
+	if !l.compress {
+		return l.Uncompressed()
+	}
 	return newCompressedReader(l)
+}
+
+type uncompressedReader struct {
+	l *Layer
+	r io.Reader
+
+	h     hash.Hash
+	count *countWriter
+}
+
+func newUncompressedReader(l *Layer) *uncompressedReader {
+	h := sha256.New()
+	count := &countWriter{}
+	mw := io.MultiWriter(h, count)
+	tr := io.TeeReader(l.blob, mw)
+	return &uncompressedReader{
+		r:     tr,
+		h:     h,
+		count: count,
+		l:     l,
+	}
+}
+
+func (ur *uncompressedReader) Read(b []byte) (int, error) { return ur.r.Read(b) }
+
+func (ur *uncompressedReader) Close() error {
+	ur.l.mu.Lock()
+	defer ur.l.mu.Unlock()
+
+	// Close the inner ReadCloser.
+	if err := ur.l.blob.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
+
+	diffID, err := v1.NewHash("sha256:" + hex.EncodeToString(ur.h.Sum(nil)))
+	if err != nil {
+		return err
+	}
+	ur.l.diffID = &diffID
+	ur.l.digest = &diffID
+
+	ur.l.size = ur.count.n
+	ur.l.consumed = true
+	return nil
 }
 
 type compressedReader struct {

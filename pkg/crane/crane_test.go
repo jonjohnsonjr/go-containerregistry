@@ -210,6 +210,50 @@ func TestCraneRegistry(t *testing.T) {
 	if len(repos) != 2 {
 		t.Fatalf("wanted 2 repos, got %d", len(repos))
 	}
+
+	// Upload a blob to the registry
+	tmp, err := ioutil.TempFile("", "crane-append")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+
+	rc, err := layer.Uncompressed()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := io.Copy(tmp, rc); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tmp, err = os.Open(tmp.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin := os.Stdin
+	defer func() {
+		os.Stdin = stdin
+	}()
+
+	os.Stdin = tmp
+
+	blobRef, err := crane.Upload("-", dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	diffid, err := layer.DiffID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want, got := dst+"@"+diffid.String(), blobRef; want != got {
+		t.Errorf("crane.Upload(): want %q got %q", want, got)
+	}
 }
 
 func TestCraneCopyIndex(t *testing.T) {
@@ -555,6 +599,9 @@ func TestBadInputs(t *testing.T) {
 		{"ListTags(invalid)", e(crane.ListTags(invalid))},
 		{"ListTags(404)", e(crane.ListTags(valid404))},
 		{"Append(_, invalid)", e(crane.Append(nil, invalid))},
+		{"Upload(_, invalid)", e(crane.Upload(invalid, valid404))},
+		{"Upload(_, invalid)", e(crane.Upload("-", valid404))},
+		{"Upload(_, invalid)", e(crane.Upload(invalid, invalid))},
 		{"Catalog(invalid)", e(crane.Catalog(invalid))},
 		{"Catalog(404)", e(crane.Catalog(u.Host))},
 		{"PullLayer(invalid)", e(crane.PullLayer(invalid))},

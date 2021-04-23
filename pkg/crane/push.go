@@ -16,10 +16,12 @@ package crane
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/stream"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
@@ -51,4 +53,39 @@ func Push(img v1.Image, dst string, opt ...Option) error {
 		return fmt.Errorf("parsing reference %q: %v", dst, err)
 	}
 	return remote.Write(tag, img, o.remote...)
+}
+
+func Upload(path string, dst string, opt ...Option) (string, error) {
+	o := makeOptions(opt...)
+	repo, err := name.NewRepository(dst, o.name...)
+	if err != nil {
+		return "", fmt.Errorf("parsing repository %q: %v", dst, err)
+	}
+	layer, err := uncompressedLayer(path)
+	if err != nil {
+		return "", err
+	}
+
+	if err := remote.WriteLayer(repo, layer, o.remote...); err != nil {
+		return "", err
+	}
+
+	digest, err := layer.Digest()
+	if err != nil {
+		return "", err
+	}
+
+	return repo.Digest(digest.String()).String(), nil
+}
+
+func uncompressedLayer(path string) (v1.Layer, error) {
+	if path == "-" {
+		return stream.NewLayer(os.Stdin, stream.WithNoCompression), nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return stream.NewLayer(f, stream.WithNoCompression), nil
 }
