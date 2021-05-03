@@ -23,7 +23,10 @@ import (
 
 // NewCmdUpload creates a new cobra.Command for the upload subcommand.
 func NewCmdUpload(options *[]crane.Option) *cobra.Command {
-	var blob string
+	var (
+		blob      string
+		mediaType string
+	)
 
 	uploadCmd := &cobra.Command{
 		Use:   "upload",
@@ -39,5 +42,6 @@ func NewCmdUpload(options *[]crane.Option) *cobra.Command {
 		},
 	}
 	uploadCmd.Flags().StringVarP(&blob, "", "f", "-", "Path to blob to upload")
+	uploadCmd.Flags().StringVarP(&mediaType, "media-type", "m", "", "")
 	return uploadCmd
 }
