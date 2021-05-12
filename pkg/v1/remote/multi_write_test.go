@@ -83,7 +83,7 @@ func TestMultiWrite(t *testing.T) {
 		tag2: img2,
 		tag3: idx,
 	}); err != nil {
-		t.Error("Write:", err)
+		t.Fatal("MultiWrite:", err)
 	}
 
 	// Check that tagged images are present.
@@ -136,13 +136,13 @@ func TestMultiWriteWithNondistributableLayer(t *testing.T) {
 	// Write the image.
 	tag1 := mustNewTag(t, u.Host+"/repo:tag1")
 	if err := MultiWrite(map[name.Reference]Taggable{tag1: img}, WithNondistributable); err != nil {
-		t.Error("Write:", err)
+		t.Fatal("MultiWrite:", err)
 	}
 
 	// Check that tagged image is present.
 	got, err := Image(tag1)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	if err := validate.Image(got); err != nil {
 		t.Error("Validate() =", err)
@@ -174,7 +174,7 @@ func TestMultiWrite_Deep(t *testing.T) {
 	if err := MultiWrite(map[name.Reference]Taggable{
 		tag: idx,
 	}); err != nil {
-		t.Error("Write:", err)
+		t.Error("MultiWrite:", err)
 	}
 
 	// Check that tagged manfest list is present and valid.

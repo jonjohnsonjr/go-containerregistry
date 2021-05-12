@@ -176,6 +176,8 @@ type writer struct {
 	client  *http.Client
 	context context.Context
 
+	allowNondistributableArtifacts bool
+
 	updates    chan<- v1.Update
 	lastUpdate *v1.Update
 }
@@ -635,7 +637,7 @@ func (w *writer) commitManifest(t Taggable, ref name.Reference) error {
 	return nil
 }
 
-func scopesForUploadingImage(repo name.Repository, layers []v1.Layer) []string {
+func scopeSet(repo name.Repository, layers []v1.Layer) map[string]struct{} {
 	// use a map as set to remove duplicates scope strings
 	scopeSet := map[string]struct{}{}
 
@@ -649,11 +651,15 @@ func scopesForUploadingImage(repo name.Repository, layers []v1.Layer) []string {
 		}
 	}
 
+	return scopeSet
+}
+
+func scopesForUploadingImage(repo name.Repository, layers []v1.Layer) []string {
 	scopes := make([]string, 0)
 	// Push scope should be the first element because a few registries just look at the first scope to determine access.
 	scopes = append(scopes, repo.Scope(transport.PushScope))
 
-	for scope := range scopeSet {
+	for scope := range scopeSet(repo, layers) {
 		scopes = append(scopes, scope)
 	}
 
