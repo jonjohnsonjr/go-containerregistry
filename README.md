@@ -38,6 +38,7 @@ Over time, we will add new functionality under experimental environment variable
 | Env Var | Value(s) | What is does |
 |---------|----------|--------------|
 | `GGCR_EXPERIMENT_ESTARGZ` | `"1"` | When enabled this experiment will direct `tarball.LayerFromOpener` to emit [estargz](https://github.com/opencontainers/image-spec/issues/815) compatible layers, which enable them to be lazily loaded by an appropriately configured containerd. |
+| `GGCR_EXPERIMENT_EMOJI`   | `"1"` | When enabled this experiment will format digests using [emojisum](https://github.com/emojisum/emojisum). |
 
 
 ### `v1.Image`

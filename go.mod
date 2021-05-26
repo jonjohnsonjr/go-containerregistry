@@ -14,9 +14,11 @@ require (
 	github.com/docker/docker-credential-helpers v0.6.3 // indirect
 	github.com/docker/go-connections v0.4.0 // indirect
 	github.com/docker/go-units v0.4.0 // indirect
+	github.com/emojisum/emojisum v0.0.0-20191102124448-cdca4cf09ee3
 	github.com/google/go-cmp v0.5.2
 	github.com/gorilla/mux v1.7.3 // indirect
 	github.com/kr/text v0.2.0 // indirect
+	github.com/kyokomi/emoji v2.2.4+incompatible // indirect
 	github.com/maxbrunsfeld/counterfeiter/v6 v6.2.2
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e // indirect

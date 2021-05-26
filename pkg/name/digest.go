@@ -15,7 +15,10 @@
 package name
 
 import (
+	"os"
 	"strings"
+
+	"github.com/emojisum/emojisum/emoji"
 )
 
 const (
@@ -30,6 +33,7 @@ type Digest struct {
 	Repository
 	digest   string
 	original string
+	emoji    string
 }
 
 // Ensure Digest implements Reference
@@ -88,9 +92,34 @@ func NewDigest(name string, opts ...Option) (Digest, error) {
 	if err != nil {
 		return Digest{}, err
 	}
+
+	lol, err := maybeEmoji(digest)
+	if err != nil {
+		return Digest{}, err
+	}
+
+	if lol != "" {
+		name = strings.Replace(name, digest, lol, 1)
+	}
+
 	return Digest{
 		Repository: repo,
 		digest:     digest,
 		original:   name,
 	}, nil
+}
+
+func maybeEmoji(digest string) (string, error) {
+	if os.Getenv("GGCR_EXPERIMENT_EMOJI") != "" {
+		parts := strings.Split(digest, ":")
+		pre, hex := parts[0], parts[1]
+		lol, err := emoji.FromHexString(hex)
+		if err != nil {
+			return "", err
+		}
+
+		return pre + ":" + lol, nil
+	}
+
+	return "", nil
 }

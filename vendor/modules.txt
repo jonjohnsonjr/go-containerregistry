@@ -61,6 +61,9 @@ github.com/docker/go-connections/tlsconfig
 # github.com/docker/go-units v0.4.0
 ## explicit
 github.com/docker/go-units
+# github.com/emojisum/emojisum v0.0.0-20191102124448-cdca4cf09ee3
+## explicit
+github.com/emojisum/emojisum/emoji
 # github.com/go-logr/logr v0.2.0
 github.com/go-logr/logr
 # github.com/gogo/protobuf v1.3.1
@@ -86,6 +89,8 @@ github.com/inconshreveable/mousetrap
 # github.com/konsorten/go-windows-terminal-sequences v1.0.3
 github.com/konsorten/go-windows-terminal-sequences
 # github.com/kr/text v0.2.0
+## explicit
+# github.com/kyokomi/emoji v2.2.4+incompatible
 ## explicit
 # github.com/maxbrunsfeld/counterfeiter/v6 v6.2.2
 ## explicit
