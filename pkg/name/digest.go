@@ -15,10 +15,14 @@
 package name
 
 import (
+	"fmt"
+	"log"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/emojisum/emojisum/emoji"
+	"github.com/google/go-containerregistry/pkg/logs"
 )
 
 const (
@@ -80,7 +84,23 @@ func NewDigest(name string, opts ...Option) (Digest, error) {
 
 	// Always check that the digest is valid.
 	if err := checkDigest(digest); err != nil {
-		return Digest{}, err
+		if os.Getenv("GGCR_EXPERIMENT_EMOJI") != "" {
+			parts := strings.Split(digest, ":")
+			pre, hex := parts[0], parts[1]
+			lol, err := ToHexString(hex)
+			if err != nil {
+				logs.Warn.Printf("emoji fallback %q: %v", digest, err)
+				return Digest{}, err
+			} else {
+				digest = pre + ":" + lol
+			}
+		} else {
+			return Digest{}, err
+		}
+
+		if err := checkDigest(digest); err != nil {
+			return Digest{}, err
+		}
 	}
 
 	tag, err := NewTag(base, opts...)
@@ -123,3 +143,36 @@ func maybeEmoji(digest string) (string, error) {
 
 	return "", nil
 }
+
+// ToHexString parses string s as Unicode Codepoint into two character byte of
+// hexadecimal
+func ToHexString(s string) (string, error) {
+
+	once.Do(func() {
+		for i := 0; i < 255; i++ {
+			for _, word := range emoji.Map(byte(i)) {
+				unmap[emoji.CodepointToUnicode(word)] = i
+			}
+		}
+	})
+	var ret string
+	for _, u := range s {
+		log.Printf("u=%q", u)
+		log.Printf("tounicode(u)=%q", emoji.CodepointToUnicode(string(u)))
+		if i, ok := unmap[string(u)]; ok {
+			hex := fmt.Sprintf("%02x", i)
+			ret = ret + hex
+			log.Printf("hex=%q", hex)
+		} else {
+			log.Println(unmap)
+			return "", fmt.Errorf("unexpected: %q", u)
+		}
+	}
+
+	return ret, nil
+}
+
+var (
+	unmap = map[string]int{}
+	once  sync.Once
+)
