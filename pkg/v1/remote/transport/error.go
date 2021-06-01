@@ -47,7 +47,7 @@ type Error struct {
 	// The http status code returned.
 	StatusCode int
 	// The raw body if we couldn't understand it.
-	rawBody string
+	RawBody string
 	// The request that failed.
 	request *http.Request
 }
@@ -67,13 +67,13 @@ func (e *Error) Error() string {
 func (e *Error) responseErr() string {
 	switch len(e.Errors) {
 	case 0:
-		if len(e.rawBody) == 0 {
+		if len(e.RawBody) == 0 {
 			if e.request != nil && e.request.Method == http.MethodHead {
 				return fmt.Sprintf("unexpected status code %d %s (HEAD responses have no body, use GET for details)", e.StatusCode, http.StatusText(e.StatusCode))
 			}
 			return fmt.Sprintf("unexpected status code %d %s", e.StatusCode, http.StatusText(e.StatusCode))
 		}
-		return fmt.Sprintf("unexpected status code %d %s: %s", e.StatusCode, http.StatusText(e.StatusCode), e.rawBody)
+		return fmt.Sprintf("unexpected status code %d %s: %s", e.StatusCode, http.StatusText(e.StatusCode), e.RawBody)
 	case 1:
 		return e.Errors[0].String()
 	default:
@@ -189,7 +189,7 @@ func CheckError(resp *http.Response, codes ...int) error {
 	// we'll construct an appropriate error string from the body and status code.
 	_ = json.Unmarshal(b, structuredError)
 
-	structuredError.rawBody = string(b)
+	structuredError.RawBody = string(b)
 	structuredError.StatusCode = resp.StatusCode
 	structuredError.request = resp.Request
 

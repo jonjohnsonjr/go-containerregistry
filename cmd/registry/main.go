@@ -1,21 +1,24 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
-	"github.com/google/go-containerregistry/pkg/registry"
+	"github.com/google/go-containerregistry/pkg/logs"
+	"github.com/google/go-containerregistry/pkg/mirror"
 )
 
-var port = flag.Int("port", 1338, "port to run registry on")
-
 func main() {
-	flag.Parse()
+	logs.Debug.SetOutput(os.Stderr)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 	s := &http.Server{
-		Addr:    fmt.Sprintf(":%d", *port),
-		Handler: registry.New(),
+		Addr:    fmt.Sprintf(":%s", port),
+		Handler: mirror.New(),
 	}
 	log.Fatal(s.ListenAndServe())
 }
