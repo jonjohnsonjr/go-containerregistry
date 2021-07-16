@@ -503,62 +503,40 @@ type withLayer interface {
 }
 
 func (w *writer) writeIndex(ref name.Reference, ii v1.ImageIndex, options ...Option) error {
-	index, err := ii.IndexManifest()
-	if err != nil {
-		return err
-	}
-
-	o, err := makeOptions(ref.Context(), options...)
-	if err != nil {
-		return err
-	}
-
-	// TODO(#803): Pipe through remote.WithJobs and upload these in parallel.
-	for _, desc := range index.Manifests {
-		ref := ref.Context().Digest(desc.Digest.String())
-		exists, err := w.checkExistingManifest(desc.Digest, desc.MediaType)
-		if err != nil {
-			return err
-		}
-		if exists {
-			logs.Progress.Print("existing manifest: ", desc.Digest)
-			continue
-		}
-
-		switch desc.MediaType {
-		case types.OCIImageIndex, types.DockerManifestList:
-			ii, err := ii.ImageIndex(desc.Digest)
+	walker := partial.Walker{
+		Image: func(img v1.Image) error {
+			desc, err := partial.Descriptor(img)
 			if err != nil {
 				return err
 			}
-			if err := w.writeIndex(ref, ii); err != nil {
-				return err
-			}
-		case types.OCIManifestSchema1, types.DockerManifestSchema2:
-			img, err := ii.Image(desc.Digest)
+			cl, err := partial.ConfigLayer(img)
 			if err != nil {
 				return err
 			}
-			if err := writeImage(ref, img, o, w.lastUpdate); err != nil {
+			if err := w.uploadOne(cl); err != nil {
 				return err
 			}
-		default:
-			// Workaround for #819.
-			if wl, ok := ii.(withLayer); ok {
-				layer, err := wl.Layer(desc.Digest)
-				if err != nil {
-					return err
-				}
-				if err := w.uploadOne(layer); err != nil {
-					return err
-				}
+			return w.commitManifest(img, ref.Context().Digest(desc.Digest.String()))
+		},
+		Index: func(idx v1.ImageIndex) error {
+			if idx == ii {
+				// Commit by tag (potentially) if we're top level.
+				return w.commitManifest(idx, ref)
 			}
-		}
+
+			desc, err := partial.Descriptor(idx)
+			if err != nil {
+				return err
+			}
+			return w.commitManifest(idx, ref.Context().Digest(desc.Digest.String()))
+		},
+		Layer: func(l v1.Layer) error {
+			return w.uploadOne(l)
+		},
 	}
 
-	// With all of the constituent elements uploaded, upload the manifest
-	// to commit the image.
-	return w.commitManifest(ii, ref)
+	// TODO: This does post-order so we can't do manifest existence checks to skip a lot of work.
+	return partial.Walk(ii, walker.Func)
 }
 
 type withMediaType interface {
