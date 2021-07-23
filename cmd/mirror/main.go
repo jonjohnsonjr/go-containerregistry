@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"strconv"
 	"strings"
@@ -86,17 +88,14 @@ func (r *registry) v2(resp http.ResponseWriter, req *http.Request) *regError {
 	}
 	resp.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
 	if req.URL.Path != "/v2/" && req.URL.Path != "/v2" && req.URL.Path != "/" {
-		return &regError{
-			Status:  http.StatusNotFound,
-			Code:    "METHOD_UNKNOWN",
-			Message: "We don't understand your method + url",
-		}
+		return r.oops(req, errors.New("not implemented"))
 	}
 	resp.WriteHeader(200)
 	return nil
 }
 
 func (r *registry) root(resp http.ResponseWriter, req *http.Request) {
+	r.log.Printf("%s %s", req.Method, req.URL)
 	if rerr := r.v2(resp, req); rerr != nil {
 		r.log.Printf("%s %s %d %s %s", req.Method, req.URL, rerr.Status, rerr.Code, rerr.Message)
 		if err := rerr.Write(resp); err != nil {
@@ -104,7 +103,7 @@ func (r *registry) root(resp http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
-	r.log.Printf("%s %s", req.Method, req.URL)
+	r.dump(req)
 }
 
 // New returns a handler which implements the docker registry protocol.
@@ -231,11 +230,20 @@ func (r *registry) handleCatalog(resp http.ResponseWriter, req *http.Request) *r
 
 func (r *registry) oops(req *http.Request, err error) *regError {
 	r.log.Printf("%s %s: %v", req.Method, req.URL, err)
+	r.dump(req)
 	return &regError{
 		Status:   http.StatusInternalServerError,
 		Code:     "UNKNOWN",
 		Message:  "/shrug",
 		original: err,
+	}
+}
+
+func (r *registry) dump(req *http.Request) {
+	if dump, err := httputil.DumpRequest(req, true); err != nil {
+		r.log.Printf("%s %s: %v", req.Method, req.URL, err)
+	} else {
+		r.log.Println(string(dump))
 	}
 }
 
