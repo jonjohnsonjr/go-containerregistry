@@ -439,7 +439,7 @@ func (h *handler) fetchBlob(r *http.Request) (*sizeBlob, string, error) {
 			if err != nil {
 				return nil, "", err
 			}
-			checked, err := verify.ReadCloser(resp.Body, h)
+			checked, err := verify.ReadCloser(resp.Body, resp.ContentLength, h)
 			if err != nil {
 				return nil, "", err
 			}
