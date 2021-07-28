@@ -48,7 +48,7 @@ const (
 </head>
 <h2>explore.<a class="mt" href="https://github.com/google/go-containerregistry">ggcr</a>.dev</h2>
 <p>
-This <a href="https://github.com/google/go-containerregistry/tree/main/cmd/explore">janky tool</a> allows you to <em>explore</em> the contents of a registry interactively.
+This janky tool allows you to <em>explore</em> the contents of a registry interactively.
 </p>
 <p>
 Enter a <strong>public</strong> image, e.g. <tt>"ubuntu:latest"</tt>:
