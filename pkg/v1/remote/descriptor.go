@@ -390,6 +390,26 @@ func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.Read
 	return verify.ReadCloser(resp.Body, size, h)
 }
 
+func (f *fetcher) getBlob(h v1.Hash) (*http.Response, error) {
+	u := f.url("blobs", h.String())
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := f.Client.Do(req.WithContext(f.context))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := transport.CheckError(resp, http.StatusOK); err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 func (f *fetcher) headBlob(h v1.Hash) (*http.Response, error) {
 	u := f.url("blobs", h.String())
 	req, err := http.NewRequest(http.MethodHead, u.String(), nil)

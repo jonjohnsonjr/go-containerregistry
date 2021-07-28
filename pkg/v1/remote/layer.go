@@ -16,6 +16,8 @@ package remote
 
 import (
 	"io"
+	"net/http"
+	"strings"
 
 	"github.com/google/go-containerregistry/internal/redact"
 	"github.com/google/go-containerregistry/internal/verify"
@@ -40,9 +42,21 @@ func (rl *remoteLayer) Compressed() (io.ReadCloser, error) {
 
 // Compressed implements partial.CompressedLayer
 func (rl *remoteLayer) Size() (int64, error) {
-	resp, err := rl.headBlob(rl.digest)
-	if err != nil {
-		return -1, err
+	var (
+		resp *http.Response
+		err  error
+	)
+	if strings.HasPrefix(rl.fetcher.Ref.Name(), "public.ecr.aws/") {
+		// HEAD is broken for some reason T_T.
+		resp, err = rl.getBlob(rl.digest)
+		if err != nil {
+			return -1, err
+		}
+	} else {
+		resp, err = rl.headBlob(rl.digest)
+		if err != nil {
+			return -1, err
+		}
 	}
 	defer resp.Body.Close()
 	return resp.ContentLength, nil
