@@ -27,6 +27,8 @@ import (
 
 var auth = flag.Bool("auth", false, "use docker credentials")
 
+const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
+
 func main() {
 	flag.Parse()
 
@@ -37,7 +39,7 @@ func main() {
 		port = "8080"
 	}
 
-	opt := []remote.Option{}
+	opt := []remote.Option{remote.WithUserAgent(ua)}
 	if *auth {
 		opt = append(opt, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	}
