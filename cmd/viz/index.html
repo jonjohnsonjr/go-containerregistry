@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<body>
+<script src="//d3js.org/d3.v5.min.js"></script>
+<script src="https://unpkg.com/@hpcc-js/wasm@0.3.11/dist/index.min.js"></script>
+<script src="https://unpkg.com/d3-graphviz@3.0.5/build/d3-graphviz.js"></script>
+<div id="graph" style="text-align: center;"></div>
+<script>
+
+var dotIndex = 0;
+var graphviz = d3.select("#graph").graphviz().growEnteringEdges(true)
+    .transition(function () {
+        return d3.transition("main")
+            .ease(d3.easeLinear)
+            .delay(100)
+            .duration(1000);
+    })
+    .logEvents(true)
+    .on("initEnd", render);
+
+function render() {
+    var dotLines = dots[dotIndex];
+    var dot = dotLines.join('');
+    graphviz
+        .renderDot(dot)
+        .on("end", function () {
+            dotIndex = (dotIndex + 1) % dots.length;
+            render();
+        });
+}
+
+function toGraphviz(e) {
+}
+
+var dots = [
+    [
+    `digraph {
+  label = "initial state";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    " " [style=invis];
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    "  " [style=invis];
+  }
+  
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="blob existence checks";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    " " [style=invis];
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc" [color="red", penwidth=2];
+    "sha256:123" [color="red", penwidth=2];
+    }
+  }
+  
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  " " -> "sha256:abc" [style=invis];
+  "sha256:abc" -> "   " [dir=back, style=invis];
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="start uploads (show upload progress)";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    " " [style=invis];
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    "  " [style=invis];
+  }
+  
+  subgraph cluster_uploads {
+    label = "Uploads";
+    
+    { rank=same;
+    "abc" [color="yellow", penwidth=2];
+    "123" [color="yellow", penwidth=2];
+    }
+  }
+  
+  " " -> "  " [style=invis];
+  "  " -> "abc" [style=invis];
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="finalize uploads";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    " " [style=invis];
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc" [color="blue", penwidth=2];
+    "sha256:123" [color="blue", penwidth=2];
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    
+    { rank=same;
+    "abc" [color="blue", penwidth=2];
+    "123" [color="blue", penwidth=2];
+    }
+  }
+  
+  " " -> "sha256:abc" [style=invis];
+  
+  "sha256:abc" -> "abc" [dir=back, penwidth=2];
+  "sha256:123" -> "123" [dir=back, penwidth=2];
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    " " [style=invis];
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  " " -> "sha256:abc" [style=invis];
+  "sha256:abc" -> "   " [style=invis];
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="PUT manifest";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def" [color=blue, penwidth=2];
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"} [color=blue];
+  "sha256:abc" -> "   " [style=invis];
+
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:abc" -> "   " [style=invis];
+
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="blob existence checks";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123" [color="green", penwidth=2];
+    "sha256:404" [color="red", penwidth=2];
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:abc" -> "   " [style=invis];
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="start upload (show upload progress)";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "404" [color="yellow", penwidth=2];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:abc" -> "404" [style=invis];
+}`
+    ],
+    [
+`digraph {
+  newrank=true;
+  rankdir=LR;
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    "sha256:404" [color="blue", penwidth=2];
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "404" [color="blue", penwidth=2];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:404" -> "404" [dir=back, penwidth=2];
+}`
+    ],
+    [
+    `digraph {
+  newrank=true;
+  rankdir=LR;
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    "sha256:404";
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:abc" -> "   " [style=invis];
+}`
+    ],
+    [`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="PUT manifest";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+    "sha256:fab" [color=blue, penwidth=2];
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    "sha256:404";
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:fab" -> {"sha256:123"; "sha256:404"} [color=blue];
+  "sha256:abc" -> "   " [style=invis];
+}`],
+[`digraph {
+  newrank=true;
+  rankdir=LR;
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+    "sha256:fab";
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    "sha256:404";
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:fab" -> {"sha256:123"; "sha256:404"};
+  "sha256:abc" -> "   " [style=invis];
+}`],
+[`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="GET manifest";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+    "sha256:fab" [color=green, penwidth=2];
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123";
+    "sha256:404";
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:fab" -> {"sha256:123"; "sha256:404"} [color=green];
+  "sha256:abc" -> "   " [style=invis];
+}`],
+[`digraph {
+  newrank=true;
+  rankdir=LR;
+  label="GET blobs (show download progress)";
+  
+  subgraph cluster_manifests {
+    label = "Manifests";
+    "sha256:def";
+    "sha256:fab";
+  }
+  
+  subgraph cluster_blobs {
+    label = "Blobs";
+    
+    { rank=same;
+    "sha256:abc";
+    "sha256:123" [color=green, penwidth=2];
+    "sha256:404" [color=green, penwidth=2];
+    }
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+  
+  "sha256:def" -> {"sha256:abc"; "sha256:123"};
+  "sha256:fab" -> {"sha256:123"; "sha256:404"};
+  "sha256:abc" -> "   " [style=invis];
+}`]
+];
+
+// var i = 0;
+// fetch('/events/' + i)
+//   .then(response => response.json())
+//   .then(data => console.log(data));
+
+</script>
