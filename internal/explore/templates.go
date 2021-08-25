@@ -51,6 +51,9 @@ const (
 This janky tool allows you to <em>explore</em> the contents of a registry interactively.
 </p>
 <p>
+You can even drill down into layers to explore the filesystem.
+</p>
+<p>
 Enter a <strong>public</strong> image, e.g. <tt>"ubuntu:latest"</tt>:
 </p>
 <form action="/" method="GET">
