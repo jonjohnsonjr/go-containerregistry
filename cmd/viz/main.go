@@ -75,26 +75,31 @@ type initialState struct {
 var demo = []event{{
 	Type:       "Blob",
 	Method:     "Head",
+	Status:     404,
 	Repo:       "ubuntu",
 	Identifier: "sha256:abc",
 }, {
 	Type:       "Blob",
 	Method:     "Head",
+	Status:     404,
 	Repo:       "ubuntu",
 	Identifier: "sha256:123",
 }, {
 	Type:       "Upload",
 	Method:     "Post",
+	Status:     202,
 	Repo:       "ubuntu",
 	Identifier: "abc",
 }, {
 	Type:       "Upload",
 	Method:     "Post",
+	Status:     202,
 	Repo:       "ubuntu",
 	Identifier: "123",
 }, {
 	Type:       "Upload",
 	Method:     "Patch",
+	Status:     0,
 	Repo:       "ubuntu",
 	Identifier: "abc",
 	Progress: &v1.Update{
@@ -104,6 +109,7 @@ var demo = []event{{
 }, {
 	Type:       "Upload",
 	Method:     "Patch",
+	Status:     0,
 	Repo:       "ubuntu",
 	Identifier: "123",
 	Progress: &v1.Update{
@@ -113,6 +119,7 @@ var demo = []event{{
 }, {
 	Type:       "Upload",
 	Method:     "Patch",
+	Status:     202,
 	Repo:       "ubuntu",
 	Identifier: "abc",
 	Progress: &v1.Update{
@@ -122,6 +129,7 @@ var demo = []event{{
 }, {
 	Type:       "Upload",
 	Method:     "Patch",
+	Status:     0,
 	Repo:       "ubuntu",
 	Identifier: "123",
 	Progress: &v1.Update{
@@ -130,7 +138,8 @@ var demo = []event{{
 	},
 }, {
 	Type:       "Upload",
-	Method:     "PUT",
+	Method:     "Put",
+	Status:     201,
 	Repo:       "ubuntu",
 	Identifier: "123",
 	Objects: []object{{
@@ -141,6 +150,7 @@ var demo = []event{{
 }, {
 	Type:       "Upload",
 	Method:     "Patch",
+	Status:     202,
 	Repo:       "ubuntu",
 	Identifier: "123",
 	Progress: &v1.Update{
@@ -149,7 +159,8 @@ var demo = []event{{
 	},
 }, {
 	Type:       "Upload",
-	Method:     "PUT",
+	Method:     "Put",
+	Status:     201,
 	Repo:       "ubuntu",
 	Identifier: "abc",
 	Objects: []object{{
@@ -159,7 +170,8 @@ var demo = []event{{
 	}},
 }, {
 	Type:       "Manifest",
-	Method:     "PUT",
+	Method:     "Put",
+	Status:     201,
 	Repo:       "ubuntu",
 	Identifier: "sha256:def",
 	Objects: []object{{

@@ -29,9 +29,65 @@ function render() {
         });
 }
 
-function toGraphviz(e) {
+var typeMap = {
+  "Blob": renderBlob,
+  "Manifest": renderManifest,
+  "Upload": renderUpload
+};
+
+function renderBlob(e) {
+  if (e.Method == "Head") {
+  } else if (e.Method == "Get") {
+  } else if (e.Method = "Post") {
+  } else if (e.Method = "Patch") {
+  } else {
+  }
 }
 
+function renderManifest(e) {
+  if (e.Method == "Head") {
+  } else if (e.Method == "Get") {
+  } else if (e.Method = "Put") {
+  } else if (e.Method = "Delete") {
+  } else {
+  }
+}
+
+function renderUpload(e) {
+  if (e.Method == "Head") {
+  } else if (e.Method == "Get") {
+  } else if (e.Method = "Post") {
+  } else if (e.Method = "Patch") {
+  } else if (e.Method = "Put") {
+  } else {
+  }
+}
+
+function toGraphviz(e) {
+  return typeMap[e.Type](e);
+}
+
+function outline(state) {
+  return `digraph {
+  newrank=true;
+  rankdir=LR;
+
+  subgraph cluster_manifests {
+    label = "Manifests";
+    " " [style=invis];
+  }
+
+  subgraph cluster_blobs {
+    label = "Blobs";
+    "  " [style=invis];
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+  }
+}`;
+}
 var dots = [
     [
     `digraph {
@@ -472,9 +528,9 @@ var dots = [
 }`]
 ];
 
-// var i = 0;
-// fetch('/events/' + i)
-//   .then(response => response.json())
-//   .then(data => console.log(data));
+var i = 0;
+fetch('/events/' + i)
+  .then(response => response.json())
+  .then(data => console.log(data));
 
 </script>
