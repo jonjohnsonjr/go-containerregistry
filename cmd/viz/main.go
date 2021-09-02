@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path"
 	"strconv"
+	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
@@ -52,7 +53,8 @@ type event struct {
 	Identifier string
 
 	// Optional
-	Progress *v1.Update
+	Progress  *v1.Update
+	Timestamp *time.Time
 }
 
 type object struct {
@@ -68,8 +70,8 @@ type object struct {
 }
 
 type initialState struct {
-	// Repo -> [Identifier -> object]
-	Objects map[string]map[string]object
+	// Repo -> []object
+	Objects map[string][]object
 }
 
 var demo = []event{{
@@ -189,3 +191,33 @@ var demo = []event{{
 		}},
 	}},
 }}
+
+/*
+type State struct {
+  objects []object
+  edges []edge
+}
+
+type initialState struct {
+  // Repo -> []object
+  Objects map[string][]object
+}
+
+// on page load
+func render(initial State) string {
+}
+
+func update(current State, event Event) State {
+}
+
+func main() {
+  initial = get()
+  render(initial())
+
+  for {
+    event = get()
+    state = update(initial, event)
+    render(state)
+  }
+}
+*/

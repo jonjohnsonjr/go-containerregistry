@@ -35,6 +35,10 @@ var typeMap = {
   "Upload": renderUpload
 };
 
+function toGraphviz(e) {
+  return typeMap[e.Type](e);
+}
+
 function renderBlob(e) {
   if (e.Method == "Head") {
   } else if (e.Method == "Get") {
@@ -63,11 +67,27 @@ function renderUpload(e) {
   }
 }
 
-function toGraphviz(e) {
-  return typeMap[e.Type](e);
+function renderManifests(state) {
+  return '';
 }
 
-function outline(state) {
+function renderBlobs(state) {
+  return '';
+}
+
+function renderUploads(state) {
+  return '';
+}
+
+function renderEdges(state) {
+  return '';
+}
+
+// (state, event) => state
+function update(state, e) {
+}
+
+function init(state) {
   return `digraph {
   newrank=true;
   rankdir=LR;
@@ -75,19 +95,28 @@ function outline(state) {
   subgraph cluster_manifests {
     label = "Manifests";
     " " [style=invis];
+
+    ${renderManifests(state)}
   }
 
   subgraph cluster_blobs {
     label = "Blobs";
     "  " [style=invis];
+
+    ${renderBlobs(state)}
   }
 
   subgraph cluster_uploads {
     label = "Uploads";
     "   " [style=invis];
+
+    ${renderUploads(state)}
   }
+
+  ${renderEdges(state)}
 }`;
 }
+
 var dots = [
     [
     `digraph {
