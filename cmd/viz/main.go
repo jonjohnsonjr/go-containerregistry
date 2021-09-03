@@ -37,7 +37,7 @@ func main() {
 
 type event struct {
 	// Manifest| Blob | Upload
-	Type string
+	Kind string
 
 	// Get, Head, Post, Patch, Put, Delete
 	Method string
@@ -69,9 +69,19 @@ type object struct {
 	Deps []object
 }
 
-type initialState struct {
-	// Repo -> []object
-	Objects map[string][]object
+type Node struct {
+}
+
+type Edge struct {
+}
+
+type RepoState struct {
+	Objects map[string]map[string]Node
+	Edges   map[string]map[string]Edge
+}
+
+type State struct {
+	Repos map[string]RepoState
 }
 
 var demo = []event{{
