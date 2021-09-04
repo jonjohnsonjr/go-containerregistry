@@ -1,23 +1,55 @@
+var eventIndex = 0;
+var currentState = {
+  objects: [],
+  edges: []
+};
 var dotIndex = 0;
 var graphviz = d3.select("#graph").graphviz().growEnteringEdges(true)
     .transition(function () {
         return d3.transition("main")
             .ease(d3.easeLinear)
             .delay(100)
-            .duration(1000);
+            .duration(100);
     })
-    .logEvents(true)
-    .on("initEnd", render);
+    .logEvents(true);
 
 function render() {
-    var dotLines = dots[dotIndex];
-    var dot = dotLines.join('');
+    var dot = dots.pop().join('');
     graphviz
         .renderDot(dot)
         .on("end", function () {
-            dotIndex = (dotIndex + 1) % dots.length;
-            render();
+            getEvent();
         });
+}
+
+function renderState(state) {
+  return `digraph {
+  newrank=true;
+  rankdir=LR;
+
+  subgraph cluster_manifests {
+    label = "Manifests";
+    " " [style=invis];
+
+    ${renderManifests(state)}
+  }
+
+  subgraph cluster_blobs {
+    label = "Blobs";
+    "  " [style=invis];
+
+    ${renderNodes(state, "Blob")}
+  }
+
+  subgraph cluster_uploads {
+    label = "Uploads";
+    "   " [style=invis];
+
+    ${renderNodes(state, "Upload")}
+  }
+
+  ${renderEdges(state)}
+}`;
 }
 
 // TODO: This should be slightly different for image index.
@@ -63,8 +95,8 @@ var colors = {
   0: "orange",
   200: "green",
   201: "blue",
-  202: "yellow"
-  404: "red",
+  202: "yellow",
+  404: "red"
 };
 
 function match(obj, e) {
@@ -133,38 +165,15 @@ function updateState(state, e) {
   }
 }
 
-function init(state) {
-  return `digraph {
-  newrank=true;
-  rankdir=LR;
-
-  subgraph cluster_manifests {
-    label = "Manifests";
-    " " [style=invis];
-
-    ${renderManifests(state)}
-  }
-
-  subgraph cluster_blobs {
-    label = "Blobs";
-    "  " [style=invis];
-
-    ${renderNodes(state, "Blob")}
-  }
-
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-
-    ${renderNodes(state, "Upload")}
-  }
-
-  ${renderEdges(state)}
-}`;
+function getEvent() {
+  fetch('/events/' + eventIndex)
+    .then(response => response.json())
+    .then(function(e) {
+      currentState = updateState(currentState, e);
+      dots.push(renderState(currentState));
+      eventIndex++;
+    });
 }
 
-var i = 0;
-fetch('/events/' + i)
-  .then(response => response.json())
-  .then(data => console.log(data));
+getEvent();
 </script>

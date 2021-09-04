@@ -85,31 +85,31 @@ type State struct {
 }
 
 var demo = []event{{
-	Type:       "Blob",
+	Kind:       "Blob",
 	Method:     "Head",
 	Status:     404,
 	Repo:       "ubuntu",
 	Identifier: "sha256:abc",
 }, {
-	Type:       "Blob",
+	Kind:       "Blob",
 	Method:     "Head",
 	Status:     404,
 	Repo:       "ubuntu",
 	Identifier: "sha256:123",
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Post",
 	Status:     202,
 	Repo:       "ubuntu",
 	Identifier: "abc",
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Post",
 	Status:     202,
 	Repo:       "ubuntu",
 	Identifier: "123",
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Patch",
 	Status:     0,
 	Repo:       "ubuntu",
@@ -119,7 +119,7 @@ var demo = []event{{
 		Complete: 0,
 	},
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Patch",
 	Status:     0,
 	Repo:       "ubuntu",
@@ -129,7 +129,7 @@ var demo = []event{{
 		Complete: 0,
 	},
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Patch",
 	Status:     202,
 	Repo:       "ubuntu",
@@ -139,7 +139,7 @@ var demo = []event{{
 		Complete: 100,
 	},
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Patch",
 	Status:     0,
 	Repo:       "ubuntu",
@@ -149,7 +149,7 @@ var demo = []event{{
 		Complete: 100,
 	},
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Put",
 	Status:     201,
 	Repo:       "ubuntu",
@@ -160,7 +160,7 @@ var demo = []event{{
 		Identifier: "sha256:123",
 	}},
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Patch",
 	Status:     202,
 	Repo:       "ubuntu",
@@ -170,7 +170,7 @@ var demo = []event{{
 		Complete: 200,
 	},
 }, {
-	Type:       "Upload",
+	Kind:       "Upload",
 	Method:     "Put",
 	Status:     201,
 	Repo:       "ubuntu",
@@ -181,53 +181,18 @@ var demo = []event{{
 		Identifier: "sha256:abc",
 	}},
 }, {
-	Type:       "Manifest",
+	Kind:       "Manifest",
 	Method:     "Put",
 	Status:     201,
 	Repo:       "ubuntu",
 	Identifier: "sha256:def",
 	Objects: []object{{
-		Kind:       "Manifest",
+		Kind:       "Blob",
 		Repo:       "ubuntu",
-		Identifier: "sha256:def",
-		Deps: []object{{
-			Kind:       "Blob",
-			Repo:       "ubuntu",
-			Identifier: "sha256:abc",
-		}, {
-			Kind:       "Blob",
-			Repo:       "ubuntu",
-			Identifier: "sha256:123",
-		}},
+		Identifier: "sha256:abc",
+	}, {
+		Kind:       "Blob",
+		Repo:       "ubuntu",
+		Identifier: "sha256:123",
 	}},
 }}
-
-/*
-type State struct {
-  objects []object
-  edges []edge
-}
-
-type initialState struct {
-  // Repo -> []object
-  Objects map[string][]object
-}
-
-// on page load
-func render(initial State) string {
-}
-
-func update(current State, event Event) State {
-}
-
-func main() {
-  initial = get()
-  render(initial())
-
-  for {
-    event = get()
-    state = update(initial, event)
-    render(state)
-  }
-}
-*/

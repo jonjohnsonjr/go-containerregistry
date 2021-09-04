@@ -6,188 +6,34 @@
 <script src="https://unpkg.com/d3-graphviz@3.0.5/build/d3-graphviz.js"></script>
 <div id="graph" style="text-align: center;"></div>
 <script>
+var eventIndex = 0;
+var currentState = {
+  objects: [],
+  edges: []
+};
 
-var dotIndex = 0;
+// Queue.
+var dots = [];
 var graphviz = d3.select("#graph").graphviz().growEnteringEdges(true)
     .transition(function () {
         return d3.transition("main")
             .ease(d3.easeLinear)
             .delay(100)
-            .duration(1000);
-    })
-    .logEvents(true)
-    .on("initEnd", render);
+            .duration(100);
+    });
+    //.logEvents(true);
 
 function render() {
-    var dotLines = dots[dotIndex];
-    var dot = dotLines.join('');
-    graphviz
-        .renderDot(dot)
-        .on("end", function () {
-            dotIndex = (dotIndex + 1) % dots.length;
-            render();
-        });
+  var dot = dots.shift();
+  console.log(dot);
+  graphviz
+    .renderDot(dot)
+    .on("end", function () {
+      getEvent();
+    });
 }
 
-var typeMap = {
-  "Blob": renderBlob,
-  "Manifest": renderManifest,
-  "Upload": renderUpload
-};
-
-function toGraphviz(e) {
-  return typeMap[e.Type](e);
-}
-
-function renderBlob(e) {
-  if (e.Method == "Head") {
-  } else if (e.Method == "Get") {
-  } else if (e.Method = "Post") {
-  } else if (e.Method = "Patch") {
-  } else {
-  }
-}
-
-function renderManifest(e) {
-  if (e.Method == "Head") {
-  } else if (e.Method == "Get") {
-  } else if (e.Method = "Put") {
-  } else if (e.Method = "Delete") {
-  } else {
-  }
-}
-
-function renderUpload(e) {
-  if (e.Method == "Head") {
-  } else if (e.Method == "Get") {
-  } else if (e.Method = "Post") {
-  } else if (e.Method = "Patch") {
-  } else if (e.Method = "Put") {
-  } else {
-  }
-}
-
-// TODO: This should be slightly different for image index.
-function renderManifests(state) {
-  return renderNodes(state, "Manifest");
-}
-
-function renderBlobs(state) {
-  return renderNodes(state, "Blob");
-}
-
-function renderUploads(state) {
-  return renderNodes(state, "Upload");
-}
-
-function renderNodes(state, kind) {
-  let objs = [];
-  for (let obj of state.objects) {
-    if (obj.Kind == kind) {
-      let s = `"${obj.Identifier}"`;
-      if (obj.color) {
-        s += ` [color="${obj.color}", penwidth=2]`;
-      }
-      objs.push(s);
-    }
-  }
-
-  return `{
-    rank=same;
-
-    ${objs.join(';')}
-  }`;
-}
-
-function renderEdges(state) {
-  let edges = [];
-  for (let edge of state.edges) {
-    let s = `"${edge.src}" -> "${edge.dst}"`;
-    if (edge.color) {
-      s += ` [color="${edge.color}"]`;
-    }
-    edges.push(s);
-  }
-
-  // TODO If no edges, add invisible edges?
-  return `${edges.join(';')}`;
-}
-
-var colors = {
-  0: "orange",
-  200: "green",
-  201: "blue",
-  202: "yellow"
-  404: "red",
-};
-
-function match(obj, e) {
-  return obj.Kind == e.Kind && obj.Identifier == e.Identifier && obj.Repo == e.Repo;
-}
-
-// (state, event) => state
-function updateState(state, e) {
-  let nodeFound = false;
-  let missing = [...e.Objects];
-
-  // Update existing node.
-  for (let obj of state.objects) {
-    if (!nodeFound && match(obj, e)) {
-      obj.color = colors[e.Status] || "black";
-      nodeFound = true;
-      continue;
-    }
-
-    // Not updated.
-    delete obj.color;
-  }
-
-  // Update existing edges.
-  outer:
-  for (let edge of state.edges) {
-    for (let i = 0; i < missing.length; i++) {
-      if match(edge.dst, missing[i]) {
-        edge.color = colors[e.Status];
-        missing.splice(i, 1);
-        continue outer;
-      }
-    }
-    
-    // Not updated.
-    delete edge.color;
-  }
-
-  // Add missing node.
-  if (!nodeFound) {
-    let obj = {
-      Kind: e.Kind,
-      Identifier: e.Identifier,
-      Repo: e.Repo,
-      color: colors[e.Status]
-    }
-    state.objects.push(obj);
-  }
-
-  // Add missing edges.
-  for (let target of missing) {
-    let edge = {
-      src: {
-        Kind: e.Kind,
-        Identifier: e.Identifier,
-        Repo: e.Repo
-      },
-      dst: {
-        Kind: target.Kind,
-        Identifier: target.Identifier,
-        Repo: target.Repo
-      },
-      color: colors[e.Status];
-    };
-    state.edges.push(edge);
-  }
-}
-
-function init(state) {
+function renderState(state) {
   return `digraph {
   newrank=true;
   rankdir=LR;
@@ -203,463 +49,200 @@ function init(state) {
     label = "Blobs";
     "  " [style=invis];
 
-    ${renderBlobs(state)}
+    ${renderNodes(state, "Blob")}
   }
 
   subgraph cluster_uploads {
     label = "Uploads";
     "   " [style=invis];
 
-    ${renderUploads(state)}
+    ${renderNodes(state, "Upload")}
   }
 
+  " " -> "  " [style=invis];
+  "  " -> "   " [style=invis];
   ${renderEdges(state)}
 }`;
 }
 
-var dots = [
-    [
-    `digraph {
-  label = "initial state";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    " " [style=invis];
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    "  " [style=invis];
-  }
-  
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="blob existence checks";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    " " [style=invis];
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc" [color="red", penwidth=2];
-    "sha256:123" [color="red", penwidth=2];
-    }
-  }
-  
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  " " -> "sha256:abc" [style=invis];
-  "sha256:abc" -> "   " [dir=back, style=invis];
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="start uploads (show upload progress)";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    " " [style=invis];
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    "  " [style=invis];
-  }
-  
-  subgraph cluster_uploads {
-    label = "Uploads";
-    
-    { rank=same;
-    "abc" [color="yellow", penwidth=2];
-    "123" [color="yellow", penwidth=2];
-    }
-  }
-  
-  " " -> "  " [style=invis];
-  "  " -> "abc" [style=invis];
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="finalize uploads";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    " " [style=invis];
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc" [color="blue", penwidth=2];
-    "sha256:123" [color="blue", penwidth=2];
+// TODO: This should be slightly different for image index.
+// Rank should not be the same.
+function renderManifests(state) {
+  return renderNodes(state, "Manifest");
+}
+
+function renderNodes(state, kind) {
+  let objs = [];
+  for (let obj of state.objects) {
+    if (obj.Kind == kind) {
+      let s = `"${obj.Identifier}"`;
+      if (obj.color) {
+        s += ` [color="${obj.color}", penwidth=2]`;
+      }
+      objs.push(s);
     }
   }
 
-  subgraph cluster_uploads {
-    label = "Uploads";
-    
-    { rank=same;
-    "abc" [color="blue", penwidth=2];
-    "123" [color="blue", penwidth=2];
+  return `{
+      rank=same;
+
+      ${objs.join(';\n      ')}
+    }`;
+}
+
+function renderEdges(state) {
+  let edges = [];
+  for (let edge of state.edges) {
+    let src = edge.src;
+    let dst = edge.dst;
+
+    if (src.Kind = "Upload") {
+      src = edge.dst;
+      dst = edge.src;
     }
-  }
-  
-  " " -> "sha256:abc" [style=invis];
-  
-  "sha256:abc" -> "abc" [dir=back, penwidth=2];
-  "sha256:123" -> "123" [dir=back, penwidth=2];
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    " " [style=invis];
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
+
+    let s = `"${src.Identifier}" -> "${dst.Identifier}"`;
+    if (edge.color) {
+      if (src.Kind = "Upload") {
+        s += ` [color="${edge.color}", dir=back]`;
+      } else {
+        s += ` [color="${edge.color}"]`;
+      }
+    } else if (src.Kind = "Upload") {
+        s += ` [dir=back]`;
     }
+
+    edges.push(s);
   }
 
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
+  // TODO If no edges, add invisible edges?
+  return `${edges.join(';\n  ')}`;
+}
+
+var colors = {
+  0: "orange",
+  200: "green",
+  201: "blue",
+  202: "yellow",
+  404: "red"
+};
+
+function match(obj, e) {
+  return obj.Kind == e.Kind && obj.Identifier == e.Identifier && obj.Repo == e.Repo;
+}
+
+// (state, event) => state
+function updateState(state, e) {
+  let nodeFound = false;
+
+  console.log(e);
+  if (!e.Objects) {
+    e.Objects = [];
   }
-  
-  " " -> "sha256:abc" [style=invis];
-  "sha256:abc" -> "   " [style=invis];
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="PUT manifest";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def" [color=blue, penwidth=2];
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
+
+  // Update existing node.
+  for (let i = 0; i < state.objects.length; i++) {
+    let obj = state.objects[i];
+    if (!nodeFound && match(obj, e)) {
+      obj.color = colors[e.Status] || "black";
+      if (e.Kind == "Upload" && e.Method == "Put") {
+        state.objects[i].temporary = true;
+      }
+      nodeFound = true;
+      continue;
     }
-  }
 
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"} [color=blue];
-  "sha256:abc" -> "   " [style=invis];
-
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
+    // Not updated.
+    delete obj.color;
+    if (obj.temporary === true) {
+      state.objects.splice(i, 1);
+      i = i-1;
     }
   }
 
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:abc" -> "   " [style=invis];
-
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="blob existence checks";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
+  // Update existing edges.
+  outer:
+  for (let i = 0; i < state.edges.length; i++) {
+    let edge = state.edges[i];
+    for (let j = 0; j < e.Objects.length; j++) {
+      if (match(edge.dst, e.Objects[j])) {
+        edge.color = colors[e.Status] || "black";
+        e.Objects.splice(j, 1);
+        continue outer;
+      }
+    }
     
-    { rank=same;
-    "sha256:abc";
-    "sha256:123" [color="green", penwidth=2];
-    "sha256:404" [color="red", penwidth=2];
+    // Not updated.
+    delete edge.color;
+    if (edge.temporary === true) {
+      state.edges.splice(i, 1);
+      i = i-1;
     }
   }
 
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:abc" -> "   " [style=invis];
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="start upload (show upload progress)";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
+  // Add missing node.
+  if (!nodeFound) {
+    let obj = {
+      Kind: e.Kind,
+      Identifier: e.Identifier,
+      Repo: e.Repo,
+      color: colors[e.Status] || "black"
     }
-  }
-
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "404" [color="yellow", penwidth=2];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:abc" -> "404" [style=invis];
-}`
-    ],
-    [
-`digraph {
-  newrank=true;
-  rankdir=LR;
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
-    "sha256:404" [color="blue", penwidth=2];
+    if (e.Status == 404 || (e.Kind == "Upload" && e.Method == "Put")) {
+      obj.temporary = true;
     }
-  }
-
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "404" [color="blue", penwidth=2];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:404" -> "404" [dir=back, penwidth=2];
-}`
-    ],
-    [
-    `digraph {
-  newrank=true;
-  rankdir=LR;
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
     
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
-    "sha256:404";
+    state.objects.push(obj);
+  }
+
+  outer2:
+  for (let target of e.Objects) {
+    for (let i = 0; i < state.objects.length; i++) {
+      let obj = state.objects[i];
+        if (match(obj, target)) {
+          continue outer2;
+        }
+      }
+      target.color = colors[e.Status] || "black";
+      state.objects.push(target);
+  }
+
+  // Add missing edges.
+  for (let target of e.Objects) {
+    let edge = {
+      src: {
+        Kind: e.Kind,
+        Identifier: e.Identifier,
+        Repo: e.Repo
+      },
+      dst: {
+        Kind: target.Kind,
+        Identifier: target.Identifier,
+        Repo: target.Repo
+      },
+      color: colors[e.Status] || "black"
+    };
+    if (e.Kind = "Upload") {
+      edge.temporary = true;
     }
+    state.edges.push(edge);
   }
+}
 
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:abc" -> "   " [style=invis];
-}`
-    ],
-    [`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="PUT manifest";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-    "sha256:fab" [color=blue, penwidth=2];
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
-    "sha256:404";
-    }
-  }
+function getEvent() {
+  fetch('/events/' + eventIndex)
+    .then(response => response.json())
+    .then(function(e) {
+      console.log(`${e.Method} ${e.Kind} ${e.Identifier} ${e.Status}`);
+      updateState(currentState, e);
+      dots.push(renderState(currentState));
+      eventIndex++;
 
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:fab" -> {"sha256:123"; "sha256:404"} [color=blue];
-  "sha256:abc" -> "   " [style=invis];
-}`],
-[`digraph {
-  newrank=true;
-  rankdir=LR;
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-    "sha256:fab";
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
-    "sha256:404";
-    }
-  }
+      setTimeout(render, 200);
+    });
+}
 
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:fab" -> {"sha256:123"; "sha256:404"};
-  "sha256:abc" -> "   " [style=invis];
-}`],
-[`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="GET manifest";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-    "sha256:fab" [color=green, penwidth=2];
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123";
-    "sha256:404";
-    }
-  }
-
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:fab" -> {"sha256:123"; "sha256:404"} [color=green];
-  "sha256:abc" -> "   " [style=invis];
-}`],
-[`digraph {
-  newrank=true;
-  rankdir=LR;
-  label="GET blobs (show download progress)";
-  
-  subgraph cluster_manifests {
-    label = "Manifests";
-    "sha256:def";
-    "sha256:fab";
-  }
-  
-  subgraph cluster_blobs {
-    label = "Blobs";
-    
-    { rank=same;
-    "sha256:abc";
-    "sha256:123" [color=green, penwidth=2];
-    "sha256:404" [color=green, penwidth=2];
-    }
-  }
-
-  subgraph cluster_uploads {
-    label = "Uploads";
-    "   " [style=invis];
-  }
-  
-  "sha256:def" -> {"sha256:abc"; "sha256:123"};
-  "sha256:fab" -> {"sha256:123"; "sha256:404"};
-  "sha256:abc" -> "   " [style=invis];
-}`]
-];
-
-var i = 0;
-fetch('/events/' + i)
-  .then(response => response.json())
-  .then(data => console.log(data));
+getEvent();
+</script>
 
 </script>
