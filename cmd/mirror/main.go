@@ -14,6 +14,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
@@ -178,31 +179,26 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 		return r.oops(req, err)
 	}
 
-	if req.Method == "GET" {
-		// TODO: Head and check cache?
-		// TODO: Handle digests separately?
+	if req.Method == "HEAD" || req.Method == http.MethodGet {
 		desc, err := remote.Get(ref)
 		if err != nil {
 			return r.oops(req, err)
 		}
 
-		resp.Header().Set("Docker-Content-Digest", desc.Digest.String())
-		resp.Header().Set("Content-Type", string(desc.MediaType))
-		resp.Header().Set("Content-Length", strconv.Itoa(int(desc.Size)))
-		resp.WriteHeader(http.StatusOK)
-		io.Copy(resp, bytes.NewReader(desc.Manifest))
-		return nil
-	}
-
-	if req.Method == "HEAD" {
-		desc, err := remote.Head(ref)
+		hijacked, b, err := hijack(desc)
 		if err != nil {
 			return r.oops(req, err)
 		}
-		resp.Header().Set("Docker-Content-Digest", desc.Digest.String())
-		resp.Header().Set("Content-Type", string(desc.MediaType))
-		resp.Header().Set("Content-Length", strconv.Itoa(int(desc.Size)))
+
+		resp.Header().Set("Docker-Content-Digest", hijacked.Digest.String())
+		resp.Header().Set("Content-Type", string(hijacked.MediaType))
+		resp.Header().Set("Content-Length", strconv.Itoa(int(hijacked.Size)))
 		resp.WriteHeader(http.StatusOK)
+		if req.Method == "GET" {
+			if _, err := io.Copy(resp, bytes.NewReader(b)); err != nil {
+				return r.oops(req, err)
+			}
+		}
 		return nil
 	}
 
@@ -308,4 +304,49 @@ func (r *registry) handleBlobs(resp http.ResponseWriter, req *http.Request) *reg
 		Code:    "METHOD_UNKNOWN",
 		Message: "We don't understand your method + url",
 	}
+}
+
+func hijack(desc *remote.Descriptor) (*v1.Descriptor, []byte, error) {
+	var b []byte
+
+	if desc.MediaType.IsImage() {
+		m, err := v1.ParseManifest(bytes.NewReader(desc.Manifest))
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(m.Annotations) == 0 {
+			m.Annotations = map[string]string{}
+		}
+		m.Annotations["io.eocker.oops"] = ":^)"
+
+		b, err = json.Marshal(m)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		// Assume index.
+		m, err := v1.ParseIndexManifest(bytes.NewReader(desc.Manifest))
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(m.Annotations) == 0 {
+			m.Annotations = map[string]string{}
+		}
+		m.Annotations["io.eocker.oops"] = ":^)"
+
+		b, err = json.Marshal(m)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	digest, size, err := v1.SHA256(bytes.NewReader(b))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &v1.Descriptor{
+		MediaType: desc.MediaType,
+		Size:      size,
+		Digest:    digest,
+	}, b, nil
 }
