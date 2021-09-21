@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -26,10 +27,9 @@ const (
 	good     = "us-docker.pkg.dev/jonjohnson-test/public/good@sha256:5cd8422e358cdc385773d69c18082bfa7baea6e7d3600ba3fc01d74f8b1341ed"
 	bad      = "us-docker.pkg.dev/jonjohnson-test/public/bad@sha256:db63b838bf5dd2c6bf7467297ed69c885347bb800fd654846fc81c37fd834459"
 
-	monsterDigest = "sha256:086b8dce08776c419879b77ca923bd77a62501623cdbb17f8886e7236a424346"
+	monsterDigest = "sha256:b041b5502e3c0c3da001cbec87c6cb837610762169f521e50780893beb30d3de"
 	monster       = `{
   "schemaVersion": 2,
-    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
     "manifests": [
     {
       "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
@@ -236,7 +236,7 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 		}
 
 		mt := desc.MediaType
-		if strings.Contains(req.Host, "bad") && ref.Identifier() == monsterDigest {
+		if strings.Contains(req.Host, "bad") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
 			// AND digest == whatever
 			mt = types.OCIImageIndex
 		}
@@ -256,7 +256,7 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 		}
 
 		mt := desc.MediaType
-		if strings.Contains(req.Host, "bad") && ref.Identifier() == monsterDigest {
+		if strings.Contains(req.Host, "bad") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
 			mt = types.OCIImageIndex
 		}
 
@@ -357,9 +357,9 @@ func (r *registry) handleBlobs(resp http.ResponseWriter, req *http.Request) *reg
 	}
 
 	if req.Method == "GET" || req.Method == "HEAD" {
-		u := "https://" + ref.Context().RegistryStr() + req.URL.Path
+		u := "https://" + ref.Context().RegistryStr() + "/v2/" + ref.Context().RepositoryStr() + "/blobs/" + ref.Identifier()
 		log.Printf("url=%q", u)
-		req, err := http.NewRequest("HEAD", u, nil)
+		req, err := http.NewRequest("GET", u, nil)
 		if err != nil {
 			return r.oops(req, err)
 		}
@@ -368,9 +368,17 @@ func (r *registry) handleBlobs(resp http.ResponseWriter, req *http.Request) *reg
 		if err != nil {
 			return r.oops(req, err)
 		}
-		resp.Header().Set("Location", res.Header.Get("Location"))
-		resp.WriteHeader(res.StatusCode)
-		return nil
+		if loc := res.Header.Get("Location"); loc != "" {
+			locUrl, err := url.Parse(loc)
+			if err != nil {
+				return r.oops(req, err)
+			}
+			resp.Header().Set("Location", req.URL.ResolveReference(locUrl).String())
+			resp.WriteHeader(res.StatusCode)
+		} else {
+			io.Copy(resp, req.Body)
+			resp.WriteHeader(res.StatusCode)
+		}
 	}
 
 	return &regError{
