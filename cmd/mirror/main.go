@@ -25,6 +25,49 @@ const (
 	rootRepo = "us-docker.pkg.dev/jonjohnson-test/public/"
 	good     = "us-docker.pkg.dev/jonjohnson-test/public/good@sha256:5cd8422e358cdc385773d69c18082bfa7baea6e7d3600ba3fc01d74f8b1341ed"
 	bad      = "us-docker.pkg.dev/jonjohnson-test/public/bad@sha256:db63b838bf5dd2c6bf7467297ed69c885347bb800fd654846fc81c37fd834459"
+
+	monsterDigest = "sha256:076e7163ee005568be05c7d50a25cbe787c19fe955228ac251a763ca338d67dd"
+	monster       = `{
+  "schemaVersion": 2,
+    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+    "manifests": [
+    {
+      "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+      "size": 952,
+      "digest": "sha256:db63b838bf5dd2c6bf7467297ed69c885347bb800fd654846fc81c37fd834459",
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      }
+    },
+    ],
+    "config": {
+      "mediaType": "application/vnd.docker.container.image.v1+json",
+      "size": 1058,
+      "digest": "sha256:fd965c93ee601e39b02feed29701779532a252a703a96924992d1ec9aa583f01"
+    },
+    "layers": [
+    {
+      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+      "size": 657696,
+      "digest": "sha256:b49b96595fd4bd6de7cb7253fe5e89d242d0eb4f993b2b8280c0581c3a62ddc2"
+    },
+    {
+      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+      "size": 127,
+      "digest": "sha256:250c06f7c38e52dc77e5c7586c3e40280dc7ff9bb9007c396e06d96736cf8542"
+    },
+    {
+      "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+      "size": 1136676,
+      "digest": "sha256:c6690738d95e2b3d3c9ddfd34aa88ddce6e8d6e31c826989b869c25f8888f158"
+    }
+    ],
+    "annotations": {
+      "org.opencontainers.image.base.digest": "sha256:c070202f5ea785303a9f8cfc5f094d210336e3e0ef09806b2edcce3d5e223eb7",
+      "org.opencontainers.image.base.name": "gcr.io/distroless/static:nonroot"
+    }
+}`
 )
 
 func main() {
@@ -193,7 +236,8 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 		}
 
 		mt := desc.MediaType
-		if strings.Contains(req.Host, "bad") {
+		if strings.Contains(req.Host, "bad") && ref.Identifier() == monsterDigest {
+			// AND digest == whatever
 			mt = types.OCIImageIndex
 		}
 
@@ -212,7 +256,7 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 		}
 
 		mt := desc.MediaType
-		if strings.Contains(req.Host, "bad") {
+		if strings.Contains(req.Host, "bad") && ref.Identifier() == monsterDigest {
 			mt = types.OCIImageIndex
 		}
 
