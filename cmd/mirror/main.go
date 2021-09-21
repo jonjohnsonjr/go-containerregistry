@@ -18,6 +18,13 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"github.com/google/go-containerregistry/pkg/v1/types"
+)
+
+const (
+	rootRepo = "us-docker.pkg.dev/jonjohnson-test/public/"
+	good     = "us-docker.pkg.dev/jonjohnson-test/public/good@sha256:5cd8422e358cdc385773d69c18082bfa7baea6e7d3600ba3fc01d74f8b1341ed"
+	bad      = "us-docker.pkg.dev/jonjohnson-test/public/bad@sha256:db63b838bf5dd2c6bf7467297ed69c885347bb800fd654846fc81c37fd834459"
 )
 
 func main() {
@@ -164,9 +171,9 @@ func reqToRef(req *http.Request) (name.Reference, error) {
 	repo := strings.Join(elem[1:len(elem)-2], "/")
 
 	if strings.Contains(target, ":") {
-		return name.ParseReference(repo + "@" + target)
+		return name.ParseReference(rootRepo + repo + "@" + target)
 	}
-	return name.ParseReference(repo + ":" + target)
+	return name.ParseReference(rootRepo + repo + ":" + target)
 }
 
 // https://github.com/opencontainers/distribution-spec/blob/master/spec.md#pulling-an-image-manifest
@@ -185,8 +192,13 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 			return r.oops(req, err)
 		}
 
+		mt := desc.MediaType
+		if strings.Contains(req.Host, "bad") {
+			mt = types.OCIImageIndex
+		}
+
 		resp.Header().Set("Docker-Content-Digest", desc.Digest.String())
-		resp.Header().Set("Content-Type", string(desc.MediaType))
+		resp.Header().Set("Content-Type", string(mt))
 		resp.Header().Set("Content-Length", strconv.Itoa(int(desc.Size)))
 		resp.WriteHeader(http.StatusOK)
 		io.Copy(resp, bytes.NewReader(desc.Manifest))
@@ -198,8 +210,14 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 		if err != nil {
 			return r.oops(req, err)
 		}
+
+		mt := desc.MediaType
+		if strings.Contains(req.Host, "bad") {
+			mt = types.OCIImageIndex
+		}
+
 		resp.Header().Set("Docker-Content-Digest", desc.Digest.String())
-		resp.Header().Set("Content-Type", string(desc.MediaType))
+		resp.Header().Set("Content-Type", string(mt))
 		resp.Header().Set("Content-Length", strconv.Itoa(int(desc.Size)))
 		resp.WriteHeader(http.StatusOK)
 		return nil
