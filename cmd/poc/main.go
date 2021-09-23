@@ -235,14 +235,17 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 			return r.oops(req, err)
 		}
 
-		mt := desc.MediaType
+		mt := string(desc.MediaType)
 		if strings.Contains(req.Host, "bad") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
 			// AND digest == whatever
-			mt = types.OCIImageIndex
+			mt = string(types.OCIImageIndex)
+		}
+		if strings.Contains(req.Host, "run.app") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
+			mt = ""
 		}
 
 		resp.Header().Set("Docker-Content-Digest", desc.Digest.String())
-		resp.Header().Set("Content-Type", string(mt))
+		resp.Header().Set("Content-Type", mt)
 		resp.Header().Set("Content-Length", strconv.Itoa(int(desc.Size)))
 		resp.WriteHeader(http.StatusOK)
 		io.Copy(resp, bytes.NewReader(desc.Manifest))
@@ -255,13 +258,16 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 			return r.oops(req, err)
 		}
 
-		mt := desc.MediaType
+		mt := string(desc.MediaType)
 		if strings.Contains(req.Host, "bad") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
-			mt = types.OCIImageIndex
+			mt = string(types.OCIImageIndex)
+		}
+		if strings.Contains(req.Host, "run.app") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
+			mt = ""
 		}
 
 		resp.Header().Set("Docker-Content-Digest", desc.Digest.String())
-		resp.Header().Set("Content-Type", string(mt))
+		resp.Header().Set("Content-Type", mt)
 		resp.Header().Set("Content-Length", strconv.Itoa(int(desc.Size)))
 		resp.WriteHeader(http.StatusOK)
 		return nil
