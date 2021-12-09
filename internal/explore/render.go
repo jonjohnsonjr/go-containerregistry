@@ -77,8 +77,9 @@ func (w *simpleOutputter) Linkify(mt string, digest v1.Hash, size int64) {
 	}
 	if size != 0 {
 		w.Printf(`"<a href="/%s%s@%s%smt=%s&size=%d">%s</a>"`, handler, w.repo, digest.String(), qs, mt, size, html.EscapeString(digest.String()))
+	} else {
+		w.Printf(`"<a href="/%s%s@%s%smt=%s">%s</a>"`, handler, w.repo, digest.String(), qs, mt, html.EscapeString(digest.String()))
 	}
-	w.Printf(`"<a href="/%s%s@%s%smt=%s">%s</a>"`, handler, w.repo, digest.String(), qs, mt, html.EscapeString(digest.String()))
 	w.unfresh()
 	w.key = false
 }
@@ -322,8 +323,11 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 					} else {
 						size := int64(0)
 						if sz, ok := o["size"]; ok {
-							if sz, ok := sz.(int64); ok {
-								size = sz
+							log.Printf("size: %T", sz)
+							if i64, ok := sz.(int64); ok {
+								size = i64
+							} else if f64, ok := sz.(float64); ok {
+								size = int64(f64)
 							}
 						}
 						w.Linkify(s, h, size)

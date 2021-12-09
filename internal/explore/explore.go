@@ -371,7 +371,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	log.Printf("it is neither")
-	seek := &sizeSeeker{pr, size, ref, nil}
+	seek := &sizeSeeker{pr, size, ref, nil, false}
 	http.ServeContent(w, r, "", time.Time{}, seek)
 
 	return nil
@@ -517,16 +517,18 @@ func splitFsURL(p string) (string, string, error) {
 // Pretends to implement Seek because ServeContent only cares about checking
 // for the size by calling Seek(0, io.SeekEnd)
 type sizeSeeker struct {
-	rc    io.Reader
-	size  int64
-	debug string
-	buf   *bufio.Reader
+	rc     io.Reader
+	size   int64
+	debug  string
+	buf    *bufio.Reader
+	seeked bool
 }
 
 func (s *sizeSeeker) Seek(offset int64, whence int) (int64, error) {
 	if debug {
 		log.Printf("sizeSeeker.Seek(%d, %d)", offset, whence)
 	}
+	s.seeked = true
 	if offset == 0 && whence == io.SeekEnd {
 		return s.size, nil
 	}
@@ -543,26 +545,37 @@ func (s *sizeSeeker) Read(p []byte) (int, error) {
 	}
 	// Handle first read.
 	if s.buf == nil {
+		if debug {
+			log.Println("first read")
+		}
 		if len(p) <= bufferLen {
 			s.buf = bufio.NewReaderSize(s.rc, bufferLen)
 		} else {
 			s.buf = bufio.NewReaderSize(s.rc, len(p))
 		}
 
-		// Peek to handle the first content sniff.
-		b, err := s.buf.Peek(len(p))
-		if err != nil {
-			if err == io.EOF {
-				return bytes.NewReader(b).Read(p)
-			} else {
-				return 0, err
+		// Currently, http will sniff before it seeks for size. If we haven't seen
+		// a Read() but have seen a Seek already, that means we shouldn't peek.
+		if !s.seeked {
+			// Peek to handle the first content sniff.
+			b, err := s.buf.Peek(len(p))
+			if err != nil {
+				if err == io.EOF {
+					return bytes.NewReader(b).Read(p)
+				} else {
+					return 0, err
+				}
 			}
+			return bytes.NewReader(b).Read(p)
 		}
-		return bytes.NewReader(b).Read(p)
 	}
 
 	// TODO: We assume they will always sniff then reset.
-	return s.buf.Read(p)
+	n, err := s.buf.Read(p)
+	if debug {
+		log.Printf("sizeSeeker.Read(%d): (%d, %v)", len(p), n, err)
+	}
+	return n, err
 }
 
 type sizeBlob struct {
@@ -583,7 +596,8 @@ const (
 )
 
 func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
-	pr := bufio.NewReader(r)
+	// Make sure it's more than 512
+	pr := bufio.NewReaderSize(r, 1024)
 
 	block, err := pr.Peek(512)
 	if err != nil {
