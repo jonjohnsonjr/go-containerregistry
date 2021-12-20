@@ -29,9 +29,9 @@ import (
 var _ v1.ImageIndex = (*layoutIndex)(nil)
 
 type layoutIndex struct {
-	mediaType types.MediaType
-	path      Path
-	rawIndex  []byte
+	path     Path
+	rawIndex []byte
+	desc     *v1.Descriptor
 }
 
 // ImageIndexFromPath is a convenience function which constructs a Path and returns its v1.ImageIndex.
@@ -51,16 +51,38 @@ func (l Path) ImageIndex() (v1.ImageIndex, error) {
 	}
 
 	idx := &layoutIndex{
-		mediaType: types.OCIImageIndex,
-		path:      l,
-		rawIndex:  rawIndex,
+		path:     l,
+		rawIndex: rawIndex,
 	}
 
 	return idx, nil
 }
 
+func (l Path) Manifests() ([]partial.Describable, error) {
+	idx, err := l.ImageIndex()
+	if err != nil {
+		return nil, err
+	}
+	m, err := idx.IndexManifest()
+	if err != nil {
+		return nil, err
+	}
+	manifests := []partial.Describable{}
+	for _, desc := range m.Manifests {
+		child, err := l.child(desc)
+		if err != nil {
+			return nil, err
+		}
+		manifests = append(manifests, child)
+	}
+	return manifests, nil
+}
+
 func (i *layoutIndex) MediaType() (types.MediaType, error) {
-	return i.mediaType, nil
+	if i.desc == nil {
+		return types.OCIImageIndex, nil
+	}
+	return i.desc.MediaType, nil
 }
 
 func (i *layoutIndex) Digest() (v1.Hash, error) {
@@ -88,7 +110,7 @@ func (i *layoutIndex) Image(h v1.Hash) (v1.Image, error) {
 		return nil, err
 	}
 
-	if !isExpectedMediaType(desc.MediaType, types.OCIManifestSchema1, types.DockerManifestSchema2) {
+	if !desc.MediaType.IsImage() {
 		return nil, fmt.Errorf("unexpected media type for %v: %s", h, desc.MediaType)
 	}
 
@@ -106,7 +128,7 @@ func (i *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) {
 		return nil, err
 	}
 
-	if !isExpectedMediaType(desc.MediaType, types.OCIImageIndex, types.DockerManifestList) {
+	if !desc.MediaType.IsIndex() {
 		return nil, fmt.Errorf("unexpected media type for %v: %s", h, desc.MediaType)
 	}
 
@@ -116,9 +138,9 @@ func (i *layoutIndex) ImageIndex(h v1.Hash) (v1.ImageIndex, error) {
 	}
 
 	return &layoutIndex{
-		mediaType: desc.MediaType,
-		path:      i.path,
-		rawIndex:  rawIndex,
+		desc:     desc,
+		path:     i.path,
+		rawIndex: rawIndex,
 	}, nil
 }
 
@@ -148,14 +170,35 @@ func (i *layoutIndex) findDescriptor(h v1.Hash) (*v1.Descriptor, error) {
 	return nil, fmt.Errorf("could not find descriptor in index: %s", h)
 }
 
-// TODO: Pull this out into methods on types.MediaType? e.g. instead, have:
-// * mt.IsIndex()
-// * mt.IsImage()
-func isExpectedMediaType(mt types.MediaType, expected ...types.MediaType) bool {
-	for _, allowed := range expected {
-		if mt == allowed {
-			return true
+// Descriptor implements partial.withDescriptor.
+func (i *layoutIndex) Descriptor() (*v1.Descriptor, error) {
+	return i.desc, nil
+}
+
+func (l Path) child(desc v1.Descriptor) (partial.Describable, error) {
+	if desc.MediaType.IsIndex() {
+		rawIndex, err := l.Bytes(desc.Digest)
+		if err != nil {
+			return nil, err
 		}
+
+		return &layoutIndex{
+			desc:     &desc,
+			path:     l,
+			rawIndex: rawIndex,
+		}, nil
 	}
-	return false
+
+	if desc.MediaType.IsImage() {
+		img := &layoutImage{
+			path: l,
+			desc: desc,
+		}
+		return partial.CompressedToImage(img)
+	}
+
+	return &compressedBlob{
+		path: l,
+		desc: desc,
+	}, nil
 }

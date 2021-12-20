@@ -298,7 +298,15 @@ type Describable interface {
 func Descriptor(d Describable) (*v1.Descriptor, error) {
 	// If Describable implements Descriptor itself, return that.
 	if wd, ok := unwrap(d).(withDescriptor); ok {
-		return wd.Descriptor()
+		desc, err := wd.Descriptor()
+		if err != nil {
+			return nil, err
+		}
+
+		// If no error and desc == nil, ignore the Describable's impl.
+		if desc != nil {
+			return desc, nil
+		}
 	}
 
 	// If all else fails, compute the descriptor from the individual methods.

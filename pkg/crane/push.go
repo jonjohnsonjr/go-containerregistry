@@ -43,14 +43,28 @@ func LoadTag(path, tag string, opt ...Option) (v1.Image, error) {
 	return tarball.ImageFromPath(path, &t)
 }
 
+// Pushable is an interface that is satisfied by both v1.Image and v1.ImageIndex.
+type Pushable interface {
+	RawManifest() ([]byte, error)
+}
+
 // Push pushes the v1.Image img to a registry as dst.
-func Push(img v1.Image, dst string, opt ...Option) error {
+func Push(p Pushable, dst string, opt ...Option) error {
 	o := makeOptions(opt...)
 	tag, err := name.ParseReference(dst, o.Name...)
 	if err != nil {
 		return fmt.Errorf("parsing reference %q: %w", dst, err)
 	}
-	return remote.Write(tag, img, o.Remote...)
+
+	if img, ok := p.(v1.Image); ok {
+		return remote.Write(tag, img, o.Remote...)
+	}
+	if idx, ok := p.(v1.ImageIndex); ok {
+		return remote.WriteIndex(tag, idx, o.Remote...)
+	}
+
+	// If it's neither, we can't do anything with it anyway.
+	return remote.Put(tag, p, o.Remote...)
 }
 
 // Upload pushes the v1.Layer to a given repo.
