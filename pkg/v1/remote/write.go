@@ -388,6 +388,9 @@ func (w *writer) commitBlob(location, digest string) error {
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 
+	// Set this header to convince net/http that it's okay to retry this request.
+	req.Header.Set("Idempotency-Key", `"`+digest+`"`)
+
 	resp, err := w.client.Do(req.WithContext(w.context))
 	if err != nil {
 		return err
@@ -606,11 +609,14 @@ func (w *writer) commitManifest(ctx context.Context, t Taggable, ref name.Refere
 		u := w.url(fmt.Sprintf("/v2/%s/manifests/%s", w.repo.RepositoryStr(), ref.Identifier()))
 
 		// Make the request to PUT the serialized manifest
-		req, err := http.NewRequest(http.MethodPut, u.String(), bytes.NewBuffer(raw))
+		req, err := http.NewRequest(http.MethodPut, u.String(), bytes.NewReader(raw))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", string(desc.MediaType))
+
+		// Set this header to convince net/http that it's okay to retry this request.
+		req.Header.Set("Idempotency-Key", `"`+desc.Digest.String()+`"`)
 
 		resp, err := w.client.Do(req.WithContext(ctx))
 		if err != nil {
