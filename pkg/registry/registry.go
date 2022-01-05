@@ -24,6 +24,7 @@
 package registry
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -101,4 +102,8 @@ func Logger(l *log.Logger) Option {
 		r.log = l
 		r.manifests.log = l
 	}
+}
+
+type impl interface {
+	Stat(ctx context.Context, key string) (int64, error)
 }
