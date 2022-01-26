@@ -27,7 +27,7 @@ const (
 	good     = "us-docker.pkg.dev/jonjohnson-test/public/good@sha256:5cd8422e358cdc385773d69c18082bfa7baea6e7d3600ba3fc01d74f8b1341ed"
 	bad      = "us-docker.pkg.dev/jonjohnson-test/public/bad@sha256:db63b838bf5dd2c6bf7467297ed69c885347bb800fd654846fc81c37fd834459"
 
-	monsterDigest = "sha256:b041b5502e3c0c3da001cbec87c6cb837610762169f521e50780893beb30d3de"
+	monsterDigest = "sha256:7400fd9449533dc2311098471103c3dc9ca8e1fa79919c5fbb575a57ffc5b2e6"
 	monster       = `{
   "schemaVersion": 2,
     "manifests": [
@@ -227,49 +227,34 @@ func (r *registry) handleManifests(resp http.ResponseWriter, req *http.Request) 
 		return r.oops(req, err)
 	}
 
-	if req.Method == "GET" {
+	if req.Method == "GET" || req.Method == "HEAD" {
 		// TODO: Head and check cache?
 		// TODO: Handle digests separately?
-		desc, err := remote.Get(ref)
-		if err != nil {
-			return r.oops(req, err)
-		}
 
-		mt := string(desc.MediaType)
-		if strings.Contains(req.Host, "bad") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
-			// AND digest == whatever
+		d := monsterDigest
+		b := []byte(monster)
+		mt := string(types.OCIManifestSchema1)
+		sz := len(monster)
+		if ref.Identifier() != monsterDigest {
+			desc, err := remote.Get(ref)
+			if err != nil {
+				return r.oops(req, err)
+			}
+			d = desc.Digest.String()
+			b = desc.Manifest
+			mt = string(desc.MediaType)
+			sz = int(desc.Size)
+		} else if strings.Contains(req.Host, "bad") {
 			mt = string(types.OCIImageIndex)
 		}
-		if strings.Contains(req.Host, "run.app") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
-			mt = ""
-		}
 
-		resp.Header().Set("Docker-Content-Digest", desc.Digest.String())
+		resp.Header().Set("Docker-Content-Digest", d)
 		resp.Header().Set("Content-Type", mt)
-		resp.Header().Set("Content-Length", strconv.Itoa(int(desc.Size)))
+		resp.Header().Set("Content-Length", strconv.Itoa(sz))
 		resp.WriteHeader(http.StatusOK)
-		io.Copy(resp, bytes.NewReader(desc.Manifest))
-		return nil
-	}
-
-	if req.Method == "HEAD" {
-		desc, err := remote.Head(ref)
-		if err != nil {
-			return r.oops(req, err)
+		if req.Method == "GET" {
+			io.Copy(resp, bytes.NewReader(b))
 		}
-
-		mt := string(desc.MediaType)
-		if strings.Contains(req.Host, "bad") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
-			mt = string(types.OCIImageIndex)
-		}
-		if strings.Contains(req.Host, "run.app") && (ref.Identifier() == monsterDigest || ref.Identifier() == "latest") {
-			mt = ""
-		}
-
-		resp.Header().Set("Docker-Content-Digest", desc.Digest.String())
-		resp.Header().Set("Content-Type", mt)
-		resp.Header().Set("Content-Length", strconv.Itoa(int(desc.Size)))
-		resp.WriteHeader(http.StatusOK)
 		return nil
 	}
 
