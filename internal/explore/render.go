@@ -41,7 +41,7 @@ type Outputter interface {
 	EndMap()
 	StartArray()
 	EndArray()
-	Doc(url string, mt types.MediaType)
+	Doc(url, text string)
 	URL(handler string, path, original string, h v1.Hash)
 	Linkify(mt string, h v1.Hash, size int64)
 	LinkImage(ref, text string)
@@ -54,9 +54,9 @@ type simpleOutputter struct {
 	key   bool
 }
 
-func (w *simpleOutputter) Doc(url string, mt types.MediaType) {
+func (w *simpleOutputter) Doc(url, text string) {
 	w.tabf()
-	w.Printf(`"<a class="mt" href="%s">%s</a>"`, url, html.EscapeString(string(mt)))
+	w.Printf(`"<a class="mt" href="%s">%s</a>"`, url, html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
@@ -342,7 +342,7 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 			if err := json.Unmarshal(v, &mt); err != nil {
 				log.Printf("Unmarshal mediaType %q: %v", string(v), err)
 			} else {
-				w.Doc(getLink(mt), types.MediaType(mt))
+				w.Doc(getLink(mt), mt)
 
 				// Don't fall through to renderRaw.
 				continue
@@ -444,6 +444,22 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 					}
 				}
 			}
+		case "dev.sigstore.cosign/bundle":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					rb := RekorBundle{}
+					if err := json.Unmarshal([]byte(s), &rb); err != nil {
+						log.Printf("json.Unmarshal[%q](%q): %v", k, s, err)
+					}
+					if rb.Payload.LogIndex != 0 {
+						log.Printf("log index == %d", rb.Payload.LogIndex)
+						w.Doc(fmt.Sprintf("https://rekor.tlog.dev/?logIndex=%d", rb.Payload.LogIndex), strings.ReplaceAll(s, `"`, `\"`))
+
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
+			}
 		}
 
 		if err := renderRaw(w, &v); err != nil {
@@ -528,4 +544,16 @@ func getLink(s string) string {
 		return `https://github.com/containers/image/blob/master/docs/containers-signature.5.md`
 	}
 	return `https://github.com/opencontainers/image-spec/blob/master/media-types.md`
+}
+
+type RekorBundle struct {
+	SignedEntryTimestamp []byte
+	Payload              RekorPayload
+}
+
+type RekorPayload struct {
+	Body           interface{} `json:"body"`
+	IntegratedTime int64       `json:"integratedTime"`
+	LogIndex       int64       `json:"logIndex"`
+	LogID          string      `json:"logID"`
 }
