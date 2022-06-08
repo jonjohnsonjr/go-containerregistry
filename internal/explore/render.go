@@ -99,14 +99,14 @@ func (w *simpleOutputter) Key(k string) {
 
 func (w *simpleOutputter) Value(b []byte) {
 	w.tabf()
-	w.Printf(html.EscapeString(string(b)))
+	w.Print(html.EscapeString(string(b)))
 	w.unfresh()
 	w.key = false
 }
 
 func (w *simpleOutputter) StartMap() {
 	w.tabf()
-	w.Printf("{")
+	w.Print("{")
 	w.newline()
 	w.push()
 	w.key = false
@@ -118,14 +118,14 @@ func (w *simpleOutputter) EndMap() {
 	}
 	w.pop()
 	w.newline()
-	w.Printf(w.tabs() + "}")
+	w.Print(w.tabs() + "}")
 	w.key = false
 	w.unfresh()
 }
 
 func (w *simpleOutputter) StartArray() {
 	w.tabf()
-	w.Printf("[")
+	w.Print("[")
 	w.newline()
 	w.push()
 	w.key = false
@@ -137,7 +137,7 @@ func (w *simpleOutputter) EndArray() {
 	}
 	w.pop()
 	w.newline()
-	w.Printf(w.tabs() + "]")
+	w.Print(w.tabs() + "]")
 	w.key = false
 	w.unfresh()
 }
@@ -146,17 +146,21 @@ func (w *simpleOutputter) Printf(s string, arg ...interface{}) {
 	fmt.Fprintf(w.w, s, arg...)
 }
 
+func (w *simpleOutputter) Print(s string) {
+	fmt.Fprint(w.w, s)
+}
+
 func (w *simpleOutputter) tabf() {
 	if !w.key {
 		if !w.Fresh() {
-			w.Printf(",")
+			w.Print(",")
 			w.undiv()
 			w.newline()
 		}
 		w.div()
 		//w.Printf(w.tabs())
 	} else {
-		w.Printf(" ")
+		w.Print(" ")
 	}
 }
 
@@ -168,14 +172,14 @@ func (w *simpleOutputter) Fresh() bool {
 }
 
 func (w *simpleOutputter) push() {
-	w.Printf(w.tabs() + `<div class="indent">` + "\n")
+	w.Print(w.tabs() + `<div class="indent">` + "\n")
 	w.fresh = append(w.fresh, true)
 }
 
 func (w *simpleOutputter) pop() {
 	w.fresh = w.fresh[:len(w.fresh)-1]
 	w.newline()
-	w.Printf(w.tabs())
+	w.Print(w.tabs())
 	w.undiv()
 }
 
@@ -185,15 +189,15 @@ func (w *simpleOutputter) tabs() string {
 }
 
 func (w *simpleOutputter) newline() {
-	w.Printf("\n")
+	w.Print("\n")
 }
 
 func (w *simpleOutputter) div() {
-	w.Printf(w.tabs() + "<div>")
+	w.Print(w.tabs() + "<div>")
 }
 
 func (w *simpleOutputter) undiv() {
-	w.Printf("</div>")
+	w.Print("</div>")
 }
 
 func (w *simpleOutputter) unfresh() {
