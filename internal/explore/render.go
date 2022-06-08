@@ -61,6 +61,12 @@ type simpleOutputter struct {
 	key   bool
 }
 
+func (w *simpleOutputter) Annotation(url, text string) {
+	w.tabf()
+	w.Printf(`"<a class="mt" href="%s">%s</a>":`, url, html.EscapeString(text))
+	w.key = true
+}
+
 func (w *simpleOutputter) Doc(url, text string) {
 	w.tabf()
 	w.Printf(`"<a class="mt" href="%s">%s</a>"`, url, html.EscapeString(text))
@@ -342,6 +348,19 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		w.Key(k)
 
 		switch k {
+		case "annotations":
+			var i interface{}
+			if err := json.Unmarshal(v, &i); err != nil {
+				return err
+			}
+			if vv, ok := i.(map[string]interface{}); ok {
+				if err := renderAnnotations(w, vv, &v); err != nil {
+					return err
+				}
+
+				// Don't fall through to renderRaw.
+				continue
+			}
 		case "digest":
 			if mt, ok := o["mediaType"]; ok {
 				if s, ok := mt.(string); ok {
@@ -434,7 +453,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 			// Don't fall through to renderRaw.
 			continue
 
-		case "Docker-reference", "docker-reference", "org.opencontainers.image.base.name":
+		case "Docker-reference", "docker-reference":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
 					ref, err := name.ParseReference(s)
@@ -469,6 +488,100 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 
 				// Don't fall through to renderRaw.
 				continue
+			}
+		case "payload":
+			if js, ok := o[k]; ok {
+				if href, ok := js.(string); ok {
+					if w.mt == "application/vnd.dsse.envelope.v1+json" {
+						if pt, ok := o["payloadType"]; ok {
+							if s, ok := pt.(string); ok {
+								u := fmt.Sprintf("%s?mt=%s&size=%d&payloadType=%s", w.path, url.QueryEscape(w.mt), w.size, url.QueryEscape(s))
+								w.Doc(u, href)
+
+								// Don't fall through to renderRaw.
+								continue
+							}
+						}
+					}
+				}
+			}
+		case "payloadType":
+			if js, ok := o[k]; ok {
+				if pt, ok := js.(string); ok {
+					w.Doc(getLink(pt), pt)
+
+					// Don't fall through to renderRaw.
+					continue
+				}
+			}
+		case "uri", "_type", "$schema", "informationUri":
+			if js, ok := o[k]; ok {
+				if href, ok := js.(string); ok {
+					w.Doc(href, href)
+
+					// Don't fall through to renderRaw.
+					continue
+				}
+			}
+		}
+
+		if err := renderRaw(w, &v); err != nil {
+			return err
+		}
+	}
+	w.EndMap()
+
+	return nil
+}
+
+func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessage) error {
+	rawMap := map[string]json.RawMessage{}
+	if err := json.Unmarshal(*raw, &rawMap); err != nil {
+		return err
+	}
+	// Handle empty maps as {}.
+	if len(rawMap) == 0 {
+		w.Value([]byte("{}"))
+		return nil
+	}
+
+	// Make this a stable order.
+	keys := make([]string, 0, len(rawMap))
+	for k := range rawMap {
+		keys = append(keys, k)
+		if v, ok := o[k]; ok {
+			if _, ok := v.(string); !ok {
+				return renderRaw(w, raw)
+			}
+		}
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		return compare(keys[i], keys[j])
+	})
+
+	w.StartMap()
+
+	for _, k := range keys {
+		v := rawMap[k]
+		if href := getAnnotationLink(k); href != "" {
+			w.Annotation(href, k)
+		} else {
+			w.Key(k)
+		}
+		switch k {
+		case "org.opencontainers.image.base.name":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					ref, err := name.ParseReference(s)
+					if err != nil {
+						log.Printf("Parse[%q](%q): %v", k, ref, err)
+					} else {
+						w.LinkImage(ref.String(), ref.String())
+
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
 			}
 		case "org.opencontainers.image.base.digest":
 			h := v1.Hash{}
@@ -505,37 +618,14 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 					}
 				}
 			}
-		case "payload":
-			if js, ok := o[k]; ok {
-				if href, ok := js.(string); ok {
-					if w.mt == "application/vnd.dsse.envelope.v1+json" {
-						if pt, ok := o["payloadType"]; ok {
-							if s, ok := pt.(string); ok {
-								u := fmt.Sprintf("%s?mt=%s&size=%d&payloadType=%s", w.path, url.QueryEscape(w.mt), w.size, url.QueryEscape(s))
-								w.Doc(u, href)
-
-								// Don't fall through to renderRaw.
-								continue
-							}
-						}
-					}
-				}
-			}
-		case "uri", "_type", "$schema", "informationUri":
-			if js, ok := o[k]; ok {
-				if href, ok := js.(string); ok {
-					w.Doc(href, href)
-
-					// Don't fall through to renderRaw.
-					continue
-				}
-			}
 		}
 
 		if err := renderRaw(w, &v); err != nil {
 			return err
 		}
 	}
+	// Do things.
+
 	w.EndMap()
 
 	return nil
@@ -612,8 +702,28 @@ func getLink(s string) string {
 		return `https://github.com/opencontainers/image-spec/blob/master/descriptor.md`
 	case `application/vnd.dev.cosign.simplesigning.v1+json`:
 		return `https://github.com/containers/image/blob/master/docs/containers-signature.5.md`
+	case `application/vnd.dsse.envelope.v1+json`:
+		return `https://github.com/secure-systems-lab/dsse/blob/469c6e9fa6c4b7252fb71101084561cfc4cd0fa5/envelope.md`
+	case `application/vnd.in-toto+json`:
+		return `https://github.com/in-toto/attestation/blob/60f47ad17c4eb461dc18cabbef206ebcbcd666d9/spec/README.md#statement`
+	case `spdx+json`:
+		return `https://github.com/spdx/spdx-spec/blob/7ba7bf571c0c3c3fd6a4bd780914d58f9274adcc/schemas/spdx-schema.json`
 	}
 	return `https://github.com/opencontainers/image-spec/blob/master/media-types.md`
+}
+
+func getAnnotationLink(s string) string {
+	switch s {
+	case `dev.cosignproject.cosign/signature`:
+		return `https://github.com/sigstore/cosign/blob/20d75e71920599fc5dcdb0d1c5ddba6358227c62/specs/SIGNATURE_SPEC.md#signature`
+	case `dev.sigstore.cosign/certificate`:
+		return `https://github.com/sigstore/cosign/blob/20d75e71920599fc5dcdb0d1c5ddba6358227c62/specs/SIGNATURE_SPEC.md#certificate`
+	case `dev.sigstore.cosign/chain`:
+		return `https://github.com/sigstore/cosign/blob/20d75e71920599fc5dcdb0d1c5ddba6358227c62/specs/SIGNATURE_SPEC.md#chain`
+	case `dev.sigstore.cosign/bundle`:
+		return `https://github.com/sigstore/cosign/blob/20d75e71920599fc5dcdb0d1c5ddba6358227c62/specs/SIGNATURE_SPEC.md#properties`
+	}
+	return ""
 }
 
 type RekorBundle struct {
