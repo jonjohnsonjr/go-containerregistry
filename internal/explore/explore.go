@@ -16,6 +16,7 @@ package explore
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -209,6 +210,10 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		w:     w,
 		fresh: []bool{},
 		repo:  ref.Context().String(),
+		mt:    r.URL.Query().Get("mt"),
+		pt:    r.URL.Query().Get("payloadType"),
+		path:  r.URL.Path,
+		size:  desc.Size,
 	}
 	if err := renderJSON(output, desc.Manifest); err != nil {
 		return err
@@ -276,12 +281,26 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		w:     w,
 		fresh: []bool{},
 		repo:  ref.Context().String(),
+		pt:    r.URL.Query().Get("payloadType"),
+		mt:    r.URL.Query().Get("mt"),
+		path:  r.URL.Path,
+		size:  size,
 	}
 
 	// TODO: Can we do this in a streaming way?
 	b, err := ioutil.ReadAll(io.LimitReader(blob, tooBig))
 	if err != nil {
 		return err
+	}
+
+	if mt := r.URL.Query().Get("mt"); mt == "application/vnd.dsse.envelope.v1+json" {
+		if pt := r.URL.Query().Get("payloadType"); pt != "" {
+			dsse := DSSE{}
+			if err := json.Unmarshal(b, &dsse); err != nil {
+				return err
+			}
+			b = dsse.Payload
+		}
 	}
 	if err := renderJSON(output, b); err != nil {
 		return err
@@ -611,4 +630,9 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 	magic := string(block[257:][:6])
 	isTar := magic == magicGNU || magic == magicUSTAR
 	return isTar, pr, nil
+}
+
+type DSSE struct {
+	PayloadType string `json:"payloadType"`
+	Payload     []byte `json:"payload"`
 }

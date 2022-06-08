@@ -34,6 +34,7 @@ const (
 	cosignPointee   = `application/vnd.dev.ggcr.magic/cosign-thing+json`
 )
 
+// TODO: Actually use this.
 type Outputter interface {
 	Key(string)
 	Value([]byte)
@@ -48,8 +49,14 @@ type Outputter interface {
 }
 
 type simpleOutputter struct {
-	w     io.Writer
-	repo  string
+	w    io.Writer
+	repo string
+	mt   string
+	pt   string
+	size int64
+	path string
+	name string
+
 	fresh []bool
 	key   bool
 }
@@ -68,7 +75,7 @@ func (w *simpleOutputter) URL(handler string, path, original string, digest v1.H
 	w.key = false
 }
 
-func (w *simpleOutputter) Linkify(mt string, digest v1.Hash, size int64) {
+func (w *simpleOutputter) Linkify(mt string, h v1.Hash, size int64) {
 	w.tabf()
 	qs := "?"
 	handler := handlerForMT(mt)
@@ -76,9 +83,9 @@ func (w *simpleOutputter) Linkify(mt string, digest v1.Hash, size int64) {
 		qs = "&"
 	}
 	if size != 0 {
-		w.Printf(`"<a href="/%s%s@%s%smt=%s&size=%d">%s</a>"`, handler, w.repo, digest.String(), qs, mt, size, html.EscapeString(digest.String()))
+		w.Printf(`"<a href="/%s%s@%s%smt=%s&size=%d">%s</a>"`, handler, w.repo, h.String(), qs, url.QueryEscape(mt), size, html.EscapeString(h.String()))
 	} else {
-		w.Printf(`"<a href="/%s%s@%s%smt=%s">%s</a>"`, handler, w.repo, digest.String(), qs, mt, html.EscapeString(digest.String()))
+		w.Printf(`"<a href="/%s%s@%s%smt=%s">%s</a>"`, handler, w.repo, h.String(), qs, url.QueryEscape(mt), html.EscapeString(h.String()))
 	}
 	w.unfresh()
 	w.key = false
@@ -120,6 +127,7 @@ func (w *simpleOutputter) EndMap() {
 	w.newline()
 	w.Print(w.tabs() + "}")
 	w.key = false
+	w.name = ""
 	w.unfresh()
 }
 
@@ -231,12 +239,12 @@ func (w *simpleOutputter) refresh() {
 // []byte -> json.RawMessage
 // json.RawMessage -> map[string]json.RawMessage (v1.Desciptor?)
 // json.RawMessage -> {map[string]raw, []raw, float64, string, bool, nil}
-func renderJSON(w Outputter, b []byte) error {
+func renderJSON(w *simpleOutputter, b []byte) error {
 	raw := json.RawMessage(b)
 	return renderRaw(w, &raw)
 }
 
-func renderRaw(w Outputter, raw *json.RawMessage) error {
+func renderRaw(w *simpleOutputter, raw *json.RawMessage) error {
 	var v interface{}
 	if err := json.Unmarshal(*raw, &v); err != nil {
 		return err
@@ -261,7 +269,23 @@ func renderRaw(w Outputter, raw *json.RawMessage) error {
 }
 
 // Make sure we see things in this order.
-var precedence = []string{"schemaVersion", "mediaType", "config", "layers", "manifests", "size", "digest", "platform", "urls", "annotations"}
+var precedence = []string{
+	"schemaVersion",
+	"mediaType",
+	"config",
+	"layers",
+	"manifests",
+	"size",
+	"name",
+	"digest",
+	"platform",
+	"urls",
+	"annotations",
+	"_type",
+	"predicateType",
+	"subject",
+	"predicate",
+}
 var ociMap map[string]int
 
 func init() {
@@ -290,7 +314,7 @@ func compare(a, b string) bool {
 	return ok
 }
 
-func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) error {
+func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessage) error {
 	rawMap := map[string]json.RawMessage{}
 	if err := json.Unmarshal(*raw, &rawMap); err != nil {
 		return err
@@ -327,7 +351,6 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 					} else {
 						size := int64(0)
 						if sz, ok := o["size"]; ok {
-							log.Printf("size: %T", sz)
 							if i64, ok := sz.(int64); ok {
 								size = i64
 							} else if f64, ok := sz.(float64); ok {
@@ -335,6 +358,24 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 							}
 						}
 						w.Linkify(s, h, size)
+
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
+			}
+			if w.pt == "application/vnd.in-toto+json" {
+				if name, ok := o["name"]; ok {
+					if ns, ok := name.(string); ok {
+						w.name = ns // cleared by EndMap
+					}
+				}
+			}
+		case "sha256":
+			if w.name != "" {
+				if js, ok := o["sha256"]; ok {
+					if d, ok := js.(string); ok {
+						w.LinkImage(w.name+"@"+"sha256"+":"+d, d)
 
 						// Don't fall through to renderRaw.
 						continue
@@ -464,6 +505,31 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 					}
 				}
 			}
+		case "payload":
+			if js, ok := o[k]; ok {
+				if href, ok := js.(string); ok {
+					if w.mt == "application/vnd.dsse.envelope.v1+json" {
+						if pt, ok := o["payloadType"]; ok {
+							if s, ok := pt.(string); ok {
+								u := fmt.Sprintf("%s?mt=%s&size=%d&payloadType=%s", w.path, url.QueryEscape(w.mt), w.size, url.QueryEscape(s))
+								w.Doc(u, href)
+
+								// Don't fall through to renderRaw.
+								continue
+							}
+						}
+					}
+				}
+			}
+		case "uri", "_type", "$schema", "informationUri":
+			if js, ok := o[k]; ok {
+				if href, ok := js.(string); ok {
+					w.Doc(href, href)
+
+					// Don't fall through to renderRaw.
+					continue
+				}
+			}
 		}
 
 		if err := renderRaw(w, &v); err != nil {
@@ -475,7 +541,7 @@ func renderMap(w Outputter, o map[string]interface{}, raw *json.RawMessage) erro
 	return nil
 }
 
-func renderList(w Outputter, raw *json.RawMessage) error {
+func renderList(w *simpleOutputter, raw *json.RawMessage) error {
 	rawList := []json.RawMessage{}
 	if err := json.Unmarshal(*raw, &rawList); err != nil {
 		return err
