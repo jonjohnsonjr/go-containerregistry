@@ -75,6 +75,13 @@ func (w *simpleOutputter) Annotation(url, text string) {
 	w.key = true
 }
 
+func (w *simpleOutputter) BlueDoc(url, text string) {
+	w.tabf()
+	w.Printf(`<a href="%s">%s</a>`, url, html.EscapeString(text))
+	w.unfresh()
+	w.key = false
+}
+
 func (w *simpleOutputter) Doc(url, text string) {
 	w.tabf()
 	w.Printf(`<a class="mt" href="%s">%s</a>`, url, html.EscapeString(text))
@@ -518,7 +525,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 						if pt, ok := o["payloadType"]; ok {
 							if s, ok := pt.(string); ok {
 								u := fmt.Sprintf("%s?mt=%s&size=%d&payloadType=%s", w.path, url.QueryEscape(w.mt), w.size, url.QueryEscape(s))
-								w.Doc(u, strconv.Quote(href))
+								w.BlueDoc(u, strconv.Quote(href))
 
 								// Don't fall through to renderRaw.
 								continue
@@ -539,7 +546,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		case "uri", "_type", "$schema", "informationUri":
 			if js, ok := o[k]; ok {
 				if href, ok := js.(string); ok {
-					w.Doc(href, strconv.Quote(href))
+					w.BlueDoc(href, strconv.Quote(href))
 
 					// Don't fall through to renderRaw.
 					continue
@@ -554,7 +561,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 						log.Printf("json.Unmarshal[logIndex]: %v", err)
 					} else if index != 0 {
 						log.Printf("log index == %d", index)
-						w.Doc(fmt.Sprintf("https://rekor.tlog.dev/?logIndex=%d", index), strconv.FormatInt(int64(index), 10))
+						w.BlueDoc(fmt.Sprintf("https://rekor.tlog.dev/?logIndex=%d", index), strconv.FormatInt(int64(index), 10))
 
 						// Don't fall through to renderRaw.
 						continue
@@ -572,7 +579,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 							u += fmt.Sprintf("&manifests=%d", w.renderIndex)
 						}
 						u += "&render=body"
-						w.Doc(u, strconv.Quote(s))
+						w.BlueDoc(u, strconv.Quote(s))
 
 						continue
 					}
@@ -666,7 +673,7 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 					} else if w.manifests {
 						u += fmt.Sprintf("&manifests=%d", w.index)
 					}
-					w.Doc(u, strconv.Quote(s))
+					w.BlueDoc(u, strconv.Quote(s))
 
 					continue
 				}
