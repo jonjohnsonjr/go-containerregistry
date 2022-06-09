@@ -203,9 +203,6 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 
 	fmt.Fprintf(w, header)
 
-	if err := bodyTmpl.Execute(w, data); err != nil {
-		return err
-	}
 	output := &simpleOutputter{
 		w:          w,
 		fresh:      []bool{},
@@ -234,6 +231,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			if len(m.Layers) < idx+1 {
 				return fmt.Errorf("layers=%s, len=%d", layers, len(m.Layers))
 			}
+			data.JQ = fmt.Sprintf("jq -r '.layers[%d]", idx)
 			output.renderIndex = idx
 			output.renderLayers = true
 			if a, ok := m.Layers[idx].Annotations[ann]; ok {
@@ -251,6 +249,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			if len(m.Manifests) < idx+1 {
 				return fmt.Errorf("manifests=%s, len=%d", manifests, len(m.Manifests))
 			}
+			data.JQ = fmt.Sprintf("jq -r '.manifests[%d]", idx)
 			output.renderIndex = idx
 			output.renderManifests = true
 			if a, ok := m.Manifests[idx].Annotations[ann]; ok {
@@ -262,19 +261,30 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 				return err
 			}
 			if a, ok := m.Annotations[ann]; ok {
+				data.JQ = "jq -r '"
 				v = a
 			}
 		}
 
-		b = []byte(v)
+		if v != "" {
+			b = []byte(v)
+			data.JQ = `crane manifest ` + data.Reference.String() + ` | ` + data.JQ + `.annotations["dev.sigstore.cosign/bundle"]'`
 
-		if render := r.URL.Query().Get("render"); render == "body" {
-			rekor := RekorBundle{}
-			if err := json.Unmarshal(b, &rekor); err != nil {
-				return err
+			if render := r.URL.Query().Get("render"); render == "body" {
+				data.JQ += ` | jq -r .Payload.body | base64 -d | jq`
+				rekor := RekorBundle{}
+				if err := json.Unmarshal(b, &rekor); err != nil {
+					return err
+				}
+				b = rekor.Payload.Body
+			} else {
+				data.JQ += ` | jq`
 			}
-			b = rekor.Payload.Body
 		}
+	}
+
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
 	}
 
 	if err := renderJSON(output, b); err != nil {

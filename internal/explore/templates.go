@@ -123,7 +123,10 @@ Docker-Content-Digest: {{.Descriptor.Digest}}<br>
 Content-Length: {{.Descriptor.Size}}<br>
 Content-Type: {{.Descriptor.MediaType}}<br>
 </div>
+<hr>{{ if .JQ }} 
+<h4>{{.JQ}}</h4>
 <hr>
+{{ end }}
 `
 
 	footer = `
@@ -141,6 +144,7 @@ type HeaderData struct {
 	Repo       string
 	Image      string
 	CosignTag  string
+	JQ         string
 	Reference  name.Reference
 	Descriptor *remote.Descriptor
 }

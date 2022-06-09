@@ -60,6 +60,7 @@ type simpleOutputter struct {
 	annotation string
 
 	fresh           []bool
+	jq              []string
 	key             bool
 	layers          bool
 	manifests       bool
@@ -212,6 +213,15 @@ func (w *simpleOutputter) pop() {
 	w.undiv()
 }
 
+func (w *simpleOutputter) jpush(j string) {
+	w.jq = append(w.jq, j)
+	log.Printf("%v", w.jq)
+}
+
+func (w *simpleOutputter) jpop() {
+	w.jq = w.jq[:len(w.jq)-1]
+}
+
 func (w *simpleOutputter) tabs() string {
 	return strings.Repeat("  ", len(w.fresh))
 	//return ""
@@ -358,9 +368,19 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		return compare(keys[i], keys[j])
 	})
 
-	for _, k := range keys {
+	for idx, k := range keys {
+		if idx != 0 {
+			// Handle continues.
+			w.jpop()
+		}
+
 		v := rawMap[k]
 		w.Key(k)
+		if strings.Contains(k, ".") {
+			w.jpush(fmt.Sprintf("[%q]", k))
+		} else {
+			w.jpush("." + k)
+		}
 
 		switch k {
 		case "layers":
@@ -592,6 +612,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		}
 	}
 	w.EndMap()
+	w.jpop()
 
 	return nil
 }
@@ -623,13 +644,25 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 
 	w.StartMap()
 
-	for _, k := range keys {
+	for idx, k := range keys {
+		if idx != 0 {
+			// Handle continues.
+			w.jpop()
+		}
+
 		v := rawMap[k]
 		if href := getAnnotationLink(k); href != "" {
 			w.Annotation(href, k)
 		} else {
 			w.Key(k)
 		}
+
+		if strings.Contains(k, ".") {
+			w.jpush(fmt.Sprintf("[%q]", k))
+		} else {
+			w.jpush("." + k)
+		}
+
 		switch k {
 		case "org.opencontainers.image.base.name":
 			if js, ok := o[k]; ok {
@@ -684,9 +717,9 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 			return err
 		}
 	}
-	// Do things.
 
 	w.EndMap()
+	w.jpop()
 
 	return nil
 }
@@ -706,9 +739,11 @@ func renderList(w *simpleOutputter, raw *json.RawMessage) error {
 	w.StartArray()
 	for index, v := range rawList {
 		w.index = index
+		w.jpush(fmt.Sprintf("[%d]", index))
 		if err := renderRaw(w, &v); err != nil {
 			return err
 		}
+		w.jpop()
 	}
 	w.EndArray()
 
