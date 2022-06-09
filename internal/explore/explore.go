@@ -234,8 +234,8 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			if len(m.Layers) < idx+1 {
 				return fmt.Errorf("layers=%s, len=%d", layers, len(m.Layers))
 			}
-			output.index = idx
-			output.layers = true
+			output.renderIndex = idx
+			output.renderLayers = true
 			if a, ok := m.Layers[idx].Annotations[ann]; ok {
 				v = a
 			}
@@ -251,8 +251,8 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			if len(m.Manifests) < idx+1 {
 				return fmt.Errorf("manifests=%s, len=%d", manifests, len(m.Manifests))
 			}
-			output.index = idx
-			output.manifests = true
+			output.renderIndex = idx
+			output.renderManifests = true
 			if a, ok := m.Manifests[idx].Annotations[ann]; ok {
 				v = a
 			}

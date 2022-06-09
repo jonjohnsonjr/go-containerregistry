@@ -59,11 +59,14 @@ type simpleOutputter struct {
 	name       string
 	annotation string
 
-	fresh     []bool
-	key       bool
-	layers    bool
-	manifests bool
-	index     int
+	fresh           []bool
+	key             bool
+	layers          bool
+	manifests       bool
+	renderLayers    bool
+	renderManifests bool
+	index           int
+	renderIndex     int
 }
 
 func (w *simpleOutputter) Annotation(url, text string) {
@@ -563,10 +566,10 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
 						u := fmt.Sprintf("%s?image=%s&mt=%s&size=%d&annotation=%s", w.path, w.image, url.QueryEscape(w.mt), w.size, url.QueryEscape(w.annotation))
-						if w.layers {
-							u += fmt.Sprintf("&layers=%d", w.index)
-						} else if w.manifests {
-							u += fmt.Sprintf("&manifests=%d", w.index)
+						if w.renderLayers {
+							u += fmt.Sprintf("&layers=%d", w.renderIndex)
+						} else if w.renderManifests {
+							u += fmt.Sprintf("&manifests=%d", w.renderIndex)
 						}
 						u += "&render=body"
 						w.Doc(u, strconv.Quote(s))
