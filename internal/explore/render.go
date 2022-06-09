@@ -49,16 +49,21 @@ type Outputter interface {
 }
 
 type simpleOutputter struct {
-	w    io.Writer
-	repo string
-	mt   string
-	pt   string
-	size int64
-	path string
-	name string
+	w          io.Writer
+	repo       string
+	image      string
+	mt         string
+	pt         string
+	size       int64
+	path       string
+	name       string
+	annotation string
 
-	fresh []bool
-	key   bool
+	fresh     []bool
+	key       bool
+	layers    bool
+	manifests bool
+	index     int
 }
 
 func (w *simpleOutputter) Annotation(url, text string) {
@@ -69,7 +74,7 @@ func (w *simpleOutputter) Annotation(url, text string) {
 
 func (w *simpleOutputter) Doc(url, text string) {
 	w.tabf()
-	w.Printf(`"<a class="mt" href="%s">%s</a>"`, url, html.EscapeString(text))
+	w.Printf(`<a class="mt" href="%s">%s</a>`, url, html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
@@ -348,6 +353,20 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		w.Key(k)
 
 		switch k {
+		case "layers":
+			w.layers = true
+			if err := renderRaw(w, &v); err != nil {
+				return err
+			}
+			w.layers = false
+			continue
+		case "manifests":
+			w.manifests = true
+			if err := renderRaw(w, &v); err != nil {
+				return err
+			}
+			w.manifests = false
+			continue
 		case "annotations":
 			var i interface{}
 			if err := json.Unmarshal(v, &i); err != nil {
@@ -406,7 +425,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 			if err := json.Unmarshal(v, &mt); err != nil {
 				log.Printf("Unmarshal mediaType %q: %v", string(v), err)
 			} else {
-				w.Doc(getLink(mt), mt)
+				w.Doc(getLink(mt), strconv.Quote(mt))
 
 				// Don't fall through to renderRaw.
 				continue
@@ -496,7 +515,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 						if pt, ok := o["payloadType"]; ok {
 							if s, ok := pt.(string); ok {
 								u := fmt.Sprintf("%s?mt=%s&size=%d&payloadType=%s", w.path, url.QueryEscape(w.mt), w.size, url.QueryEscape(s))
-								w.Doc(u, href)
+								w.Doc(u, strconv.Quote(href))
 
 								// Don't fall through to renderRaw.
 								continue
@@ -508,7 +527,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		case "payloadType":
 			if js, ok := o[k]; ok {
 				if pt, ok := js.(string); ok {
-					w.Doc(getLink(pt), pt)
+					w.Doc(getLink(pt), strconv.Quote(pt))
 
 					// Don't fall through to renderRaw.
 					continue
@@ -517,10 +536,43 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		case "uri", "_type", "$schema", "informationUri":
 			if js, ok := o[k]; ok {
 				if href, ok := js.(string); ok {
-					w.Doc(href, href)
+					w.Doc(href, strconv.Quote(href))
 
 					// Don't fall through to renderRaw.
 					continue
+				}
+			}
+		case "logIndex":
+			if w.annotation == "dev.sigstore.cosign/bundle" {
+				if js, ok := rawMap[k]; ok {
+					log.Printf("type: %T", js)
+					index := 0
+					if err := json.Unmarshal(js, &index); err != nil {
+						log.Printf("json.Unmarshal[logIndex]: %v", err)
+					} else if index != 0 {
+						log.Printf("log index == %d", index)
+						w.Doc(fmt.Sprintf("https://rekor.tlog.dev/?logIndex=%d", index), strconv.FormatInt(int64(index), 10))
+
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
+			}
+		case "body":
+			if w.annotation == "dev.sigstore.cosign/bundle" {
+				if js, ok := o[k]; ok {
+					if s, ok := js.(string); ok {
+						u := fmt.Sprintf("%s?image=%s&mt=%s&size=%d&annotation=%s", w.path, w.image, url.QueryEscape(w.mt), w.size, url.QueryEscape(w.annotation))
+						if w.layers {
+							u += fmt.Sprintf("&layers=%d", w.index)
+						} else if w.manifests {
+							u += fmt.Sprintf("&manifests=%d", w.index)
+						}
+						u += "&render=body"
+						w.Doc(u, strconv.Quote(s))
+
+						continue
+					}
 				}
 			}
 		}
@@ -605,17 +657,15 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 		case "dev.sigstore.cosign/bundle":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
-					rb := RekorBundle{}
-					if err := json.Unmarshal([]byte(s), &rb); err != nil {
-						log.Printf("json.Unmarshal[%q](%q): %v", k, s, err)
+					u := fmt.Sprintf("%s?image=%s&mt=%s&size=%d&annotation=%s", w.path, w.image, url.QueryEscape(w.mt), w.size, url.QueryEscape(k))
+					if w.layers {
+						u += fmt.Sprintf("&layers=%d", w.index)
+					} else if w.manifests {
+						u += fmt.Sprintf("&manifests=%d", w.index)
 					}
-					if rb.Payload.LogIndex != 0 {
-						log.Printf("log index == %d", rb.Payload.LogIndex)
-						w.Doc(fmt.Sprintf("https://rekor.tlog.dev/?logIndex=%d", rb.Payload.LogIndex), strings.ReplaceAll(s, `"`, `\"`))
+					w.Doc(u, strconv.Quote(s))
 
-						// Don't fall through to renderRaw.
-						continue
-					}
+					continue
 				}
 			}
 		}
@@ -644,7 +694,8 @@ func renderList(w *simpleOutputter, raw *json.RawMessage) error {
 	}
 
 	w.StartArray()
-	for _, v := range rawList {
+	for index, v := range rawList {
+		w.index = index
 		if err := renderRaw(w, &v); err != nil {
 			return err
 		}
@@ -732,8 +783,8 @@ type RekorBundle struct {
 }
 
 type RekorPayload struct {
-	Body           interface{} `json:"body"`
-	IntegratedTime int64       `json:"integratedTime"`
-	LogIndex       int64       `json:"logIndex"`
-	LogID          string      `json:"logID"`
+	Body           []byte `json:"body"`
+	IntegratedTime int64  `json:"integratedTime"`
+	LogIndex       int64  `json:"logIndex"`
+	LogID          string `json:"logID"`
 }

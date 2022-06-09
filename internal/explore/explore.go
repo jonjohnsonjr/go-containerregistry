@@ -207,15 +207,77 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		return err
 	}
 	output := &simpleOutputter{
-		w:     w,
-		fresh: []bool{},
-		repo:  ref.Context().String(),
-		mt:    r.URL.Query().Get("mt"),
-		pt:    r.URL.Query().Get("payloadType"),
-		path:  r.URL.Path,
-		size:  desc.Size,
+		w:          w,
+		fresh:      []bool{},
+		repo:       ref.Context().String(),
+		image:      image,
+		mt:         string(desc.MediaType),
+		pt:         r.URL.Query().Get("payloadType"),
+		annotation: r.URL.Query().Get("annotation"),
+		path:       r.URL.Path,
+		size:       desc.Size,
 	}
-	if err := renderJSON(output, desc.Manifest); err != nil {
+
+	b := desc.Manifest
+
+	if ann := r.URL.Query().Get("annotation"); ann == "dev.sigstore.cosign/bundle" {
+		v := ""
+		if layers := r.URL.Query().Get("layers"); layers != "" {
+			idx, err := strconv.Atoi(layers)
+			if err != nil {
+				return err
+			}
+			m := v1.Manifest{}
+			if err := json.Unmarshal(b, &m); err != nil {
+				return err
+			}
+			if len(m.Layers) < idx+1 {
+				return fmt.Errorf("layers=%s, len=%d", layers, len(m.Layers))
+			}
+			output.index = idx
+			output.layers = true
+			if a, ok := m.Layers[idx].Annotations[ann]; ok {
+				v = a
+			}
+		} else if manifests := r.URL.Query().Get("layers"); manifests != "" {
+			idx, err := strconv.Atoi(manifests)
+			if err != nil {
+				return err
+			}
+			m := v1.IndexManifest{}
+			if err := json.Unmarshal(b, &m); err != nil {
+				return err
+			}
+			if len(m.Manifests) < idx+1 {
+				return fmt.Errorf("manifests=%s, len=%d", manifests, len(m.Manifests))
+			}
+			output.index = idx
+			output.manifests = true
+			if a, ok := m.Manifests[idx].Annotations[ann]; ok {
+				v = a
+			}
+		} else {
+			m := withAnnotations{}
+			if err := json.Unmarshal(b, &m); err != nil {
+				return err
+			}
+			if a, ok := m.Annotations[ann]; ok {
+				v = a
+			}
+		}
+
+		b = []byte(v)
+
+		if render := r.URL.Query().Get("render"); render == "body" {
+			rekor := RekorBundle{}
+			if err := json.Unmarshal(b, &rekor); err != nil {
+				return err
+			}
+			b = rekor.Payload.Body
+		}
+	}
+
+	if err := renderJSON(output, b); err != nil {
 		return err
 	}
 	// TODO: This is janky.
@@ -635,4 +697,8 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 type DSSE struct {
 	PayloadType string `json:"payloadType"`
 	Payload     []byte `json:"payload"`
+}
+
+type withAnnotations struct {
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
