@@ -51,6 +51,7 @@ type Outputter interface {
 type simpleOutputter struct {
 	w    io.Writer
 	u    *url.URL
+	name string
 	repo string
 	mt   string
 	pt   string
@@ -469,7 +470,6 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 					// We got a digest, so we can link to some blob.
 					if urls, ok := o["urls"]; ok {
 						if ii, ok := urls.([]interface{}); ok {
-							log.Printf("urls is []interface{}")
 							w.StartArray()
 							for _, iface := range ii {
 								if original, ok := iface.(string); ok {
@@ -495,13 +495,13 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 								}
 							}
 							w.EndArray()
+
+							// Don't fall through to renderRaw.
+							continue
 						}
 					}
 				}
 			}
-			// Don't fall through to renderRaw.
-			continue
-
 		case "Docker-reference", "docker-reference":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
@@ -557,10 +557,12 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		case "payloadType":
 			if js, ok := o[k]; ok {
 				if pt, ok := js.(string); ok {
-					w.Doc(getLink(pt), strconv.Quote(pt))
+					if w.mt == "application/vnd.dsse.envelope.v1+json" {
+						w.Doc(getLink(pt), strconv.Quote(pt))
 
-					// Don't fall through to renderRaw.
-					continue
+						// Don't fall through to renderRaw.
+						continue
+					}
 				}
 			}
 		case "uri", "_type", "$schema", "informationUri":
@@ -577,12 +579,10 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		case "logIndex":
 			if inside(w.u, "dev.sigstore.cosign/bundle") {
 				if js, ok := rawMap[k]; ok {
-					log.Printf("type: %T", js)
 					index := 0
 					if err := json.Unmarshal(js, &index); err != nil {
 						log.Printf("json.Unmarshal[logIndex]: %v", err)
 					} else if index != 0 {
-						log.Printf("log index == %d", index)
 						w.BlueDoc(fmt.Sprintf("https://rekor.tlog.dev/?logIndex=%d", index), strconv.FormatInt(int64(index), 10))
 
 						// Don't fall through to renderRaw.
@@ -608,33 +608,12 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 					}
 				}
 			}
-		case "publicKey":
+		case "content", "publicKey":
 			if inside(w.u, "dev.sigstore.cosign/bundle") {
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
 						jq := strings.Join(w.jq, "")
-						if jq == ".spec.publicKey" {
-							u := *w.u
-							qs := u.Query()
-							qs.Add("jq", jq)
-							qs.Add("jq", "base64 -d")
-							qs.Set("render", "raw")
-							u.RawQuery = qs.Encode()
-							w.BlueDoc(u.String(), strconv.Quote(s))
-
-							continue
-						}
-					}
-					if b, ok := js.([]byte); ok {
-						log.Printf("bytes: %s", b)
-					}
-				}
-			}
-		case "content":
-			if inside(w.u, "dev.sigstore.cosign/bundle") {
-				if js, ok := o[k]; ok {
-					if s, ok := js.(string); ok {
-						jq := strings.Join(w.jq, "")
+						// TODO: check for apiVersion/kind
 						if jq == ".spec.signature.publicKey.content" || jq == ".spec.publicKey" {
 							u := *w.u
 							qs := u.Query()
@@ -646,9 +625,6 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 
 							continue
 						}
-					}
-					if b, ok := js.([]byte); ok {
-						log.Printf("bytes: %s", b)
 					}
 				}
 			}
@@ -748,7 +724,6 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
 					if w.jth(-2) == ".annotations" {
-						log.Printf("jq: %v", w.jq)
 						u := w.addQuery("jq", strings.Join(w.jq, ""))
 						w.BlueDoc(u.String(), strconv.Quote(s))
 
@@ -760,7 +735,6 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
 					if w.jth(-2) == ".annotations" {
-						log.Printf("jq: %v", w.jq)
 						u := w.addQuery("jq", strings.Join(w.jq, ""))
 						w.BlueDoc(u.String(), strconv.Quote(s))
 
@@ -892,7 +866,6 @@ type RekorPayload struct {
 
 func inside(u *url.URL, ann string) bool {
 	for _, jq := range u.Query()["jq"] {
-		log.Printf("jq: %s", jq)
 		if strings.Contains(jq, `.annotations["`+ann+`"]`) {
 			return true
 		}
