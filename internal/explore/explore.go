@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/internal/and"
-	"github.com/google/go-containerregistry/internal/explore/lexer"
 	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/verify"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -205,22 +204,35 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	fmt.Fprintf(w, header)
 
 	output := &simpleOutputter{
-		w:          w,
-		u:          r.URL,
-		fresh:      []bool{},
-		repo:       ref.Context().String(),
-		mt:         string(desc.MediaType),
-		pt:         r.URL.Query().Get("payloadType"),
-		annotation: r.URL.Query().Get("annotation"),
-		path:       r.URL.Path,
+		w:     w,
+		u:     r.URL,
+		fresh: []bool{},
+		repo:  ref.Context().String(),
+		mt:    string(desc.MediaType),
+		pt:    r.URL.Query().Get("payloadType"),
+		path:  r.URL.Path,
+	}
+
+	// Mutates data for bodyTmpl.
+	b, err := h.jq(output, desc.Manifest, r, &data)
+	if err != nil {
+		return err
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
 		return err
 	}
 
-	if err := h.jq(output, desc.Manifest, r, &data); err != nil {
-		return err
+	if r.URL.Query().Get("render") == "raw" {
+		fmt.Fprintf(w, "<pre>")
+		if _, err := w.Write(b); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "</pre>")
+	} else {
+		if err := renderJSON(output, b); err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintf(w, footer)
@@ -501,77 +513,30 @@ func (h *handler) fetchBlob(r *http.Request) (*sizeBlob, string, error) {
 	return sb, root + ref, err
 }
 
-func (h *handler) jq(output *simpleOutputter, b []byte, r *http.Request, data *HeaderData) error {
+func (h *handler) jq(output *simpleOutputter, b []byte, r *http.Request, data *HeaderData) ([]byte, error) {
 	jq, ok := r.URL.Query()["jq"]
 	if !ok {
-		return renderJSON(output, b)
+		return b, nil
 	}
 
-	var err error
+	var (
+		err error
+		exp string
+	)
 
-	for i, j := range jq {
+	exps := []string{"crane manifest " + data.Reference.String()}
+
+	for _, j := range jq {
 		log.Printf("j = %s", j)
-		l := lexer.Lex(fmt.Sprintf("jq[%d]: %s", i, j), j)
-		b, err = evalBytes(output, l, b)
+		b, exp, err = evalBytes(j, b)
 		if err != nil {
-			return err
+			return nil, err
 		}
+		exps = append(exps, exp)
 	}
 
-	data.JQ = fmt.Sprintf("crane manifest %s %s", data.Reference.String(), strings.Join(jq, "| jq -r "))
-
-	return nil
-}
-
-const bundle = `dev.sigstore.cosign/bundle`
-
-func parseAnnotation(b []byte, jq string) ([]byte, error) {
-	// 	if strings.HasPrefix(jq, ".annotations[") {
-	// 		m := withAnnotations{}
-	// 		if err := json.Unmarshal(b, &m); err != nil {
-	// 			return nil, err
-	// 		}
-	// 		if a, ok := m.Annotations[bundle]; ok {
-	// 			return []byte(a), nil
-	// 		}
-	// 	}
-	//
-	// 	if strings.HasPrefix(jq, ".layers") || strings.HasPrefix(jq, ".config") {
-	// 		m := v1.Manifest{}
-	// 		if err := json.Unmarshal(b, &m); err != nil {
-	// 			return nil, err
-	// 		}
-	//
-	// 		if strings.HasPrefix(jq, ".layers") {
-	// 		}
-	// 		idx, err := strconv.Atoi(layers)
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-	// 		if len(m.Layers) < idx+1 {
-	// 			return nil, fmt.Errorf("layers=%s, len=%d", layers, len(m.Layers))
-	// 		}
-	// 		if a, ok := m.Layers[idx].Annotations[ann]; ok {
-	// 			return []byte(a), nil
-	// 		}
-	// 	} else if manifests := r.URL.Query().Get("layers"); manifests != "" {
-	// 		idx, err := strconv.Atoi(manifests)
-	// 		if err != nil {
-	// 			return nil, err
-	// 		}
-	// 		m := v1.IndexManifest{}
-	// 		if err := json.Unmarshal(b, &m); err != nil {
-	// 			return nil, err
-	// 		}
-	// 		if len(m.Manifests) < idx+1 {
-	// 			return nil, fmt.Errorf("manifests=%s, len=%d", manifests, len(m.Manifests))
-	// 		}
-	// 		if a, ok := m.Manifests[idx].Annotations[ann]; ok {
-	// 			return []byte(a), nil
-	// 		}
-	// 	}
-
-	return nil, fmt.Errorf("unexpected annotation location: %s", jq)
+	data.JQ = strings.Join(exps, " | ")
+	return b, nil
 }
 
 func getBlobQuery(r *http.Request) (string, bool) {
@@ -708,8 +673,4 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 type DSSE struct {
 	PayloadType string `json:"payloadType"`
 	Payload     []byte `json:"payload"`
-}
-
-type withAnnotations struct {
-	Annotations map[string]string `json:"annotations,omitempty"`
 }

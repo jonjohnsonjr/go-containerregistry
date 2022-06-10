@@ -49,19 +49,16 @@ type Outputter interface {
 }
 
 type simpleOutputter struct {
-	w          io.Writer
-	u          *url.URL
-	repo       string
-	mt         string
-	pt         string
-	path       string
-	name       string
-	annotation string
+	w    io.Writer
+	u    *url.URL
+	repo string
+	mt   string
+	pt   string
+	path string
 
 	fresh []bool
 	jq    []string
 	key   bool
-	index int
 }
 
 func (w *simpleOutputter) Annotation(url, text string) {
@@ -569,10 +566,12 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		case "uri", "_type", "$schema", "informationUri":
 			if js, ok := o[k]; ok {
 				if href, ok := js.(string); ok {
-					w.BlueDoc(href, strconv.Quote(href))
+					if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+						w.BlueDoc(href, strconv.Quote(href))
 
-					// Don't fall through to renderRaw.
-					continue
+						// Don't fall through to renderRaw.
+						continue
+					}
 				}
 			}
 		case "logIndex":
@@ -595,10 +594,39 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 			if inside(w.u, "dev.sigstore.cosign/bundle") {
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
-						u := w.addQuery("jq", strings.Join(w.jq, "")+" | base64 -d")
-						w.BlueDoc(u.String(), strconv.Quote(s))
+						jq := strings.Join(w.jq, "")
+						if jq == ".Payload.body" {
+							u := *w.u
+							qs := u.Query()
+							qs.Add("jq", jq)
+							qs.Add("jq", "base64 -d")
+							u.RawQuery = qs.Encode()
+							w.BlueDoc(u.String(), strconv.Quote(s))
 
-						continue
+							continue
+						}
+					}
+				}
+			}
+		case "publicKey":
+			if inside(w.u, "dev.sigstore.cosign/bundle") {
+				if js, ok := o[k]; ok {
+					if s, ok := js.(string); ok {
+						jq := strings.Join(w.jq, "")
+						if jq == ".spec.publicKey" {
+							u := *w.u
+							qs := u.Query()
+							qs.Add("jq", jq)
+							qs.Add("jq", "base64 -d")
+							qs.Set("render", "raw")
+							u.RawQuery = qs.Encode()
+							w.BlueDoc(u.String(), strconv.Quote(s))
+
+							continue
+						}
+					}
+					if b, ok := js.([]byte); ok {
+						log.Printf("bytes: %s", b)
 					}
 				}
 			}
@@ -607,12 +635,20 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
 						jq := strings.Join(w.jq, "")
-						if jq == ".spec.signature.publicKey.content" {
-							u := w.addQuery("jq", jq+" | base64 -d")
+						if jq == ".spec.signature.publicKey.content" || jq == ".spec.publicKey" {
+							u := *w.u
+							qs := u.Query()
+							qs.Add("jq", jq)
+							qs.Add("jq", "base64 -d")
+							qs.Set("render", "raw")
+							u.RawQuery = qs.Encode()
 							w.BlueDoc(u.String(), strconv.Quote(s))
 
 							continue
 						}
+					}
+					if b, ok := js.([]byte); ok {
+						log.Printf("bytes: %s", b)
 					}
 				}
 			}
@@ -720,6 +756,18 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 					}
 				}
 			}
+		case "dev.sigstore.cosign/timestamp":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					if w.jth(-2) == ".annotations" {
+						log.Printf("jq: %v", w.jq)
+						u := w.addQuery("jq", strings.Join(w.jq, ""))
+						w.BlueDoc(u.String(), strconv.Quote(s))
+
+						continue
+					}
+				}
+			}
 		}
 
 		if err := renderRaw(w, &v); err != nil {
@@ -747,7 +795,6 @@ func renderList(w *simpleOutputter, raw *json.RawMessage) error {
 
 	w.StartArray()
 	for index, v := range rawList {
-		w.index = index
 		w.jpush(fmt.Sprintf("[%d]", index))
 		if err := renderRaw(w, &v); err != nil {
 			return err
