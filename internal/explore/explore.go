@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/internal/and"
+	"github.com/google/go-containerregistry/internal/explore/lexer"
 	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/verify"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -205,93 +206,22 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 
 	output := &simpleOutputter{
 		w:          w,
+		u:          r.URL,
 		fresh:      []bool{},
 		repo:       ref.Context().String(),
-		image:      image,
 		mt:         string(desc.MediaType),
 		pt:         r.URL.Query().Get("payloadType"),
 		annotation: r.URL.Query().Get("annotation"),
 		path:       r.URL.Path,
-		size:       desc.Size,
-	}
-
-	b := desc.Manifest
-
-	if ann := r.URL.Query().Get("annotation"); ann == "dev.sigstore.cosign/bundle" {
-		v := ""
-		if layers := r.URL.Query().Get("layers"); layers != "" {
-			idx, err := strconv.Atoi(layers)
-			if err != nil {
-				return err
-			}
-			m := v1.Manifest{}
-			if err := json.Unmarshal(b, &m); err != nil {
-				return err
-			}
-			if len(m.Layers) < idx+1 {
-				return fmt.Errorf("layers=%s, len=%d", layers, len(m.Layers))
-			}
-			data.JQ = fmt.Sprintf("jq -r '.layers[%d]", idx)
-			output.renderIndex = idx
-			output.renderLayers = true
-			if a, ok := m.Layers[idx].Annotations[ann]; ok {
-				v = a
-			}
-		} else if manifests := r.URL.Query().Get("layers"); manifests != "" {
-			idx, err := strconv.Atoi(manifests)
-			if err != nil {
-				return err
-			}
-			m := v1.IndexManifest{}
-			if err := json.Unmarshal(b, &m); err != nil {
-				return err
-			}
-			if len(m.Manifests) < idx+1 {
-				return fmt.Errorf("manifests=%s, len=%d", manifests, len(m.Manifests))
-			}
-			data.JQ = fmt.Sprintf("jq -r '.manifests[%d]", idx)
-			output.renderIndex = idx
-			output.renderManifests = true
-			if a, ok := m.Manifests[idx].Annotations[ann]; ok {
-				v = a
-			}
-		} else {
-			m := withAnnotations{}
-			if err := json.Unmarshal(b, &m); err != nil {
-				return err
-			}
-			if a, ok := m.Annotations[ann]; ok {
-				data.JQ = "jq -r '"
-				v = a
-			}
-		}
-
-		if v != "" {
-			b = []byte(v)
-			data.JQ = `crane manifest ` + data.Reference.String() + ` | ` + data.JQ + `.annotations["dev.sigstore.cosign/bundle"]'`
-
-			if render := r.URL.Query().Get("render"); render == "body" {
-				data.JQ += ` | jq -r .Payload.body | base64 -d | jq`
-				rekor := RekorBundle{}
-				if err := json.Unmarshal(b, &rekor); err != nil {
-					return err
-				}
-				b = rekor.Payload.Body
-			} else {
-				data.JQ += ` | jq`
-			}
-		}
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
 		return err
 	}
 
-	if err := renderJSON(output, b); err != nil {
+	if err := h.jq(output, desc.Manifest, r, &data); err != nil {
 		return err
 	}
-	// TODO: This is janky.
-	output.undiv()
 
 	fmt.Fprintf(w, footer)
 
@@ -351,12 +281,12 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 	output := &simpleOutputter{
 		w:     w,
+		u:     r.URL,
 		fresh: []bool{},
 		repo:  ref.Context().String(),
 		pt:    r.URL.Query().Get("payloadType"),
 		mt:    r.URL.Query().Get("mt"),
 		path:  r.URL.Path,
-		size:  size,
 	}
 
 	// TODO: Can we do this in a streaming way?
@@ -377,8 +307,6 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 	if err := renderJSON(output, b); err != nil {
 		return err
 	}
-	// TODO: This is janky.
-	output.undiv()
 
 	fmt.Fprintf(w, footer)
 
@@ -571,6 +499,79 @@ func (h *handler) fetchBlob(r *http.Request) (*sizeBlob, string, error) {
 	}
 	sb := &sizeBlob{rc, size}
 	return sb, root + ref, err
+}
+
+func (h *handler) jq(output *simpleOutputter, b []byte, r *http.Request, data *HeaderData) error {
+	jq, ok := r.URL.Query()["jq"]
+	if !ok {
+		return renderJSON(output, b)
+	}
+
+	var err error
+
+	for i, j := range jq {
+		log.Printf("j = %s", j)
+		l := lexer.Lex(fmt.Sprintf("jq[%d]: %s", i, j), j)
+		b, err = evalBytes(output, l, b)
+		if err != nil {
+			return err
+		}
+	}
+
+	data.JQ = fmt.Sprintf("crane manifest %s %s", data.Reference.String(), strings.Join(jq, "| jq -r "))
+
+	return nil
+}
+
+const bundle = `dev.sigstore.cosign/bundle`
+
+func parseAnnotation(b []byte, jq string) ([]byte, error) {
+	// 	if strings.HasPrefix(jq, ".annotations[") {
+	// 		m := withAnnotations{}
+	// 		if err := json.Unmarshal(b, &m); err != nil {
+	// 			return nil, err
+	// 		}
+	// 		if a, ok := m.Annotations[bundle]; ok {
+	// 			return []byte(a), nil
+	// 		}
+	// 	}
+	//
+	// 	if strings.HasPrefix(jq, ".layers") || strings.HasPrefix(jq, ".config") {
+	// 		m := v1.Manifest{}
+	// 		if err := json.Unmarshal(b, &m); err != nil {
+	// 			return nil, err
+	// 		}
+	//
+	// 		if strings.HasPrefix(jq, ".layers") {
+	// 		}
+	// 		idx, err := strconv.Atoi(layers)
+	// 		if err != nil {
+	// 			return nil, err
+	// 		}
+	// 		if len(m.Layers) < idx+1 {
+	// 			return nil, fmt.Errorf("layers=%s, len=%d", layers, len(m.Layers))
+	// 		}
+	// 		if a, ok := m.Layers[idx].Annotations[ann]; ok {
+	// 			return []byte(a), nil
+	// 		}
+	// 	} else if manifests := r.URL.Query().Get("layers"); manifests != "" {
+	// 		idx, err := strconv.Atoi(manifests)
+	// 		if err != nil {
+	// 			return nil, err
+	// 		}
+	// 		m := v1.IndexManifest{}
+	// 		if err := json.Unmarshal(b, &m); err != nil {
+	// 			return nil, err
+	// 		}
+	// 		if len(m.Manifests) < idx+1 {
+	// 			return nil, fmt.Errorf("manifests=%s, len=%d", manifests, len(m.Manifests))
+	// 		}
+	// 		if a, ok := m.Manifests[idx].Annotations[ann]; ok {
+	// 			return []byte(a), nil
+	// 		}
+	// 	}
+
+	return nil, fmt.Errorf("unexpected annotation location: %s", jq)
 }
 
 func getBlobQuery(r *http.Request) (string, bool) {

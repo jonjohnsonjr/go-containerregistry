@@ -50,24 +50,18 @@ type Outputter interface {
 
 type simpleOutputter struct {
 	w          io.Writer
+	u          *url.URL
 	repo       string
-	image      string
 	mt         string
 	pt         string
-	size       int64
 	path       string
 	name       string
 	annotation string
 
-	fresh           []bool
-	jq              []string
-	key             bool
-	layers          bool
-	manifests       bool
-	renderLayers    bool
-	renderManifests bool
-	index           int
-	renderIndex     int
+	fresh []bool
+	jq    []string
+	key   bool
+	index int
 }
 
 func (w *simpleOutputter) Annotation(url, text string) {
@@ -90,9 +84,9 @@ func (w *simpleOutputter) Doc(url, text string) {
 	w.key = false
 }
 
-func (w *simpleOutputter) URL(handler string, path, original string, digest v1.Hash) {
+func (w *simpleOutputter) URL(url, text string) {
 	w.tabf()
-	w.Printf(`"<a href="%s%s@%s/">%s</a>"`, handler, url.PathEscape(path), digest.String(), html.EscapeString(original))
+	w.Printf(`"<a href="%s/">%s</a>"`, url, html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
@@ -222,6 +216,17 @@ func (w *simpleOutputter) jpop() {
 	w.jq = w.jq[:len(w.jq)-1]
 }
 
+func (w *simpleOutputter) jth(idx int) string {
+	if len(w.jq)+idx < 0 {
+		log.Printf("jth(%d) = %s", idx, "")
+		return ""
+	}
+
+	s := w.jq[len(w.jq)+idx]
+	log.Printf("jth(%d) = %s", idx, s)
+	return s
+}
+
 func (w *simpleOutputter) tabs() string {
 	return strings.Repeat("  ", len(w.fresh))
 	//return ""
@@ -250,6 +255,14 @@ func (w *simpleOutputter) refresh() {
 	w.fresh[len(w.fresh)-1] = true
 }
 
+func (w *simpleOutputter) addQuery(key, value string) url.URL {
+	u := *w.u
+	qs := u.Query()
+	qs.Add(key, value)
+	u.RawQuery = qs.Encode()
+	return u
+}
+
 // renderJSON formats some JSON bytes in an OCI-specific way.
 //
 // We try to convert maps to meaningful values based on a Descriptor:
@@ -272,7 +285,11 @@ func (w *simpleOutputter) refresh() {
 // json.RawMessage -> {map[string]raw, []raw, float64, string, bool, nil}
 func renderJSON(w *simpleOutputter, b []byte) error {
 	raw := json.RawMessage(b)
-	return renderRaw(w, &raw)
+	if err := renderRaw(w, &raw); err != nil {
+		return fmt.Errorf("renderRaw: %w", err)
+	}
+	w.undiv()
+	return nil
 }
 
 func renderRaw(w *simpleOutputter, raw *json.RawMessage) error {
@@ -383,20 +400,6 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		}
 
 		switch k {
-		case "layers":
-			w.layers = true
-			if err := renderRaw(w, &v); err != nil {
-				return err
-			}
-			w.layers = false
-			continue
-		case "manifests":
-			w.manifests = true
-			if err := renderRaw(w, &v); err != nil {
-				return err
-			}
-			w.manifests = false
-			continue
 		case "annotations":
 			var i interface{}
 			if err := json.Unmarshal(v, &i); err != nil {
@@ -481,7 +484,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 										u = strings.TrimPrefix(original, "http://")
 										scheme = "http"
 									}
-									w.URL("/"+scheme+"/", u, original, h)
+									w.URL("/"+scheme+"/"+url.PathEscape(u)+"@"+h.String(), original)
 								} else {
 									// This wasn't a list of strings, render whatever we found.
 									b, err := json.Marshal(iface)
@@ -544,8 +547,8 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 					if w.mt == "application/vnd.dsse.envelope.v1+json" {
 						if pt, ok := o["payloadType"]; ok {
 							if s, ok := pt.(string); ok {
-								u := fmt.Sprintf("%s?mt=%s&size=%d&payloadType=%s", w.path, url.QueryEscape(w.mt), w.size, url.QueryEscape(s))
-								w.BlueDoc(u, strconv.Quote(href))
+								u := w.addQuery("payloadType", s)
+								w.BlueDoc(u.String(), strconv.Quote(href))
 
 								// Don't fall through to renderRaw.
 								continue
@@ -573,7 +576,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 				}
 			}
 		case "logIndex":
-			if w.annotation == "dev.sigstore.cosign/bundle" {
+			if inside(w.u, "dev.sigstore.cosign/bundle") {
 				if js, ok := rawMap[k]; ok {
 					log.Printf("type: %T", js)
 					index := 0
@@ -589,19 +592,27 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 				}
 			}
 		case "body":
-			if w.annotation == "dev.sigstore.cosign/bundle" {
+			if inside(w.u, "dev.sigstore.cosign/bundle") {
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
-						u := fmt.Sprintf("%s?image=%s&mt=%s&size=%d&annotation=%s", w.path, w.image, url.QueryEscape(w.mt), w.size, url.QueryEscape(w.annotation))
-						if w.renderLayers {
-							u += fmt.Sprintf("&layers=%d", w.renderIndex)
-						} else if w.renderManifests {
-							u += fmt.Sprintf("&manifests=%d", w.renderIndex)
-						}
-						u += "&render=body"
-						w.BlueDoc(u, strconv.Quote(s))
+						u := w.addQuery("jq", strings.Join(w.jq, "")+" | base64 -d")
+						w.BlueDoc(u.String(), strconv.Quote(s))
 
 						continue
+					}
+				}
+			}
+		case "content":
+			if inside(w.u, "dev.sigstore.cosign/bundle") {
+				if js, ok := o[k]; ok {
+					if s, ok := js.(string); ok {
+						jq := strings.Join(w.jq, "")
+						if jq == ".spec.signature.publicKey.content" {
+							u := w.addQuery("jq", jq+" | base64 -d")
+							w.BlueDoc(u.String(), strconv.Quote(s))
+
+							continue
+						}
 					}
 				}
 			}
@@ -683,8 +694,8 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 			if err := json.Unmarshal(v, &h); err != nil {
 				log.Printf("Unmarshal digest %q: %v", string(v), err)
 			} else {
-				if mt, ok := o["org.opencontainers.image.base.name"]; ok {
-					if s, ok := mt.(string); ok {
+				if js, ok := o["org.opencontainers.image.base.name"]; ok {
+					if s, ok := js.(string); ok {
 						base, err := name.ParseReference(s)
 						if err != nil {
 							log.Printf("Parse[%q](%q): %v", k, base, err)
@@ -700,15 +711,13 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 		case "dev.sigstore.cosign/bundle":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
-					u := fmt.Sprintf("%s?image=%s&mt=%s&size=%d&annotation=%s", w.path, w.image, url.QueryEscape(w.mt), w.size, url.QueryEscape(k))
-					if w.layers {
-						u += fmt.Sprintf("&layers=%d", w.index)
-					} else if w.manifests {
-						u += fmt.Sprintf("&manifests=%d", w.index)
-					}
-					w.BlueDoc(u, strconv.Quote(s))
+					if w.jth(-2) == ".annotations" {
+						log.Printf("jq: %v", w.jq)
+						u := w.addQuery("jq", strings.Join(w.jq, ""))
+						w.BlueDoc(u.String(), strconv.Quote(s))
 
-					continue
+						continue
+					}
 				}
 			}
 		}
@@ -832,4 +841,14 @@ type RekorPayload struct {
 	IntegratedTime int64  `json:"integratedTime"`
 	LogIndex       int64  `json:"logIndex"`
 	LogID          string `json:"logID"`
+}
+
+func inside(u *url.URL, ann string) bool {
+	for _, jq := range u.Query()["jq"] {
+		log.Printf("jq: %s", jq)
+		if strings.Contains(jq, `.annotations["`+ann+`"]`) {
+			return true
+		}
+	}
+	return false
 }
