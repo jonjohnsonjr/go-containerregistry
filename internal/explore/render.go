@@ -652,7 +652,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 			if inside(w.u, "dev.sigstore.cosign/bundle") {
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
-						if (w.path(".spec.publicKey") && w.kindVer("intoto/0.0.1")) || (w.path(".spec.signature.publicKey.content") && w.kindVer("hashedrekor/0.0.1")) {
+						if (w.path(".spec.publicKey") && w.kindVer("intoto/0.0.1")) || (w.path(".spec.signature.publicKey.content") && w.kindVer("hashedrekord/0.0.1")) {
 							u := *w.u
 							qs := u.Query()
 							qs.Add("jq", strings.Join(w.jq, ""))
