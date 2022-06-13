@@ -55,11 +55,12 @@ type simpleOutputter struct {
 	repo string
 	mt   string
 	pt   string
-	path string
 
 	fresh []bool
 	jq    []string
 	key   bool
+	root  map[string]interface{}
+	isMap bool
 }
 
 func (w *simpleOutputter) Annotation(url, text string) {
@@ -101,6 +102,13 @@ func (w *simpleOutputter) Linkify(mt string, h v1.Hash, size int64) {
 	} else {
 		w.Printf(`"<a href="/%s%s@%s%smt=%s">%s</a>"`, handler, w.repo, h.String(), qs, url.QueryEscape(mt), html.EscapeString(h.String()))
 	}
+	w.unfresh()
+	w.key = false
+}
+
+func (w *simpleOutputter) Blob(ref, text string) {
+	w.tabf()
+	w.Printf(`"<a href="/json/%s">%s</a>"`, url.PathEscape(ref), html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
@@ -207,7 +215,7 @@ func (w *simpleOutputter) pop() {
 
 func (w *simpleOutputter) jpush(j string) {
 	w.jq = append(w.jq, j)
-	log.Printf("%v", w.jq)
+	//log.Printf("%v", w.jq)
 }
 
 func (w *simpleOutputter) jpop() {
@@ -216,13 +224,35 @@ func (w *simpleOutputter) jpop() {
 
 func (w *simpleOutputter) jth(idx int) string {
 	if len(w.jq)+idx < 0 {
-		log.Printf("jth(%d) = %s", idx, "")
+		//log.Printf("jth(%d) = %s", idx, "")
 		return ""
 	}
 
 	s := w.jq[len(w.jq)+idx]
-	log.Printf("jth(%d) = %s", idx, s)
+	//log.Printf("jth(%d) = %s", idx, s)
 	return s
+}
+
+func (w *simpleOutputter) path(s string) bool {
+	return strings.Join(w.jq, "") == s
+}
+
+func (w *simpleOutputter) kindVer(s string) bool {
+	return w.maybeMap("kind")+"/"+w.maybeMap("apiVersion") == s
+}
+
+func (w *simpleOutputter) maybeMap(k string) string {
+	if w.root == nil {
+		return ""
+	}
+	v, ok := w.root[k]
+	if !ok {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func (w *simpleOutputter) tabs() string {
@@ -283,6 +313,17 @@ func (w *simpleOutputter) addQuery(key, value string) url.URL {
 // json.RawMessage -> {map[string]raw, []raw, float64, string, bool, nil}
 func renderJSON(w *simpleOutputter, b []byte) error {
 	raw := json.RawMessage(b)
+
+	// Unmarshal an extra time at the beginning to check if it's a map for easy
+	// access to root fields. This is dumb but I'm lazy.
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		w.root = m
+	}
+
 	if err := renderRaw(w, &raw); err != nil {
 		return fmt.Errorf("renderRaw: %w", err)
 	}
@@ -295,6 +336,7 @@ func renderRaw(w *simpleOutputter, raw *json.RawMessage) error {
 	if err := json.Unmarshal(*raw, &v); err != nil {
 		return err
 	}
+
 	switch vv := v.(type) {
 	case []interface{}:
 		return renderList(w, raw)
@@ -541,15 +583,13 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		case "payload":
 			if js, ok := o[k]; ok {
 				if href, ok := js.(string); ok {
-					if w.mt == "application/vnd.dsse.envelope.v1+json" {
-						if pt, ok := o["payloadType"]; ok {
-							if s, ok := pt.(string); ok {
-								u := w.addQuery("payloadType", s)
-								w.BlueDoc(u.String(), strconv.Quote(href))
+					if pt, ok := o["payloadType"]; ok {
+						if s, ok := pt.(string); ok {
+							u := w.addQuery("payloadType", s)
+							w.BlueDoc(u.String(), strconv.Quote(href))
 
-								// Don't fall through to renderRaw.
-								continue
-							}
+							// Don't fall through to renderRaw.
+							continue
 						}
 					}
 				}
@@ -557,12 +597,12 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 		case "payloadType":
 			if js, ok := o[k]; ok {
 				if pt, ok := js.(string); ok {
-					if w.mt == "application/vnd.dsse.envelope.v1+json" {
-						w.Doc(getLink(pt), strconv.Quote(pt))
-
-						// Don't fall through to renderRaw.
-						continue
+					if href := getLink(pt); href != "" {
+						w.Doc(href, strconv.Quote(pt))
 					}
+
+					// Don't fall through to renderRaw.
+					continue
 				}
 			}
 		case "uri", "_type", "$schema", "informationUri":
@@ -612,12 +652,10 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 			if inside(w.u, "dev.sigstore.cosign/bundle") {
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
-						jq := strings.Join(w.jq, "")
-						// TODO: check for apiVersion/kind
-						if jq == ".spec.signature.publicKey.content" || jq == ".spec.publicKey" {
+						if (w.path(".spec.publicKey") && w.kindVer("intoto/0.0.1")) || (w.path(".spec.signature.publicKey.content") && w.kindVer("hashedrekor/0.0.1")) {
 							u := *w.u
 							qs := u.Query()
-							qs.Add("jq", jq)
+							qs.Add("jq", strings.Join(w.jq, ""))
 							qs.Add("jq", "base64 -d")
 							qs.Set("render", "raw")
 							u.RawQuery = qs.Encode()
@@ -626,6 +664,34 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 							continue
 						}
 					}
+				}
+			}
+		case "value":
+			if inside(w.u, "dev.sigstore.cosign/bundle") {
+				if (w.path(".spec.content.hash.value") && w.kindVer("intoto/0.0.1")) || (w.path(".spec.data.hash.value") && w.kindVer("hashedrekord/0.0.1")) {
+					if i, ok := o["algorithm"]; ok {
+						if s, ok := i.(string); ok {
+							if s == "sha256" {
+								if js, ok := o[k]; ok {
+									if d, ok := js.(string); ok {
+										w.Blob(w.repo+"@"+"sha256"+":"+d, d)
+										continue
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		case "predicateType":
+			if js, ok := o[k]; ok {
+				if pt, ok := js.(string); ok {
+					if href := getPredicateLink(pt); href != "" {
+						w.Doc(href, strconv.Quote(pt))
+					}
+
+					// Don't fall through to renderRaw.
+					continue
 				}
 			}
 		}
@@ -836,6 +902,14 @@ func getLink(s string) string {
 		return `https://github.com/spdx/spdx-spec/blob/7ba7bf571c0c3c3fd6a4bd780914d58f9274adcc/schemas/spdx-schema.json`
 	}
 	return `https://github.com/opencontainers/image-spec/blob/master/media-types.md`
+}
+
+func getPredicateLink(s string) string {
+	switch s {
+	case `cosign.sigstore.dev/attestation/vuln/v1`:
+		return `https://github.com/sigstore/cosign/blob/b01a173cab389e93c5f3b46d50fe503f9c2454c2/specs/COSIGN_VULN_ATTESTATION_SPEC.md`
+	}
+	return ""
 }
 
 func getAnnotationLink(s string) string {
