@@ -808,6 +808,28 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 					}
 				}
 			}
+		case "sh.brew.tab":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					if w.jth(-2) == ".annotations" {
+						u := w.addQuery("jq", strings.Join(w.jq, ""))
+						w.BlueDoc(u.String(), strconv.Quote(s))
+
+						continue
+					}
+				}
+			}
+		case "org.opencontainers.image.documentation", "org.opencontainers.image.source", "org.opencontainers.image.url":
+			if js, ok := o[k]; ok {
+				if href, ok := js.(string); ok {
+					if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+						w.BlueDoc(href, strconv.Quote(href))
+
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
+			}
 		}
 
 		if err := renderRaw(w, &v); err != nil {
