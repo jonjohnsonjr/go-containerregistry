@@ -203,7 +203,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 
 	fmt.Fprintf(w, header)
 
-	output := &simpleOutputter{
+	output := &jsonOutputter{
 		w:     w,
 		u:     r.URL,
 		fresh: []bool{},
@@ -290,7 +290,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 	fmt.Fprintf(w, header)
 
-	output := &simpleOutputter{
+	output := &jsonOutputter{
 		w:     w,
 		u:     r.URL,
 		fresh: []bool{},
@@ -509,7 +509,7 @@ func (h *handler) fetchBlob(r *http.Request) (*sizeBlob, string, error) {
 	return sb, root + ref, err
 }
 
-func (h *handler) jq(output *simpleOutputter, b []byte, r *http.Request, data *HeaderData) ([]byte, error) {
+func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *HeaderData) ([]byte, error) {
 	jq, ok := r.URL.Query()["jq"]
 	if !ok {
 		return b, nil

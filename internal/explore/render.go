@@ -48,7 +48,7 @@ type Outputter interface {
 	LinkImage(ref, text string)
 }
 
-type simpleOutputter struct {
+type jsonOutputter struct {
 	w    io.Writer
 	u    *url.URL
 	name string
@@ -63,34 +63,34 @@ type simpleOutputter struct {
 	isMap bool
 }
 
-func (w *simpleOutputter) Annotation(url, text string) {
+func (w *jsonOutputter) Annotation(url, text string) {
 	w.tabf()
 	w.Printf(`"<a class="mt" href="%s">%s</a>":`, url, html.EscapeString(text))
 	w.key = true
 }
 
-func (w *simpleOutputter) BlueDoc(url, text string) {
+func (w *jsonOutputter) BlueDoc(url, text string) {
 	w.tabf()
 	w.Printf(`<a href="%s">%s</a>`, url, html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
 
-func (w *simpleOutputter) Doc(url, text string) {
+func (w *jsonOutputter) Doc(url, text string) {
 	w.tabf()
 	w.Printf(`<a class="mt" href="%s">%s</a>`, url, html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
 
-func (w *simpleOutputter) URL(url, text string) {
+func (w *jsonOutputter) URL(url, text string) {
 	w.tabf()
 	w.Printf(`"<a href="%s/">%s</a>"`, url, html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
 
-func (w *simpleOutputter) Linkify(mt string, h v1.Hash, size int64) {
+func (w *jsonOutputter) Linkify(mt string, h v1.Hash, size int64) {
 	w.tabf()
 	qs := "?"
 	handler := handlerForMT(mt)
@@ -106,34 +106,34 @@ func (w *simpleOutputter) Linkify(mt string, h v1.Hash, size int64) {
 	w.key = false
 }
 
-func (w *simpleOutputter) Blob(ref, text string) {
+func (w *jsonOutputter) Blob(ref, text string) {
 	w.tabf()
 	w.Printf(`"<a href="/json/%s">%s</a>"`, url.PathEscape(ref), html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
 
-func (w *simpleOutputter) LinkImage(ref, text string) {
+func (w *jsonOutputter) LinkImage(ref, text string) {
 	w.tabf()
 	w.Printf(`"<a href="/?image=%s">%s</a>"`, url.PathEscape(ref), html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
 
-func (w *simpleOutputter) Key(k string) {
+func (w *jsonOutputter) Key(k string) {
 	w.tabf()
 	w.Printf("%q:", k)
 	w.key = true
 }
 
-func (w *simpleOutputter) Value(b []byte) {
+func (w *jsonOutputter) Value(b []byte) {
 	w.tabf()
 	w.Print(html.EscapeString(string(b)))
 	w.unfresh()
 	w.key = false
 }
 
-func (w *simpleOutputter) StartMap() {
+func (w *jsonOutputter) StartMap() {
 	w.tabf()
 	w.Print("{")
 	w.newline()
@@ -141,7 +141,7 @@ func (w *simpleOutputter) StartMap() {
 	w.key = false
 }
 
-func (w *simpleOutputter) EndMap() {
+func (w *jsonOutputter) EndMap() {
 	if !w.Fresh() {
 		w.undiv()
 	}
@@ -153,7 +153,7 @@ func (w *simpleOutputter) EndMap() {
 	w.unfresh()
 }
 
-func (w *simpleOutputter) StartArray() {
+func (w *jsonOutputter) StartArray() {
 	w.tabf()
 	w.Print("[")
 	w.newline()
@@ -161,7 +161,7 @@ func (w *simpleOutputter) StartArray() {
 	w.key = false
 }
 
-func (w *simpleOutputter) EndArray() {
+func (w *jsonOutputter) EndArray() {
 	if !w.Fresh() {
 		w.undiv()
 	}
@@ -172,15 +172,15 @@ func (w *simpleOutputter) EndArray() {
 	w.unfresh()
 }
 
-func (w *simpleOutputter) Printf(s string, arg ...interface{}) {
+func (w *jsonOutputter) Printf(s string, arg ...interface{}) {
 	fmt.Fprintf(w.w, s, arg...)
 }
 
-func (w *simpleOutputter) Print(s string) {
+func (w *jsonOutputter) Print(s string) {
 	fmt.Fprint(w.w, s)
 }
 
-func (w *simpleOutputter) tabf() {
+func (w *jsonOutputter) tabf() {
 	if !w.key {
 		if !w.Fresh() {
 			w.Print(",")
@@ -194,35 +194,35 @@ func (w *simpleOutputter) tabf() {
 	}
 }
 
-func (w *simpleOutputter) Fresh() bool {
+func (w *jsonOutputter) Fresh() bool {
 	if len(w.fresh) == 0 {
 		return true
 	}
 	return w.fresh[len(w.fresh)-1]
 }
 
-func (w *simpleOutputter) push() {
+func (w *jsonOutputter) push() {
 	w.Print(w.tabs() + `<div class="indent">` + "\n")
 	w.fresh = append(w.fresh, true)
 }
 
-func (w *simpleOutputter) pop() {
+func (w *jsonOutputter) pop() {
 	w.fresh = w.fresh[:len(w.fresh)-1]
 	w.newline()
 	w.Print(w.tabs())
 	w.undiv()
 }
 
-func (w *simpleOutputter) jpush(j string) {
+func (w *jsonOutputter) jpush(j string) {
 	w.jq = append(w.jq, j)
 	//log.Printf("%v", w.jq)
 }
 
-func (w *simpleOutputter) jpop() {
+func (w *jsonOutputter) jpop() {
 	w.jq = w.jq[:len(w.jq)-1]
 }
 
-func (w *simpleOutputter) jth(idx int) string {
+func (w *jsonOutputter) jth(idx int) string {
 	if len(w.jq)+idx < 0 {
 		//log.Printf("jth(%d) = %s", idx, "")
 		return ""
@@ -233,15 +233,15 @@ func (w *simpleOutputter) jth(idx int) string {
 	return s
 }
 
-func (w *simpleOutputter) path(s string) bool {
+func (w *jsonOutputter) path(s string) bool {
 	return strings.Join(w.jq, "") == s
 }
 
-func (w *simpleOutputter) kindVer(s string) bool {
+func (w *jsonOutputter) kindVer(s string) bool {
 	return w.maybeMap("kind")+"/"+w.maybeMap("apiVersion") == s
 }
 
-func (w *simpleOutputter) maybeMap(k string) string {
+func (w *jsonOutputter) maybeMap(k string) string {
 	if w.root == nil {
 		return ""
 	}
@@ -255,35 +255,35 @@ func (w *simpleOutputter) maybeMap(k string) string {
 	return ""
 }
 
-func (w *simpleOutputter) tabs() string {
+func (w *jsonOutputter) tabs() string {
 	return strings.Repeat("  ", len(w.fresh))
 	//return ""
 }
 
-func (w *simpleOutputter) newline() {
+func (w *jsonOutputter) newline() {
 	w.Print("\n")
 }
 
-func (w *simpleOutputter) div() {
+func (w *jsonOutputter) div() {
 	w.Print(w.tabs() + "<div>")
 }
 
-func (w *simpleOutputter) undiv() {
+func (w *jsonOutputter) undiv() {
 	w.Print("</div>")
 }
 
-func (w *simpleOutputter) unfresh() {
+func (w *jsonOutputter) unfresh() {
 	if len(w.fresh) == 0 {
 		return
 	}
 	w.fresh[len(w.fresh)-1] = false
 }
 
-func (w *simpleOutputter) refresh() {
+func (w *jsonOutputter) refresh() {
 	w.fresh[len(w.fresh)-1] = true
 }
 
-func (w *simpleOutputter) addQuery(key, value string) url.URL {
+func (w *jsonOutputter) addQuery(key, value string) url.URL {
 	u := *w.u
 	qs := u.Query()
 	qs.Add(key, value)
@@ -311,7 +311,7 @@ func (w *simpleOutputter) addQuery(key, value string) url.URL {
 // []byte -> json.RawMessage
 // json.RawMessage -> map[string]json.RawMessage (v1.Desciptor?)
 // json.RawMessage -> {map[string]raw, []raw, float64, string, bool, nil}
-func renderJSON(w *simpleOutputter, b []byte) error {
+func renderJSON(w *jsonOutputter, b []byte) error {
 	raw := json.RawMessage(b)
 
 	// Unmarshal an extra time at the beginning to check if it's a map for easy
@@ -331,7 +331,7 @@ func renderJSON(w *simpleOutputter, b []byte) error {
 	return nil
 }
 
-func renderRaw(w *simpleOutputter, raw *json.RawMessage) error {
+func renderRaw(w *jsonOutputter, raw *json.RawMessage) error {
 	var v interface{}
 	if err := json.Unmarshal(*raw, &v); err != nil {
 		return err
@@ -402,7 +402,7 @@ func compare(a, b string) bool {
 	return ok
 }
 
-func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessage) error {
+func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage) error {
 	rawMap := map[string]json.RawMessage{}
 	if err := json.Unmarshal(*raw, &rawMap); err != nil {
 		return err
@@ -706,7 +706,7 @@ func renderMap(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessag
 	return nil
 }
 
-func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.RawMessage) error {
+func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage) error {
 	rawMap := map[string]json.RawMessage{}
 	if err := json.Unmarshal(*raw, &rawMap); err != nil {
 		return err
@@ -843,7 +843,7 @@ func renderAnnotations(w *simpleOutputter, o map[string]interface{}, raw *json.R
 	return nil
 }
 
-func renderList(w *simpleOutputter, raw *json.RawMessage) error {
+func renderList(w *jsonOutputter, raw *json.RawMessage) error {
 	rawList := []json.RawMessage{}
 	if err := json.Unmarshal(*raw, &rawList); err != nil {
 		return err
