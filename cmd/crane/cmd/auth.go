@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -28,6 +29,11 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/cobra"
+)
+
+var (
+	errNoCreds = errors.New("credentials not found in native keychain")
+	errNoFlags = errors.New("username and password required")
 )
 
 // NewCmdAuth creates a new cobra.Command for the auth subcommand.
@@ -72,12 +78,13 @@ func NewCmdAuthGet(argv ...string) *cobra.Command {
   {"username":"AzureDiamond","password":"hunter2"}`, strings.Join(argv, " "))
 
 	return &cobra.Command{
-		Use:     "get",
-		Short:   "Implements a credential helper",
-		Example: eg,
-		Args:    cobra.NoArgs,
-		RunE: func(_ *cobra.Command, args []string) error {
-			b, err := ioutil.ReadAll(os.Stdin)
+		Use:          "get",
+		Short:        "Implements a credential helper",
+		Example:      eg,
+		Args:         cobra.NoArgs,
+		SilenceUsage: true, // don't interfere with cred helper protocol
+		RunE: func(cmd *cobra.Command, args []string) error {
+			b, err := ioutil.ReadAll(cmd.InOrStdin())
 			if err != nil {
 				return err
 			}
@@ -95,8 +102,8 @@ func NewCmdAuthGet(argv ...string) *cobra.Command {
 			// https://github.com/docker/docker-credential-helpers/blob/f78081d1f7fef6ad74ad6b79368de6348386e591/credentials/error.go#L4-L6
 			// https://github.com/docker/docker-credential-helpers/blob/f78081d1f7fef6ad74ad6b79368de6348386e591/credentials/credentials.go#L61-L63
 			if authorizer == authn.Anonymous {
-				fmt.Fprint(os.Stdout, "credentials not found in native keychain\n")
-				os.Exit(1)
+				fmt.Fprint(cmd.OutOrStdout(), "credentials not found in native keychain\n")
+				return errNoCreds
 			}
 
 			auth, err := authorizer.Authorization()
@@ -107,7 +114,7 @@ func NewCmdAuthGet(argv ...string) *cobra.Command {
 			// Convert back to a form that credential helpers can parse so that this
 			// can act as a meta credential helper.
 			creds := toCreds(auth)
-			return json.NewEncoder(os.Stdout).Encode(creds)
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(creds)
 		},
 	}
 }
@@ -136,7 +143,7 @@ func NewCmdAuthLogin(argv ...string) *cobra.Command {
 
 			opts.serverAddress = reg.Name()
 
-			return login(opts)
+			return login(opts, cmd.InOrStdin())
 		},
 	}
 
@@ -156,9 +163,9 @@ type loginOptions struct {
 	passwordStdin bool
 }
 
-func login(opts loginOptions) error {
+func login(opts loginOptions, in io.Reader) error {
 	if opts.passwordStdin {
-		contents, err := ioutil.ReadAll(os.Stdin)
+		contents, err := ioutil.ReadAll(in)
 		if err != nil {
 			return err
 		}
@@ -167,7 +174,7 @@ func login(opts loginOptions) error {
 		opts.password = strings.TrimSuffix(opts.password, "\r")
 	}
 	if opts.user == "" && opts.password == "" {
-		return errors.New("username and password required")
+		return errNoFlags
 	}
 	cf, err := config.Load(os.Getenv("DOCKER_CONFIG"))
 	if err != nil {
