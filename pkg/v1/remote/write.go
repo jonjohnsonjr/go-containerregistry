@@ -261,12 +261,13 @@ func (w *writer) checkExistingManifest(h v1.Hash, mt types.MediaType) (bool, err
 func (w *writer) initiateUpload(from, mount, origin string) (location string, mounted bool, err error) {
 	u := w.url(fmt.Sprintf("/v2/%s/blobs/uploads/", w.repo.RepositoryStr()))
 	uv := url.Values{}
-	if mount != "" && from != "" {
-		// Quay will fail if we specify a "mount" without a "from".
+	if mount != "" {
 		uv.Set("mount", mount)
-		uv.Set("from", from)
-		if origin != "" {
-			uv.Set("origin", origin)
+		if from != "" {
+			uv.Set("from", from)
+			if origin != "" {
+				uv.Set("origin", origin)
+			}
 		}
 	}
 	u.RawQuery = uv.Encode()
@@ -287,7 +288,7 @@ func (w *writer) initiateUpload(from, mount, origin string) (location string, mo
 		if origin != "" && origin != w.repo.RegistryStr() {
 			// https://github.com/google/go-containerregistry/issues/1404
 			logs.Warn.Printf("retrying without mount: %v", err)
-			return w.initiateUpload("", "", "")
+			return w.initiateUpload("", mount, "")
 		}
 		return "", false, err
 	}

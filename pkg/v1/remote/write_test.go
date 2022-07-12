@@ -465,13 +465,17 @@ func TestInitiateUploadMountsWithOriginFallback(t *testing.T) {
 	expectedRepo := "yet/again"
 	expectedPath := fmt.Sprintf("/v2/%s/blobs/uploads/", expectedRepo)
 	expectedOrigin := "fakeOrigin"
-	expectedQuery := url.Values{
-		"mount":  []string{h.String()},
-		"from":   []string{expectedMountRepo},
-		"origin": []string{expectedOrigin},
-	}.Encode()
 
-	queries := []string{expectedQuery, ""}
+	queries := []string{
+		url.Values{
+			"mount":  []string{h.String()},
+			"from":   []string{expectedMountRepo},
+			"origin": []string{expectedOrigin},
+		}.Encode(),
+		url.Values{
+			"mount": []string{h.String()},
+		}.Encode(),
+	}
 	queryCount := 0
 
 	serverHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -481,6 +485,7 @@ func TestInitiateUploadMountsWithOriginFallback(t *testing.T) {
 		if r.URL.Path != expectedPath {
 			t.Errorf("URL; got %v, want %v", r.URL.Path, expectedPath)
 		}
+		expectedQuery := queries[queryCount]
 		if r.URL.RawQuery != queries[queryCount] {
 			t.Errorf("RawQuery; got %v, want %v", r.URL.RawQuery, expectedQuery)
 		}
