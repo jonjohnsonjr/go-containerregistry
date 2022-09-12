@@ -32,6 +32,7 @@ import (
 const (
 	CosignMediaType = `application/vnd.dev.cosign.simplesigning.v1+json`
 	cosignPointee   = `application/vnd.dev.ggcr.magic/cosign-thing+json`
+	emptyDigest     = "sha256:a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4"
 )
 
 // TODO: Actually use this.
@@ -99,6 +100,8 @@ func (w *jsonOutputter) Linkify(mt string, h v1.Hash, size int64) {
 	}
 	if size != 0 {
 		w.Printf(`"<a href="/%s%s@%s%smt=%s&size=%d">%s</a>"`, handler, w.repo, h.String(), qs, url.QueryEscape(mt), size, html.EscapeString(h.String()))
+	} else if h.String() == emptyDigest {
+		w.Printf(`"<a href="/%s%s@%s%smt=%s" title="this is an empty layer that only modifies metadata, so it has no filesystem content">%s</a>"`, handler, w.repo, h.String(), qs, url.QueryEscape(mt), html.EscapeString(h.String()))
 	} else {
 		w.Printf(`"<a href="/%s%s@%s%smt=%s">%s</a>"`, handler, w.repo, h.String(), qs, url.QueryEscape(mt), html.EscapeString(h.String()))
 	}
