@@ -232,7 +232,7 @@ func lexQuotedString(l *Lexer) stateFn {
 }
 
 func lexIdentifier(l *Lexer) stateFn {
-	for unicode.IsLetter(l.next()) {
+	for isAlphanumeric(l.next()) {
 	}
 	l.backup()
 
