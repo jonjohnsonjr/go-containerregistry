@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -296,11 +296,11 @@ func (w *jsonOutputter) addQuery(key, value string) url.URL {
 // We try to convert maps to meaningful values based on a Descriptor:
 // - mediaType: well-known links to their definitions.
 // - digest: links to raw content or well-known handlers:
-//		1. Well-known OCI types get rendered as renderJSON
-//		2. Layers get rendered as a filesystem via http.FileSystem
-//		3. Blobs ending in +json get rendered as formatted JSON
-//		4. Cosign blobs (SimpleSigning) get rendered specially
-//		5. Everything else is raw content
+//  1. Well-known OCI types get rendered as renderJSON
+//  2. Layers get rendered as a filesystem via http.FileSystem
+//  3. Blobs ending in +json get rendered as formatted JSON
+//  4. Cosign blobs (SimpleSigning) get rendered specially
+//  5. Everything else is raw content
 //
 // If we see a map, try to parse as Descriptor and use those values.
 //
@@ -680,6 +680,17 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 								}
 							}
 						}
+					}
+				}
+			}
+		case "v1Compatibility":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					if w.jth(-3) == ".history" {
+						u := w.addQuery("jq", strings.Join(w.jq, ""))
+						w.BlueDoc(u.String(), strconv.Quote(s))
+
+						continue
 					}
 				}
 			}
