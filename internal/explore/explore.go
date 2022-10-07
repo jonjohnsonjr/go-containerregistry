@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -355,32 +355,34 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	size := blob.size
+	var rc io.ReadCloser = blob
 	ok, pr, err := gzip.Peek(blob)
+	if err != nil {
+		log.Printf("render(%q): %v", ref, err)
+	}
+
+	rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
 	if ok {
 		log.Printf("it is gzip")
-		rc := &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
-		zr, err := gzip.UnzipReadCloser(rc)
+		rc, err = gzip.UnzipReadCloser(rc)
 		if err != nil {
 			return err
 		}
-		ok, pr, err = tarPeek(zr)
-		if ok {
-			log.Printf("it is tar")
-			h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: zr.Close}, size}
-
-			fs, err := h.newLayerFS(r)
-			if err != nil {
-				// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
-				return err
-			}
-			defer fs.Close()
-
-			http.FileServer(fs).ServeHTTP(w, r)
-			return nil
-		}
 	}
-	if err != nil {
-		log.Printf("render(%q): %v", ref, err)
+	ok, pr, err = tarPeek(rc)
+	if ok {
+		log.Printf("it is tar")
+		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
+
+		fs, err := h.newLayerFS(r)
+		if err != nil {
+			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
+			return err
+		}
+		defer fs.Close()
+
+		http.FileServer(fs).ServeHTTP(w, r)
+		return nil
 	}
 
 	qs := r.URL.Query()
