@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -21,13 +21,15 @@ import (
 )
 
 var (
-	bodyTmpl *template.Template
-	repoTmpl *template.Template
+	bodyTmpl  *template.Template
+	repoTmpl  *template.Template
+	oauthTmpl *template.Template
 )
 
 func init() {
 	bodyTmpl = template.Must(template.New("bodyTemplate").Parse(bodyTemplate))
 	repoTmpl = template.Must(template.New("repoTemplate").Parse(repoTemplate))
+	oauthTmpl = template.Must(template.New("oauthTemplate").Parse(oauthTemplate))
 }
 
 const (
@@ -68,6 +70,35 @@ Enter a <strong>public</strong> repository, e.g. <tt>"ubuntu"</tt>:
 <input type="text" name="repo" value="ubuntu"/>
 <input type="submit" />
 </form>
+</body>
+</html>
+`
+
+	oauthTemplate = `
+<html>
+<body>
+<head>
+<style>
+.mt:hover {
+	text-decoration: underline;
+}
+
+.mt {
+  color: inherit;
+	text-decoration: inherit;
+}
+</style>
+</head>
+<h2>explore.<a class="mt" href="https://github.com/google/go-containerregistry">ggcr</a>.dev</h2>
+<p>
+It looks like we encountered an auth error:
+</p>
+<code>
+{{.Error}}
+</code>
+<p>
+I currently can't support oauth for non-Googlers (sorry), but if you're a Googler and you trust <a class="mt" href="https://github.com/jonjohnsonjr">me</a>, click <a href="{{.Redirect}}">here</a>.
+</p>
 </body>
 </html>
 `
@@ -123,7 +154,7 @@ Docker-Content-Digest: {{.Descriptor.Digest}}<br>
 Content-Length: {{.Descriptor.Size}}<br>
 Content-Type: {{.Descriptor.MediaType}}<br>
 </div>
-<hr>{{ if .JQ }} 
+<hr>{{ if .JQ }}
 <h4>{{.JQ}}</h4>
 <hr>
 {{ end }}
@@ -138,6 +169,11 @@ Content-Type: {{.Descriptor.MediaType}}<br>
 type RepositoryData struct {
 	Name string
 	Tags []string
+}
+
+type OauthData struct {
+	Error    string
+	Redirect string
 }
 
 type HeaderData struct {

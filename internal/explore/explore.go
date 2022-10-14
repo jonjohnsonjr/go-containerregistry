@@ -16,13 +16,16 @@ package explore
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -30,13 +33,19 @@ import (
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/verify"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	goog "github.com/google/go-containerregistry/pkg/v1/google"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 // We should not buffer blobs greater than 1MB
 const tooBig = 2 << 20
+const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
 
 type handler struct {
 	mux    *http.ServeMux
@@ -44,9 +53,11 @@ type handler struct {
 
 	// Stupid hack because I'm too lazy to refactor.
 	blobs map[*http.Request]*sizeBlob
+
+	oauth *oauth2.Config
 }
 
-func (h *handler) remoteOptions(r *http.Request) []remote.Option {
+func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo string) []remote.Option {
 	ctx := r.Context()
 
 	// TODO: Set timeout.
@@ -55,6 +66,28 @@ func (h *handler) remoteOptions(r *http.Request) []remote.Option {
 	opts := []remote.Option{}
 	opts = append(opts, h.remote...)
 	opts = append(opts, remote.WithContext(ctx))
+
+	if at, err := r.Cookie("access_token"); err == nil {
+		tok := &oauth2.Token{
+			AccessToken: at.Value,
+			Expiry:      at.Expires,
+		}
+		if rt, err := r.Cookie("refresh_token"); err == nil {
+			tok.RefreshToken = rt.Value
+		}
+		ts := h.oauth.TokenSource(r.Context(), tok)
+		tsa := goog.NewTokenSourceAuthenticator(ts)
+
+		opts = append(opts, remote.WithAuth(tsa))
+
+		if t, err := h.transportFromCookie(w, r, repo, tsa); err != nil {
+			log.Printf("failed to get transport from cookie: %v", err)
+		} else {
+			log.Printf("restored bearer transport")
+			opts = append(opts, remote.WithTransport(t))
+		}
+	}
+
 	return opts
 }
 
@@ -67,9 +100,20 @@ func WithRemote(opt []remote.Option) Option {
 }
 
 func New(opts ...Option) http.Handler {
+	conf := &oauth2.Config{
+		ClientID:     os.Getenv("CLIENT_ID"),
+		ClientSecret: os.Getenv("CLIENT_SECRET"),
+		RedirectURL:  "https://explore.ggcr.dev/oauth",
+		Scopes: []string{
+			"https://www.googleapis.com/auth/cloud-platform.read-only",
+		},
+		Endpoint: google.Endpoint,
+	}
+
 	h := handler{
 		mux:   http.NewServeMux(),
 		blobs: map[*http.Request]*sizeBlob{},
+		oauth: conf,
 	}
 
 	for _, opt := range opts {
@@ -96,6 +140,8 @@ func New(opts ...Option) http.Handler {
 	// Same as above but un-gzips.
 	h.mux.HandleFunc("/gzip/", h.fsHandler)
 
+	h.mux.HandleFunc("/oauth", h.oauthHandler)
+
 	return &h
 }
 
@@ -108,15 +154,180 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Like http.Handler, but with error handling.
 func (h *handler) root(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderResponse(w, r); err != nil {
-		fmt.Fprintf(w, "failed: %v", err)
+		if err := h.handleOauth(w, r, err); err != nil {
+			fmt.Fprintf(w, "failed: %v", err)
+		}
 	}
+}
+
+func isGoogle(host string) bool {
+	if host != "gcr.io" && !strings.HasSuffix(host, ".gcr.io") && !strings.HasSuffix(host, ".pkg.dev") && !strings.HasSuffix(host, ".google.com") {
+		return false
+	}
+	return true
+}
+
+func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
+	qs := r.URL.Query()
+	code := qs.Get("code")
+	tok, err := h.oauth.Exchange(r.Context(), code)
+	if err != nil {
+		log.Printf("Exchange: %v", err)
+		fmt.Fprintf(w, "failed: %v", err)
+		return
+	}
+
+	state := qs.Get("state")
+	u, err := url.ParseRequestURI(state)
+	if err != nil {
+		log.Printf("ParseRequestURI: %v", err)
+		fmt.Fprintf(w, "failed: %v", err)
+		return
+	}
+	if tok.AccessToken != "" {
+		cookie := &http.Cookie{
+			Name:     "access_token",
+			Value:    tok.AccessToken,
+			Expires:  tok.Expiry,
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		}
+		http.SetCookie(w, cookie)
+	}
+	if tok.RefreshToken != "" {
+		cookie := &http.Cookie{
+			Name:     "refresh_token",
+			Value:    tok.RefreshToken,
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		}
+		http.SetCookie(w, cookie)
+	}
+
+	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
 // Like http.Handler, but with error handling.
 func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderBlob(w, r); err != nil {
-		fmt.Fprintf(w, "failed: %v", err)
+		if err := h.handleOauth(w, r, err); err != nil {
+			fmt.Fprintf(w, "failed: %v", err)
+		}
 	}
+}
+
+func (h *handler) handleOauth(w http.ResponseWriter, r *http.Request, err error) error {
+	var terr *transport.Error
+	if !errors.As(err, &terr) {
+		return err
+	}
+	if !isGoogle(terr.Request.URL.Host) {
+		return err
+	}
+	if terr.StatusCode != http.StatusForbidden && terr.StatusCode != http.StatusUnauthorized {
+		return err
+	}
+
+	data := OauthData{
+		Error:    err.Error(),
+		Redirect: h.oauth.AuthCodeURL(r.URL.String()),
+	}
+
+	if err := oauthTmpl.Execute(w, data); err != nil {
+		return fmt.Errorf("failed to render oauth page: %w", err)
+	}
+	return nil
+}
+
+type CookieValue struct {
+	Reg           string
+	PingResp      *transport.PingResp
+	Repo          string
+	TokenResponse *transport.TokenResponse
+}
+
+func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, repo string, tsa authn.Authenticator) (http.RoundTripper, error) {
+	parsed, err := name.NewRepository(repo)
+	if err != nil {
+		return nil, err
+	}
+	scopes := []string{parsed.Scope(transport.PullScope)}
+
+	reg := parsed.Registry
+
+	t := remote.DefaultTransport
+	t = transport.NewLogger(t)
+	t = transport.NewRetry(t)
+	t = transport.NewUserAgent(t, ua)
+
+	var (
+		pr  *transport.PingResp
+		tok *transport.TokenResponse
+	)
+
+	if regCookie, err := r.Cookie("registry_token"); err == nil {
+		b, err := base64.URLEncoding.DecodeString(regCookie.Value)
+		if err != nil {
+			return nil, err
+		}
+		var v CookieValue
+		if err := json.Unmarshal(b, &v); err != nil {
+			return nil, err
+		}
+		if v.Reg == reg.String() {
+			pr = v.PingResp
+			if v.Repo == repo {
+				tok = v.TokenResponse
+			}
+		}
+	}
+
+	if pr == nil {
+		pr, err = transport.Ping(r.Context(), reg, t)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if tok == nil {
+		t, tok, err = transport.NewBearer(r.Context(), pr, reg, tsa, t, scopes)
+		if err != nil {
+			return nil, err
+		}
+		v := &CookieValue{
+			Reg:           reg.String(),
+			PingResp:      pr,
+			Repo:          repo,
+			TokenResponse: tok,
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		cv := base64.URLEncoding.EncodeToString(b)
+		cookie := &http.Cookie{
+			Name:     "registry_token",
+			Value:    cv,
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		}
+		if tok.ExpiresIn == 0 {
+			tok.ExpiresIn = 60
+		}
+		exp := time.Now().Add(time.Second * time.Duration(tok.ExpiresIn))
+		cookie.Expires = exp
+		http.SetCookie(w, cookie)
+	} else {
+		t, err = transport.OldBearer(pr, tok, reg, tsa, t, scopes)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return t, nil
 }
 
 func (h *handler) renderResponse(w http.ResponseWriter, r *http.Request) error {
@@ -149,7 +360,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		return err
 	}
 
-	tags, err := remote.List(ref, h.remote...)
+	tags, err := remote.List(ref, h.remoteOptions(w, r, repo)...)
 	if err != nil {
 		return err
 	}
@@ -170,14 +381,15 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	if err != nil {
 		return err
 	}
-	d, err := remote.Head(ref, h.remote...)
+	opts := h.remoteOptions(w, r, ref.Context().Name())
+	d, err := remote.Head(ref, opts...)
 	if err != nil {
 		return err
 	}
 	if d.Size > tooBig {
 		return fmt.Errorf("manifest %s too big: %d", ref, d.Size)
 	}
-	desc, err := remote.Get(ref, h.remote...)
+	desc, err := remote.Get(ref, opts...)
 	if err != nil {
 		return err
 	}
@@ -194,7 +406,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		if err != nil {
 			return err
 		}
-		if _, err := remote.Head(cosignRef, h.remote...); err != nil {
+		if _, err := remote.Head(cosignRef, opts...); err != nil {
 			log.Printf("remote.Head(%q): %v", cosignRef.String(), err)
 		} else {
 			data.CosignTag = cosignRef.Identifier()
@@ -254,7 +466,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		}
 		ref = dig
 
-		l, err := remote.Layer(dig, h.remote...)
+		l, err := remote.Layer(dig, h.remoteOptions(w, r, dig.Context().Name())...)
 		if err != nil {
 			return err
 		}
@@ -269,7 +481,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 			return err
 		}
 	} else {
-		fetched, prefix, err := h.fetchBlob(r)
+		fetched, prefix, err := h.fetchBlob(w, r)
 		if err != nil {
 			return err
 		}
@@ -331,7 +543,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	// Bit of a hack for tekton bundles...
 	if strings.HasPrefix(r.URL.Path, "/gzip/") || strings.HasPrefix(r.URL.Path, "/raw/") {
-		blob, _, err := h.fetchBlob(r)
+		blob, _, err := h.fetchBlob(w, r)
 		if err != nil {
 			return err
 		}
@@ -350,7 +562,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// Determine if this is actually a filesystem thing.
-	blob, ref, err := h.fetchBlob(r)
+	blob, ref, err := h.fetchBlob(w, r)
 	if err != nil {
 		return err
 	}
@@ -374,7 +586,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		log.Printf("it is tar")
 		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
 
-		fs, err := h.newLayerFS(r)
+		fs, err := h.newLayerFS(w, r)
 		if err != nil {
 			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
 			return err
@@ -407,7 +619,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 }
 
 // Fetch blob from registry or URL.
-func (h *handler) fetchBlob(r *http.Request) (*sizeBlob, string, error) {
+func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, string, error) {
 	path, root, err := splitFsURL(r.URL.Path)
 	if err != nil {
 		return nil, "", err
@@ -492,7 +704,7 @@ func (h *handler) fetchBlob(r *http.Request) (*sizeBlob, string, error) {
 		return nil, "", err
 	}
 
-	l, err := remote.Layer(blobRef, h.remote...)
+	l, err := remote.Layer(blobRef, h.remoteOptions(w, r, blobRef.Context().Name())...)
 	if err != nil {
 		return nil, "", err
 	}

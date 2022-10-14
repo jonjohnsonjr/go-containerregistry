@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -41,6 +41,7 @@ const bufferLen = 2 << 16
 type layerFS struct {
 	// The HTTP request that originated this filesystem, useful for resetting.
 	req *http.Request
+	w   http.ResponseWriter
 	h   *handler
 
 	ref     string
@@ -49,9 +50,10 @@ type layerFS struct {
 	headers []*tar.Header
 }
 
-func (h *handler) newLayerFS(r *http.Request) (*layerFS, error) {
+func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request) (*layerFS, error) {
 	fs := &layerFS{
 		req: r,
+		w:   w,
 		h:   h,
 	}
 
@@ -64,7 +66,7 @@ func (h *handler) newLayerFS(r *http.Request) (*layerFS, error) {
 
 // refetches the blob in case FileServer has sent us over the edge
 func (fs *layerFS) reset() error {
-	blob, ref, err := fs.h.fetchBlob(fs.req)
+	blob, ref, err := fs.h.fetchBlob(fs.w, fs.req)
 	if err != nil {
 		return err
 	}
