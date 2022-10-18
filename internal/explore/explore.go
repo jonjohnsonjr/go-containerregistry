@@ -413,6 +413,11 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		}
 	}
 
+	if _, ok := ref.(name.Digest); ok {
+		// Allow this to be cached for an hour.
+		w.Header().Set("Cache-Control", "max-age=3600, immutable")
+	}
+
 	fmt.Fprintf(w, header)
 
 	output := &jsonOutputter{
@@ -499,6 +504,9 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		size = fetched.size
 	}
 	defer blob.Close()
+
+	// Allow this to be cached for an hour.
+	w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
 	fmt.Fprintf(w, header)
 
@@ -593,6 +601,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		}
 		defer fs.Close()
 
+		// Allow this to be cached for an hour.
+		w.Header().Set("Cache-Control", "max-age=3600, immutable")
+
 		http.FileServer(fs).ServeHTTP(w, r)
 		return nil
 	}
@@ -612,6 +623,10 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	log.Printf("it is neither")
+
+	// Allow this to be cached for an hour.
+	w.Header().Set("Cache-Control", "max-age=3600, immutable")
+
 	seek := &sizeSeeker{pr, size, ref, nil, false}
 	http.ServeContent(w, r, "", time.Time{}, seek)
 
