@@ -93,7 +93,7 @@ func (w *jsonOutputter) URL(url, text string) {
 
 func (w *jsonOutputter) Linkify(mt string, h v1.Hash, size int64) {
 	w.tabf()
-	qs := "?"
+	qs := "/?"
 	handler := handlerForMT(mt)
 	if strings.Contains(handler, "?") {
 		qs = "&"
