@@ -59,7 +59,7 @@ func NewWithContext(ctx context.Context, reg name.Registry, auth authn.Authentic
 
 	// First we ping the registry to determine the parameters of the authentication handshake
 	// (if one is even necessary).
-	pr, err := ping(ctx, reg, t)
+	pr, err := Ping(ctx, reg, t)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func NewWithContext(ctx context.Context, reg name.Registry, auth authn.Authentic
 
 	// Wrap t in a transport that selects the appropriate scheme based on the ping response.
 	t = &schemeTransport{
-		scheme:   pr.scheme,
+		scheme:   pr.Scheme,
 		registry: reg,
 		inner:    t,
 	}
@@ -81,11 +81,11 @@ func NewWithContext(ctx context.Context, reg name.Registry, auth authn.Authentic
 		return &Wrapper{&basicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil
 	case bearer:
 		// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
-		realm, ok := pr.parameters["realm"]
+		realm, ok := pr.Parameters["realm"]
 		if !ok {
-			return nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.parameters)
+			return nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.Parameters)
 		}
-		service := pr.parameters["service"]
+		service := pr.Parameters["service"]
 		bt := &bearerTransport{
 			inner:    t,
 			basic:    auth,
@@ -93,7 +93,7 @@ func NewWithContext(ctx context.Context, reg name.Registry, auth authn.Authentic
 			registry: reg,
 			service:  service,
 			scopes:   scopes,
-			scheme:   pr.scheme,
+			scheme:   pr.Scheme,
 		}
 		if err := bt.refresh(ctx); err != nil {
 			return nil, err

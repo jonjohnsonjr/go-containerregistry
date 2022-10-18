@@ -35,15 +35,15 @@ const (
 	bearer    challenge = "bearer"
 )
 
-type pingResp struct {
+type PingResp struct {
 	challenge challenge
 
 	// Following the challenge there are often key/value pairs
 	// e.g. Bearer service="gcr.io",realm="https://auth.gcr.io/v36/tokenz"
-	parameters map[string]string
+	Parameters map[string]string
 
 	// The registry's scheme to use. Communicates whether we fell back to http.
-	scheme string
+	Scheme string
 }
 
 func (c challenge) Canonical() challenge {
@@ -68,7 +68,7 @@ func parseChallenge(suffix string) map[string]string {
 	return kv
 }
 
-func ping(ctx context.Context, reg name.Registry, t http.RoundTripper) (*pingResp, error) {
+func Ping(ctx context.Context, reg name.Registry, t http.RoundTripper) (*PingResp, error) {
 	client := http.Client{Transport: t}
 
 	// This first attempts to use "https" for every request, falling back to http
@@ -102,24 +102,24 @@ func ping(ctx context.Context, reg name.Registry, t http.RoundTripper) (*pingRes
 		switch resp.StatusCode {
 		case http.StatusOK:
 			// If we get a 200, then no authentication is needed.
-			return &pingResp{
+			return &PingResp{
 				challenge: anonymous,
-				scheme:    scheme,
+				Scheme:    scheme,
 			}, nil
 		case http.StatusUnauthorized:
 			if challenges := authchallenge.ResponseChallenges(resp); len(challenges) != 0 {
 				// If we hit more than one, let's try to find one that we know how to handle.
 				wac := pickFromMultipleChallenges(challenges)
-				return &pingResp{
+				return &PingResp{
 					challenge:  challenge(wac.Scheme).Canonical(),
-					parameters: wac.Parameters,
-					scheme:     scheme,
+					Parameters: wac.Parameters,
+					Scheme:     scheme,
 				}, nil
 			}
 			// Otherwise, just return the challenge without parameters.
-			return &pingResp{
+			return &PingResp{
 				challenge: challenge(resp.Header.Get("WWW-Authenticate")).Canonical(),
-				scheme:    scheme,
+				Scheme:    scheme,
 			}, nil
 		default:
 			return nil, CheckError(resp, http.StatusOK, http.StatusUnauthorized)
