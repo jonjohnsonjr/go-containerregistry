@@ -431,7 +431,9 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		w.Header().Set("Cache-Control", "max-age=3600, immutable")
 	}
 
-	fmt.Fprintf(w, header)
+	if err := headerTmpl.Execute(w, TitleData{image}); err != nil {
+		return err
+	}
 
 	output := &jsonOutputter{
 		w:     w,
@@ -521,7 +523,9 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
-	fmt.Fprintf(w, header)
+	if err := headerTmpl.Execute(w, TitleData{blobRef}); err != nil {
+		return err
+	}
 
 	output := &jsonOutputter{
 		w:     w,

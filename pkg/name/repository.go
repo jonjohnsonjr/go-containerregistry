@@ -29,6 +29,7 @@ const (
 type Repository struct {
 	Registry
 	repository string
+	original   string
 }
 
 // See https://docs.docker.com/docker-hub/official_repos
@@ -55,7 +56,7 @@ func (r Repository) Name() string {
 }
 
 func (r Repository) String() string {
-	return r.Name()
+	return r.original
 }
 
 // Scope returns the scope required to perform the given action on the registry.
@@ -97,7 +98,11 @@ func NewRepository(name string, opts ...Option) (Repository, error) {
 	if hasImplicitNamespace(repo, reg) && opt.strict {
 		return Repository{}, newErrBadName("strict validation requires the full repository path (missing 'library')")
 	}
-	return Repository{reg, repo}, nil
+	return Repository{
+		Registry:   reg,
+		repository: repo,
+		original:   name,
+	}, nil
 }
 
 // Tag returns a Tag in this Repository.

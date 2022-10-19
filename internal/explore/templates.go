@@ -21,12 +21,14 @@ import (
 )
 
 var (
-	bodyTmpl  *template.Template
-	repoTmpl  *template.Template
-	oauthTmpl *template.Template
+	headerTmpl *template.Template
+	bodyTmpl   *template.Template
+	repoTmpl   *template.Template
+	oauthTmpl  *template.Template
 )
 
 func init() {
+	headerTmpl = template.Must(template.New("headerTemplate").Parse(headerTemplate))
 	bodyTmpl = template.Must(template.New("bodyTemplate").Parse(bodyTemplate))
 	repoTmpl = template.Must(template.New("repoTemplate").Parse(repoTemplate))
 	oauthTmpl = template.Must(template.New("oauthTemplate").Parse(oauthTemplate))
@@ -128,10 +130,10 @@ body {
 </html>
 `
 
-	header = `
+	headerTemplate = `
 <html>
 <head>
-<title>explore.ggcr.dev</title>
+<title>{{.Title}}</title>
 <link rel="icon" href="favicon.svg">
 <style>
 .mt:hover {
@@ -182,6 +184,10 @@ type RepositoryData struct {
 type OauthData struct {
 	Error    string
 	Redirect string
+}
+
+type TitleData struct {
+	Title string
 }
 
 type HeaderData struct {
