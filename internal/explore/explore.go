@@ -70,7 +70,8 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 
 	auth := authn.Anonymous
 
-	if isGoogle(r.URL.Host) {
+	parsed, err := name.NewRepository(repo)
+	if err == nil && isGoogle(parsed.Registry.String()) {
 		if at, err := r.Cookie("access_token"); err == nil {
 			tok := &oauth2.Token{
 				AccessToken: at.Value,
@@ -186,6 +187,7 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "failed: %v", err)
 		return
 	}
+	log.Printf("tok = %v", tok)
 
 	state := qs.Get("state")
 	u, err := url.ParseRequestURI(state)
@@ -480,7 +482,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		ref  name.Reference
 	)
 	if blobRef != "" {
-		dig, err := name.NewDigest(blobRef, name.StrictValidation)
+		dig, err := name.NewDigest(blobRef)
 		if err != nil {
 			return err
 		}
@@ -510,7 +512,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 			return err
 		}
 		trimmed := strings.TrimPrefix(prefix, root)
-		ref, err = name.NewDigest(trimmed, name.StrictValidation)
+		ref, err = name.NewDigest(trimmed)
 		if err != nil {
 			return err
 		}
@@ -731,7 +733,7 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 		log.Printf("GET %s failed: %s", u, resp.Status)
 	}
 
-	blobRef, err := name.NewDigest(ref, name.StrictValidation)
+	blobRef, err := name.NewDigest(ref)
 	if err != nil {
 		return nil, "", err
 	}
