@@ -16,8 +16,7 @@ package explore
 import (
 	"text/template"
 
-	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 var (
@@ -195,8 +194,8 @@ type HeaderData struct {
 	Image      string
 	CosignTag  string
 	JQ         string
-	Reference  name.Reference
-	Descriptor *remote.Descriptor
+	Reference  string
+	Descriptor *v1.Descriptor
 }
 
 // Cosign simple signing stuff.

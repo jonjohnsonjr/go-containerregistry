@@ -78,7 +78,7 @@ func NewDigest(name string, opts ...Option) (Digest, error) {
 
 	tag, err := NewTag(base, opts...)
 	if err == nil {
-		base = tag.Repository.Name()
+		base = tag.Repository.String()
 	}
 
 	repo, err := NewRepository(base, opts...)

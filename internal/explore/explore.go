@@ -40,6 +40,7 @@ import (
 	goog "github.com/google/go-containerregistry/pkg/v1/google"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -410,10 +411,14 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	}
 
 	data := HeaderData{
-		Repo:       ref.Context().String(),
-		Image:      ref.String(),
-		Reference:  ref,
-		Descriptor: desc,
+		Repo:      ref.Context().String(),
+		Image:     ref.String(),
+		Reference: ref.String(),
+		Descriptor: &v1.Descriptor{
+			Digest:    desc.Digest,
+			MediaType: desc.MediaType,
+			Size:      desc.Size,
+		},
 	}
 
 	if _, ok := qs["discovery"]; ok {
@@ -529,6 +534,12 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		return err
 	}
 
+	digest := ref.Identifier()
+	hash, err := v1.NewHash(digest)
+	if err != nil {
+		return err
+	}
+
 	output := &jsonOutputter{
 		w:     w,
 		u:     r.URL,
@@ -536,6 +547,25 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		repo:  ref.Context().String(),
 		pt:    r.URL.Query().Get("payloadType"),
 		mt:    r.URL.Query().Get("mt"),
+	}
+
+	mediaType := types.MediaType("application/octet-stream")
+	if output.mt != "" {
+		mediaType = types.MediaType(output.mt)
+	}
+
+	data := HeaderData{
+		Repo:      ref.Context().String(),
+		Image:     ref.String(),
+		Reference: ref.String(),
+		Descriptor: &v1.Descriptor{
+			Size:      size,
+			Digest:    hash,
+			MediaType: mediaType,
+		},
+	}
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
 	}
 
 	// TODO: Can we do this in a streaming way?
@@ -768,7 +798,7 @@ func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *Hea
 		exp string
 	)
 
-	exps := []string{"crane manifest " + data.Reference.String()}
+	exps := []string{"crane manifest " + data.Reference}
 
 	for _, j := range jq {
 		log.Printf("j = %s", j)
