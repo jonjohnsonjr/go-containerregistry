@@ -419,6 +419,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			MediaType: desc.MediaType,
 			Size:      desc.Size,
 		},
+		JQ: "crane manifest " + ref.String(),
 	}
 
 	if _, ok := qs["discovery"]; ok {
@@ -563,6 +564,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 			Digest:    hash,
 			MediaType: mediaType,
 		},
+		JQ: "crane blob " + ref.String(),
 	}
 	if err := bodyTmpl.Execute(w, data); err != nil {
 		return err
