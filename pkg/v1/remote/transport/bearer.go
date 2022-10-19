@@ -36,7 +36,7 @@ import (
 // Some registries don't have "token" in the response. See #54.
 type TokenResponse struct {
 	Token        string `json:"token"`
-	AccessToken  string `json:"access_token"`
+	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int    `json:"expires_in"`
 }

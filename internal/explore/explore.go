@@ -68,6 +68,8 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 	opts = append(opts, h.remote...)
 	opts = append(opts, remote.WithContext(ctx))
 
+	auth := authn.Anonymous
+
 	if at, err := r.Cookie("access_token"); err == nil {
 		tok := &oauth2.Token{
 			AccessToken: at.Value,
@@ -77,16 +79,17 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 			tok.RefreshToken = rt.Value
 		}
 		ts := h.oauth.TokenSource(r.Context(), tok)
-		tsa := goog.NewTokenSourceAuthenticator(ts)
+		auth = goog.NewTokenSourceAuthenticator(ts)
 
-		opts = append(opts, remote.WithAuth(tsa))
+	}
 
-		if t, err := h.transportFromCookie(w, r, repo, tsa); err != nil {
-			log.Printf("failed to get transport from cookie: %v", err)
-		} else {
-			log.Printf("restored bearer transport")
-			opts = append(opts, remote.WithTransport(t))
-		}
+	opts = append(opts, remote.WithAuth(auth))
+
+	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
+		log.Printf("failed to get transport from cookie: %v", err)
+	} else {
+		log.Printf("restored bearer transport")
+		opts = append(opts, remote.WithTransport(t))
 	}
 
 	return opts
@@ -253,7 +256,7 @@ type CookieValue struct {
 	TokenResponse *transport.TokenResponse
 }
 
-func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, repo string, tsa authn.Authenticator) (http.RoundTripper, error) {
+func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, repo string, auth authn.Authenticator) (http.RoundTripper, error) {
 	parsed, err := name.NewRepository(repo)
 	if err != nil {
 		return nil, err
@@ -262,16 +265,10 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 
 	reg := parsed.Registry
 
-	t := remote.DefaultTransport
-	t = transport.NewLogger(t)
-	t = transport.NewRetry(t)
-	t = transport.NewUserAgent(t, ua)
-
 	var (
 		pr  *transport.PingResp
 		tok *transport.TokenResponse
 	)
-
 	if regCookie, err := r.Cookie("registry_token"); err == nil {
 		b, err := base64.URLEncoding.DecodeString(regCookie.Value)
 		if err != nil {
@@ -289,6 +286,11 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 		}
 	}
 
+	t := remote.DefaultTransport
+	t = transport.NewLogger(t)
+	t = transport.NewRetry(t)
+	t = transport.NewUserAgent(t, ua)
+
 	if pr == nil {
 		pr, err = transport.Ping(r.Context(), reg, t)
 		if err != nil {
@@ -297,10 +299,14 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 	}
 
 	if tok == nil {
-		t, tok, err = transport.NewBearer(r.Context(), pr, reg, tsa, t, scopes)
+		t, tok, err = transport.NewBearer(r.Context(), pr, reg, auth, t, scopes)
 		if err != nil {
 			return nil, err
 		}
+
+		// Clear this to make cookies smaller.
+		tok.AccessToken = ""
+
 		v := &CookieValue{
 			Reg:           reg.String(),
 			PingResp:      pr,
@@ -326,7 +332,7 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 		cookie.Expires = exp
 		http.SetCookie(w, cookie)
 	} else {
-		t, err = transport.OldBearer(pr, tok, reg, tsa, t, scopes)
+		t, err = transport.OldBearer(pr, tok, reg, auth, t, scopes)
 		if err != nil {
 			return nil, err
 		}
