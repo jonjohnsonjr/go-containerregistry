@@ -566,9 +566,6 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		},
 		JQ: "crane blob " + ref.String(),
 	}
-	if err := bodyTmpl.Execute(w, data); err != nil {
-		return err
-	}
 
 	// TODO: Can we do this in a streaming way?
 	b, err := ioutil.ReadAll(io.LimitReader(blob, tooBig))
@@ -581,8 +578,17 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		if err := json.Unmarshal(b, &dsse); err != nil {
 			return err
 		}
+		// TODO: Make this work with normal machinery.
 		b = dsse.Payload
+		data.JQ = data.JQ + " | jq .payload -r | base64 -d | jq ."
+	} else {
+		data.JQ = data.JQ + " | jq . "
 	}
+
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
+
 	if err := renderJSON(output, b); err != nil {
 		return err
 	}
