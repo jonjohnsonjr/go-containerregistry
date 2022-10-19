@@ -70,17 +70,19 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 
 	auth := authn.Anonymous
 
-	if at, err := r.Cookie("access_token"); err == nil {
-		tok := &oauth2.Token{
-			AccessToken: at.Value,
-			Expiry:      at.Expires,
-		}
-		if rt, err := r.Cookie("refresh_token"); err == nil {
-			tok.RefreshToken = rt.Value
-		}
-		ts := h.oauth.TokenSource(r.Context(), tok)
-		auth = goog.NewTokenSourceAuthenticator(ts)
+	if isGoogle(r.URL.Host) {
+		if at, err := r.Cookie("access_token"); err == nil {
+			tok := &oauth2.Token{
+				AccessToken: at.Value,
+				Expiry:      at.Expires,
+			}
+			if rt, err := r.Cookie("refresh_token"); err == nil {
+				tok.RefreshToken = rt.Value
+			}
+			ts := h.oauth.TokenSource(r.Context(), tok)
+			auth = goog.NewTokenSourceAuthenticator(ts)
 
+		}
 	}
 
 	opts = append(opts, remote.WithAuth(auth))
