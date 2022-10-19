@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -153,6 +154,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Like http.Handler, but with error handling.
 func (h *handler) root(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/favicon.svg" {
+		http.ServeFile(w, r, filepath.Join(os.Getenv("KO_DATA_PATH"), "favicon.svg"))
+		return
+	}
 	if err := h.renderResponse(w, r); err != nil {
 		if err := h.handleOauth(w, r, err); err != nil {
 			fmt.Fprintf(w, "failed: %v", err)
