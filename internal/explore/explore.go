@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -421,6 +422,16 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		data := GoogleData{
 			Name: ref.String(),
 			Tags: *tags,
+		}
+		if strings.Contains(repo, "/") {
+			base := path.Base(repo)
+			dir := path.Dir(strings.TrimRight(repo, "/"))
+			if base != "." && dir != "." {
+				data.Up = &RepoParent{
+					Parent: dir,
+					Child:  base,
+				}
+			}
 		}
 
 		return googleTmpl.Execute(w, data)

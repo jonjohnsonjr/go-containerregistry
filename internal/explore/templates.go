@@ -127,9 +127,9 @@ body {
 <h4>crane ls {{.Name}}</h4>
 <hr>
 <div>
-<ul>
-{{range .Tags}}<li><a href="?image={{$.Name}}:{{.}}">{{.}}</a></li>{{end}}
-</ul>
+  <ul>{{range .Tags}}
+    <li><a href="?image={{$.Name}}:{{.}}">{{.}}</a></li>{{end}}
+  </ul>
 </div>
 </body>
 </html>
@@ -145,37 +145,47 @@ body {
 body {
 	font-family: monospace;
 }
+.mt:hover {
+	text-decoration: underline;
+}
+
+.mt {
+  color: inherit;
+	text-decoration: inherit;
+}
 </style>
 </head>
+{{ if .Up }}
+<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>/{{.Up.Child}}</h2>
+{{ else }}
 <h2>{{.Name}}</h2>
+{{ end }}
 {{ if .Tags.Children }}
 <div>
 <h4>Repositories</h4>
-<ul>
-{{range .Tags.Children}}<li><a href="?repo={{$.Name}}/{{.}}">{{.}}</a></li>{{end}}
+<ul>{{range .Tags.Children}}
+  <li><a href="?repo={{$.Name}}/{{.}}">{{.}}</a></li>{{end}}
 </ul>
 </div>
 {{end}}
 {{ if .Tags.Tags }}
 <div>
 <h4>Tags</h4>
-<ul>
-{{range .Tags.Tags}}<li><a href="?image={{$.Name}}:{{.}}">{{.}}</a></li>{{end}}
-</ul>
+  <ul>{{range .Tags.Tags}}
+    <li><a href="?image={{$.Name}}:{{.}}">{{.}}</a></li>{{end}}
+  </ul>
 </div>
 {{end}}
 {{ if .Tags.Manifests }}
 <div>
 <h4>Digests</h4>
-<ul>
-{{range $digest, $manifest := .Tags.Manifests}}
+<ul>{{range $digest, $manifest := .Tags.Manifests}}
   <li>
     <a href="?image={{$.Name}}@{{$digest}}">{{$digest}}</a>
     <ul>
     {{range $manifest.Tags}}<li>{{.}}</li>{{end}}
     </ul>
-  </li>
-{{end}}
+  </li>{{end}}
 </ul>
 </div>
 {{end}}
@@ -237,6 +247,12 @@ type RepositoryData struct {
 type GoogleData struct {
 	Name string
 	Tags google.Tags
+	Up   *RepoParent
+}
+
+type RepoParent struct {
+	Parent string
+	Child  string
 }
 
 type OauthData struct {
