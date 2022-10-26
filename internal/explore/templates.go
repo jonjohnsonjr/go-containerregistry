@@ -17,12 +17,14 @@ import (
 	"text/template"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/google"
 )
 
 var (
 	headerTmpl *template.Template
 	bodyTmpl   *template.Template
 	repoTmpl   *template.Template
+	googleTmpl *template.Template
 	oauthTmpl  *template.Template
 )
 
@@ -30,6 +32,7 @@ func init() {
 	headerTmpl = template.Must(template.New("headerTemplate").Parse(headerTemplate))
 	bodyTmpl = template.Must(template.New("bodyTemplate").Parse(bodyTemplate))
 	repoTmpl = template.Must(template.New("repoTemplate").Parse(repoTemplate))
+	googleTmpl = template.Must(template.New("googleTemplate").Parse(googleTemplate))
 	oauthTmpl = template.Must(template.New("oauthTemplate").Parse(oauthTemplate))
 }
 
@@ -120,11 +123,62 @@ body {
 </style>
 </head>
 <h2>{{.Name}}</h2>
+<hr>
+<h4>crane ls {{.Name}}</h4>
+<hr>
 <div>
 <ul>
 {{range .Tags}}<li><a href="?image={{$.Name}}:{{.}}">{{.}}</a></li>{{end}}
 </ul>
 </div>
+</body>
+</html>
+`
+
+	googleTemplate = `
+<html>
+<body>
+<head>
+<title>{{.Name}}</title>
+<link rel="icon" href="favicon.svg">
+<style>
+body {
+	font-family: monospace;
+}
+</style>
+</head>
+<h2>{{.Name}}</h2>
+{{ if .Tags.Children }}
+<div>
+<h4>Repositories</h4>
+<ul>
+{{range .Tags.Children}}<li><a href="?repo={{$.Name}}/{{.}}">{{.}}</a></li>{{end}}
+</ul>
+</div>
+{{end}}
+{{ if .Tags.Tags }}
+<div>
+<h4>Tags</h4>
+<ul>
+{{range .Tags.Tags}}<li><a href="?image={{$.Name}}:{{.}}">{{.}}</a></li>{{end}}
+</ul>
+</div>
+{{end}}
+{{ if .Tags.Manifests }}
+<div>
+<h4>Digests</h4>
+<ul>
+{{range $digest, $manifest := .Tags.Manifests}}
+  <li>
+    <a href="?image={{$.Name}}@{{$digest}}">{{$digest}}</a>
+    <ul>
+    {{range $manifest.Tags}}<li>{{.}}</li>{{end}}
+    </ul>
+  </li>
+{{end}}
+</ul>
+</div>
+{{end}}
 </body>
 </html>
 `
@@ -178,6 +232,11 @@ Content-Type: {{.Descriptor.MediaType}}<br>
 type RepositoryData struct {
 	Name string
 	Tags []string
+}
+
+type GoogleData struct {
+	Name string
+	Tags google.Tags
 }
 
 type OauthData struct {

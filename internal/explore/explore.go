@@ -99,6 +99,43 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 	return opts
 }
 
+// TODO: ugh
+func (h *handler) googleOptions(w http.ResponseWriter, r *http.Request, repo string) []goog.Option {
+	ctx := r.Context()
+
+	opts := []goog.Option{}
+	opts = append(opts, goog.WithContext(ctx))
+
+	auth := authn.Anonymous
+
+	parsed, err := name.NewRepository(repo)
+	if err == nil && isGoogle(parsed.Registry.String()) {
+		if at, err := r.Cookie("access_token"); err == nil {
+			tok := &oauth2.Token{
+				AccessToken: at.Value,
+				Expiry:      at.Expires,
+			}
+			if rt, err := r.Cookie("refresh_token"); err == nil {
+				tok.RefreshToken = rt.Value
+			}
+			ts := h.oauth.TokenSource(r.Context(), tok)
+			auth = goog.NewTokenSourceAuthenticator(ts)
+
+		}
+	}
+
+	opts = append(opts, goog.WithAuth(auth))
+
+	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
+		log.Printf("failed to get transport from cookie: %v", err)
+	} else {
+		log.Printf("restored bearer transport")
+		opts = append(opts, goog.WithTransport(t))
+	}
+
+	return opts
+}
+
 type Option func(h *handler)
 
 func WithRemote(opt []remote.Option) Option {
@@ -374,6 +411,19 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 	ref, err := name.NewRepository(repo)
 	if err != nil {
 		return err
+	}
+
+	if isGoogle(ref.RegistryStr()) || ref.RegistryStr() == "registry.k8s.io" {
+		tags, err := goog.List(ref, h.googleOptions(w, r, repo)...)
+		if err != nil {
+			return err
+		}
+		data := GoogleData{
+			Name: ref.String(),
+			Tags: *tags,
+		}
+
+		return googleTmpl.Execute(w, data)
 	}
 
 	tags, err := remote.List(ref, h.remoteOptions(w, r, repo)...)

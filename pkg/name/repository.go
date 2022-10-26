@@ -76,6 +76,18 @@ func NewRepository(name string, opts ...Option) (Repository, error) {
 		return Repository{}, newErrBadName("a repository name must be specified")
 	}
 
+	// TODO: Ugh.
+	if name == "registry.k8s.io" {
+		return Repository{
+			Registry: Registry{
+				insecure: false,
+				registry: name,
+			},
+			repository: "",
+			original:   "registry.k8s.io",
+		}, nil
+	}
+
 	var registry string
 	repo := name
 	parts := strings.SplitN(name, regRepoDelimiter, 2)
