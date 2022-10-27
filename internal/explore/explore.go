@@ -416,7 +416,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		return err
 	}
 
-	if isGoogle(ref.RegistryStr()) || ref.RegistryStr() == "registry.k8s.io" {
+	if ref.RegistryStr() == "registry.k8s.io" || (isGoogle(ref.RegistryStr()) && ref.RepositoryStr() != "") {
 		tags, err := goog.List(ref, h.googleOptions(w, r, repo)...)
 		if err != nil {
 			return err
