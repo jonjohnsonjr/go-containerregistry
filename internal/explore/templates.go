@@ -226,9 +226,11 @@ body {
 <body>
 <div>
 <h2>{{.Reference}}{{ if .CosignTag }} (<a href="?image={{.Repo}}:{{.CosignTag}}">cosign</a>){{end}}</h2>
+{{ if .Descriptor }}
 Docker-Content-Digest: {{.Descriptor.Digest}}<br>
 Content-Length: {{.Descriptor.Size}}<br>
 Content-Type: {{.Descriptor.MediaType}}<br>
+{{end}}
 </div>
 <hr>{{ if .JQ }}
 <h4>{{.JQ}}</h4>
@@ -270,7 +272,6 @@ type TitleData struct {
 
 type HeaderData struct {
 	Repo       string
-	Image      string
 	CosignTag  string
 	JQ         string
 	Reference  string

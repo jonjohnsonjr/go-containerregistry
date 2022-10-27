@@ -26,7 +26,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
 
-type tags struct {
+type Tags struct {
 	Name string   `json:"name"`
 	Tags []string `json:"tags"`
 }
@@ -63,7 +63,7 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 
 	client := http.Client{Transport: tr}
 	tagList := []string{}
-	parsed := tags{}
+	parsed := Tags{}
 
 	// get responses until there is no next page
 	for {

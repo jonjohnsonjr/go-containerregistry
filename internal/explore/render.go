@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ type Outputter interface {
 	URL(handler string, path, original string, h v1.Hash)
 	Linkify(mt string, h v1.Hash, size int64)
 	LinkImage(ref, text string)
+	LinkRepo(ref, text string)
 }
 
 type jsonOutputter struct {
@@ -123,9 +125,16 @@ func (w *jsonOutputter) LinkImage(ref, text string) {
 	w.key = false
 }
 
+func (w *jsonOutputter) LinkRepo(ref, text string) {
+	w.tabf()
+	w.Printf(`"<a href="/?repo=%s">%s</a>"`, url.PathEscape(ref), html.EscapeString(text))
+	w.unfresh()
+	w.key = false
+}
+
 func (w *jsonOutputter) Key(k string) {
 	w.tabf()
-	w.Printf("%q:", k)
+	w.Printf(`"%s":`, k)
 	w.key = true
 }
 
@@ -226,12 +235,15 @@ func (w *jsonOutputter) jpop() {
 }
 
 func (w *jsonOutputter) jth(idx int) string {
-	if len(w.jq)+idx < 0 {
+	if len(w.jq)+idx-1 < 0 {
 		//log.Printf("jth(%d) = %s", idx, "")
 		return ""
 	}
+	if len(w.jq)+idx-1 > len(w.jq)-1 {
+		return ""
+	}
 
-	s := w.jq[len(w.jq)+idx]
+	s := w.jq[len(w.jq)+idx-1]
 	//log.Printf("jth(%d) = %s", idx, s)
 	return s
 }
@@ -689,7 +701,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		case "v1Compatibility":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
-					if w.jth(-3) == ".history" {
+					if w.jth(-2) == ".history" {
 						u := w.addQuery("jq", strings.Join(w.jq, ""))
 						w.BlueDoc(u.String(), strconv.Quote(s))
 
@@ -708,6 +720,104 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					continue
 				}
 			}
+		case "tags":
+			if mv, ok := o[k]; ok {
+				if ii, ok := mv.([]interface{}); ok {
+					w.StartArray()
+					for _, iface := range ii {
+						if original, ok := iface.(string); ok {
+							w.LinkImage(w.repo+":"+original, original)
+						} else {
+							// This wasn't a list of strings, render whatever we found.
+							b, err := json.Marshal(iface)
+							if err != nil {
+								return err
+							}
+							raw := json.RawMessage(b)
+							if err := renderRaw(w, &raw); err != nil {
+								return err
+							}
+						}
+					}
+					w.EndArray()
+
+					// Don't fall through to renderRaw.
+					continue
+				}
+			}
+		case "tag":
+			if mv, ok := o[k]; ok {
+				if ii, ok := mv.([]interface{}); ok {
+					w.StartArray()
+					for _, iface := range ii {
+						if original, ok := iface.(string); ok {
+							if w.jth(-2) == ".manifest" {
+								maybeHash := strings.TrimLeft(w.jth(-1), ".")
+								h, err := v1.NewHash(maybeHash)
+								if err == nil {
+									w.LinkImage(w.repo+":"+original+"@"+h.String(), original)
+									continue
+								} else {
+									log.Printf("maybeHash(%q): %v", maybeHash, err)
+								}
+							}
+							w.LinkImage(w.repo+":"+original, original)
+						} else {
+							// This wasn't a list of strings, render whatever we found.
+							b, err := json.Marshal(iface)
+							if err != nil {
+								return err
+							}
+							raw := json.RawMessage(b)
+							if err := renderRaw(w, &raw); err != nil {
+								return err
+							}
+						}
+					}
+					w.EndArray()
+
+					// Don't fall through to renderRaw.
+					continue
+				}
+			}
+		case "repositories", "child":
+			if mv, ok := o[k]; ok {
+				if ii, ok := mv.([]interface{}); ok {
+					w.StartArray()
+					for _, iface := range ii {
+						if original, ok := iface.(string); ok {
+							w.LinkRepo(path.Join(w.repo, original), original)
+						} else {
+							// This wasn't a list of strings, render whatever we found.
+							b, err := json.Marshal(iface)
+							if err != nil {
+								return err
+							}
+							raw := json.RawMessage(b)
+							if err := renderRaw(w, &raw); err != nil {
+								return err
+							}
+						}
+					}
+					w.EndArray()
+
+					// Don't fall through to renderRaw.
+					continue
+				}
+			}
+		case "manifest":
+			var i interface{}
+			if err := json.Unmarshal(v, &i); err != nil {
+				return err
+			}
+			if vv, ok := i.(map[string]interface{}); ok {
+				if err := renderManifest(w, vv, &v); err != nil {
+					return err
+				}
+
+				// Don't fall through to renderRaw.
+				continue
+			}
 		}
 
 		if err := renderRaw(w, &v); err != nil {
@@ -720,6 +830,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 	return nil
 }
 
+// todo: refactor
 func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage) error {
 	rawMap := map[string]json.RawMessage{}
 	if err := json.Unmarshal(*raw, &rawMap); err != nil {
@@ -803,7 +914,7 @@ func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.Raw
 		case "dev.sigstore.cosign/bundle":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
-					if w.jth(-2) == ".annotations" {
+					if w.jth(-1) == ".annotations" {
 						u := w.addQuery("jq", strings.Join(w.jq, ""))
 						w.BlueDoc(u.String(), strconv.Quote(s))
 
@@ -814,7 +925,7 @@ func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.Raw
 		case "dev.sigstore.cosign/timestamp":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
-					if w.jth(-2) == ".annotations" {
+					if w.jth(-1) == ".annotations" {
 						u := w.addQuery("jq", strings.Join(w.jq, ""))
 						w.BlueDoc(u.String(), strconv.Quote(s))
 
@@ -825,7 +936,7 @@ func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.Raw
 		case "sh.brew.tab":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
-					if w.jth(-2) == ".annotations" {
+					if w.jth(-1) == ".annotations" {
 						u := w.addQuery("jq", strings.Join(w.jq, ""))
 						w.BlueDoc(u.String(), strconv.Quote(s))
 
@@ -844,6 +955,62 @@ func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.Raw
 					}
 				}
 			}
+		}
+
+		if err := renderRaw(w, &v); err != nil {
+			return err
+		}
+	}
+
+	w.EndMap()
+	w.jpop()
+
+	return nil
+}
+
+// todo: refactor
+func renderManifest(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage) error {
+	rawMap := map[string]json.RawMessage{}
+	if err := json.Unmarshal(*raw, &rawMap); err != nil {
+		return err
+	}
+	// Handle empty maps as {}.
+	if len(rawMap) == 0 {
+		w.Value([]byte("{}"))
+		return nil
+	}
+
+	// Make this a stable order.
+	keys := make([]string, 0, len(rawMap))
+	for k := range rawMap {
+		keys = append(keys, k)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		return compare(keys[i], keys[j])
+	})
+
+	w.StartMap()
+
+	for idx, k := range keys {
+		if idx != 0 {
+			// Handle continues.
+			w.jpop()
+		}
+
+		if strings.Contains(k, ".") {
+			w.jpush(fmt.Sprintf("[%q]", k))
+		} else {
+			w.jpush("." + k)
+		}
+
+		v := rawMap[k]
+		h, err := v1.NewHash(k)
+		if err != nil {
+			log.Printf("Unmarshal digest %q: %v", k, err)
+			w.Key(k)
+		} else {
+			href := fmt.Sprintf(`<a href="?image=%s">%s</a>`, w.repo+"@"+h.String(), html.EscapeString(k))
+			w.Key(href)
 		}
 
 		if err := renderRaw(w, &v); err != nil {

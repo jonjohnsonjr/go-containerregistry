@@ -26,7 +26,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -421,20 +420,46 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		if err != nil {
 			return err
 		}
-		data := GoogleData{
-			Name: ref.String(),
-			Tags: *tags,
+		if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
+			return err
 		}
-		if strings.Contains(repo, "/") {
-			base := path.Base(repo)
-			dir := path.Dir(strings.TrimRight(repo, "/"))
-			if base != "." && dir != "." {
-				data.Up = &RepoParent{
-					Parent: dir,
-					Child:  base,
-				}
-			}
+		data := HeaderData{
+			Repo:      repo,
+			Reference: repo,
 		}
+		if ref.RepositoryStr() != "" {
+			data.JQ = "gcrane ls " + repo
+		}
+		if err := bodyTmpl.Execute(w, data); err != nil {
+			return err
+		}
+
+		output := &jsonOutputter{
+			w:     w,
+			u:     r.URL,
+			fresh: []bool{},
+			repo:  repo,
+		}
+		b, err := json.Marshal(tags)
+		if err != nil {
+			return err
+		}
+		if err := renderJSON(output, b); err != nil {
+			return err
+		}
+
+		fmt.Fprintf(w, footer)
+		return nil
+		// if strings.Contains(repo, "/") {
+		// 	base := path.Base(repo)
+		// 	dir := path.Dir(strings.TrimRight(repo, "/"))
+		// 	if base != "." && dir != "." {
+		// 		data.Up = &RepoParent{
+		// 			Parent: dir,
+		// 			Child:  base,
+		// 		}
+		// 	}
+		// }
 
 		return googleTmpl.Execute(w, data)
 	} else if ref.RepositoryStr() == "" {
@@ -442,15 +467,38 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		if err != nil {
 			return err
 		}
-		data := GoogleData{
-			Name: ref.String(),
-			Tags: goog.Tags{
-				Children: repos,
-			},
-			JQ: "crane catalog " + repo,
+
+		if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
+			return err
+		}
+		data := HeaderData{
+			Repo:      repo,
+			Reference: repo,
+			JQ:        "crane catalog " + repo,
+		}
+		if err := bodyTmpl.Execute(w, data); err != nil {
+			return err
 		}
 
-		return googleTmpl.Execute(w, data)
+		output := &jsonOutputter{
+			w:     w,
+			u:     r.URL,
+			fresh: []bool{},
+			repo:  repo,
+		}
+		v := Catalog{
+			Repos: repos,
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		if err := renderJSON(output, b); err != nil {
+			return err
+		}
+
+		fmt.Fprintf(w, footer)
+		return nil
 	}
 
 	tags, err := remote.List(ref, h.remoteOptions(w, r, repo)...)
@@ -458,12 +506,39 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		return err
 	}
 
-	data := RepositoryData{
-		Name: ref.String(),
-		Tags: tags,
+	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
+		return err
+	}
+	data := HeaderData{
+		Repo:      repo,
+		Reference: repo,
+		JQ:        "crane ls " + repo,
+	}
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
 	}
 
-	return repoTmpl.Execute(w, data)
+	output := &jsonOutputter{
+		w:     w,
+		u:     r.URL,
+		fresh: []bool{},
+		repo:  repo,
+	}
+
+	v := remote.Tags{
+		Tags: tags,
+		Name: ref.RepositoryStr(),
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if err := renderJSON(output, b); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, footer)
+	return nil
 }
 
 // Render manifests with links to blobs, manifests, etc.
@@ -489,7 +564,6 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 
 	data := HeaderData{
 		Repo:      ref.Context().String(),
-		Image:     ref.String(),
 		Reference: ref.String(),
 		Descriptor: &v1.Descriptor{
 			Digest:    desc.Digest,
@@ -634,7 +708,6 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 	data := HeaderData{
 		Repo:      ref.Context().String(),
-		Image:     ref.String(),
 		Reference: ref.String(),
 		Descriptor: &v1.Descriptor{
 			Size:      size,
@@ -1034,4 +1107,8 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 type DSSE struct {
 	PayloadType string `json:"payloadType"`
 	Payload     []byte `json:"payload"`
+}
+
+type Catalog struct {
+	Repos []string `json:"repositories"`
 }
