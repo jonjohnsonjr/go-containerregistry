@@ -429,7 +429,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 			Reference: repo,
 		}
 		if ref.RepositoryStr() != "" {
-			data.JQ = "gcrane ls " + repo
+			data.JQ = "gcrane ls --json " + repo + " | jq ."
 		}
 		if strings.Contains(repo, "/") {
 			base := path.Base(repo)
