@@ -226,7 +226,9 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "failed: %v", err)
 		return
 	}
-	log.Printf("tok = %v", tok)
+	if debug {
+		log.Printf("tok = %v", tok)
+	}
 
 	state := qs.Get("state")
 	u, err := url.ParseRequestURI(state)
@@ -432,6 +434,19 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 					Child:  base,
 				}
 			}
+		}
+
+		return googleTmpl.Execute(w, data)
+	} else if ref.RepositoryStr() == "" {
+		repos, err := remote.Catalog(r.Context(), ref.Registry, h.remoteOptions(w, r, repo)...)
+		if err != nil {
+			return err
+		}
+		data := GoogleData{
+			Name: ref.String(),
+			Tags: goog.Tags{
+				Children: repos,
+			},
 		}
 
 		return googleTmpl.Execute(w, data)
@@ -870,7 +885,9 @@ func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *Hea
 	exps := []string{"crane manifest " + data.Reference}
 
 	for _, j := range jq {
-		log.Printf("j = %s", j)
+		if debug {
+			log.Printf("j = %s", j)
+		}
 		b, exp, err = evalBytes(j, b)
 		if err != nil {
 			return nil, err

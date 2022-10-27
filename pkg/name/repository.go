@@ -77,14 +77,14 @@ func NewRepository(name string, opts ...Option) (Repository, error) {
 	}
 
 	// TODO: Ugh.
-	if name == "registry.k8s.io" {
+	if strings.Count(name, ".") > 1 && !strings.Contains(name, "/") {
 		return Repository{
 			Registry: Registry{
 				insecure: false,
 				registry: name,
 			},
 			repository: "",
-			original:   "registry.k8s.io",
+			original:   name,
 		}, nil
 	}
 
