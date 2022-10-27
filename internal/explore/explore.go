@@ -447,6 +447,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 			Tags: goog.Tags{
 				Children: repos,
 			},
+			JQ: "crane catalog " + repo,
 		}
 
 		return googleTmpl.Execute(w, data)

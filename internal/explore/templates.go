@@ -160,6 +160,9 @@ body {
 {{ else }}
 <h2>{{.Name}}</h2>
 {{ end }}
+<hr>
+{{ if .JQ }}<h4>{{.JQ}}</h4>
+<hr>{{end}}
 {{ if .Tags.Children }}
 <div>
 <h4>Repositories</h4>
@@ -246,8 +249,9 @@ type RepositoryData struct {
 
 type GoogleData struct {
 	Name string
-	Tags google.Tags
+	JQ   string
 	Up   *RepoParent
+	Tags google.Tags
 }
 
 type RepoParent struct {
