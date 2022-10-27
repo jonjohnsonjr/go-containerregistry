@@ -38,21 +38,6 @@ const (
 	emptyDigest     = "sha256:a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4"
 )
 
-// TODO: Actually use this.
-type Outputter interface {
-	Key(string)
-	Value([]byte)
-	StartMap()
-	EndMap()
-	StartArray()
-	EndArray()
-	Doc(url, text string)
-	URL(handler string, path, original string, h v1.Hash)
-	Linkify(mt string, h v1.Hash, size int64)
-	LinkImage(ref, text string)
-	LinkRepo(ref, text string)
-}
-
 type jsonOutputter struct {
 	w    io.Writer
 	u    *url.URL
@@ -75,6 +60,13 @@ func (w *jsonOutputter) Annotation(url, text string) {
 }
 
 func (w *jsonOutputter) BlueDoc(url, text string) {
+	w.tabf()
+	w.Printf(`"<a href="%s">%s</a>"`, url, html.EscapeString(strings.Trim(strconv.Quote(text), `"`)))
+	w.unfresh()
+	w.key = false
+}
+
+func (w *jsonOutputter) BlueDocNumber(url, text string) {
 	w.tabf()
 	w.Printf(`<a href="%s">%s</a>`, url, html.EscapeString(text))
 	w.unfresh()
@@ -607,7 +599,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					if pt, ok := o["payloadType"]; ok {
 						if s, ok := pt.(string); ok {
 							u := w.addQuery("payloadType", s)
-							w.BlueDoc(u.String(), strconv.Quote(href))
+							w.BlueDoc(u.String(), href)
 
 							// Don't fall through to renderRaw.
 							continue
@@ -630,7 +622,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 			if js, ok := o[k]; ok {
 				if href, ok := js.(string); ok {
 					if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
-						w.BlueDoc(href, strconv.Quote(href))
+						w.BlueDoc(href, href)
 
 						// Don't fall through to renderRaw.
 						continue
@@ -644,7 +636,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					if err := json.Unmarshal(js, &index); err != nil {
 						log.Printf("json.Unmarshal[logIndex]: %v", err)
 					} else if index != 0 {
-						w.BlueDoc(fmt.Sprintf("https://rekor.tlog.dev/?logIndex=%d", index), strconv.FormatInt(int64(index), 10))
+						w.BlueDocNumber(fmt.Sprintf("https://rekor.tlog.dev/?logIndex=%d", index), strconv.FormatInt(int64(index), 10))
 
 						// Don't fall through to renderRaw.
 						continue
@@ -662,7 +654,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 							qs.Add("jq", jq)
 							qs.Add("jq", "base64 -d")
 							u.RawQuery = qs.Encode()
-							w.BlueDoc(u.String(), strconv.Quote(s))
+							w.BlueDoc(u.String(), s)
 
 							continue
 						}
@@ -680,7 +672,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 							qs.Add("jq", "base64 -d")
 							qs.Set("render", "raw")
 							u.RawQuery = qs.Encode()
-							w.BlueDoc(u.String(), strconv.Quote(s))
+							w.BlueDoc(u.String(), s)
 
 							continue
 						}
@@ -709,7 +701,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 				if s, ok := js.(string); ok {
 					if w.jth(-2) == ".history" {
 						u := w.addQuery("jq", strings.Join(w.jq, ""))
-						w.BlueDoc(u.String(), strconv.Quote(s))
+						w.BlueDoc(u.String(), s)
 
 						continue
 					}
@@ -983,34 +975,12 @@ func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.Raw
 					}
 				}
 			}
-		case "dev.sigstore.cosign/bundle":
+		case "dev.sigstore.cosign/bundle", "dev.sigstore.cosign/timestamp", "sh.brew.tab":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
 					if w.jth(-1) == ".annotations" {
 						u := w.addQuery("jq", strings.Join(w.jq, ""))
-						w.BlueDoc(u.String(), strconv.Quote(s))
-
-						continue
-					}
-				}
-			}
-		case "dev.sigstore.cosign/timestamp":
-			if js, ok := o[k]; ok {
-				if s, ok := js.(string); ok {
-					if w.jth(-1) == ".annotations" {
-						u := w.addQuery("jq", strings.Join(w.jq, ""))
-						w.BlueDoc(u.String(), strconv.Quote(s))
-
-						continue
-					}
-				}
-			}
-		case "sh.brew.tab":
-			if js, ok := o[k]; ok {
-				if s, ok := js.(string); ok {
-					if w.jth(-1) == ".annotations" {
-						u := w.addQuery("jq", strings.Join(w.jq, ""))
-						w.BlueDoc(u.String(), strconv.Quote(s))
+						w.BlueDoc(u.String(), s)
 
 						continue
 					}
@@ -1020,7 +990,7 @@ func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.Raw
 			if js, ok := o[k]; ok {
 				if href, ok := js.(string); ok {
 					if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
-						w.BlueDoc(href, strconv.Quote(href))
+						w.BlueDoc(href, href)
 
 						// Don't fall through to renderRaw.
 						continue

@@ -199,7 +199,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Like http.Handler, but with error handling.
 func (h *handler) root(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/favicon.svg" {
+	if r.URL.Path == "/favicon.svg" || r.URL.Path == "/favicon.ico" {
 		http.ServeFile(w, r, filepath.Join(os.Getenv("KO_DATA_PATH"), "favicon.svg"))
 		return
 	}
@@ -244,7 +244,7 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 			Expires:  tok.Expiry,
 			Secure:   true,
 			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
+			SameSite: http.SameSiteLaxMode,
 		}
 		http.SetCookie(w, cookie)
 	}
@@ -254,7 +254,7 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 			Value:    tok.RefreshToken,
 			Secure:   true,
 			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
+			SameSite: http.SameSiteLaxMode,
 		}
 		http.SetCookie(w, cookie)
 	}
@@ -368,7 +368,7 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 			Value:    cv,
 			Secure:   true,
 			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
+			SameSite: http.SameSiteLaxMode,
 		}
 		if tok.ExpiresIn == 0 {
 			tok.ExpiresIn = 60
