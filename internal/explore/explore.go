@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -429,6 +430,16 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		}
 		if ref.RepositoryStr() != "" {
 			data.JQ = "gcrane ls " + repo
+		}
+		if strings.Contains(repo, "/") {
+			base := path.Base(repo)
+			dir := path.Dir(strings.TrimRight(repo, "/"))
+			if base != "." && dir != "." {
+				data.Up = &RepoParent{
+					Parent: dir,
+					Child:  base,
+				}
+			}
 		}
 		if err := bodyTmpl.Execute(w, data); err != nil {
 			return err

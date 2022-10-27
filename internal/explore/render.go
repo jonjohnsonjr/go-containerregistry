@@ -527,6 +527,10 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					// We got a digest, so we can link to some blob.
 					if urls, ok := o["urls"]; ok {
 						if ii, ok := urls.([]interface{}); ok {
+							if len(ii) == 0 {
+								w.Value([]byte("[]"))
+								continue
+							}
 							w.StartArray()
 							for _, iface := range ii {
 								if original, ok := iface.(string); ok {
@@ -723,6 +727,10 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		case "tags":
 			if mv, ok := o[k]; ok {
 				if ii, ok := mv.([]interface{}); ok {
+					if len(ii) == 0 {
+						w.Value([]byte("[]"))
+						continue
+					}
 					w.StartArray()
 					for _, iface := range ii {
 						if original, ok := iface.(string); ok {
@@ -748,6 +756,10 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		case "tag":
 			if mv, ok := o[k]; ok {
 				if ii, ok := mv.([]interface{}); ok {
+					if len(ii) == 0 {
+						w.Value([]byte("[]"))
+						continue
+					}
 					w.StartArray()
 					for _, iface := range ii {
 						if original, ok := iface.(string); ok {
@@ -783,6 +795,10 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		case "repositories", "child":
 			if mv, ok := o[k]; ok {
 				if ii, ok := mv.([]interface{}); ok {
+					if len(ii) == 0 {
+						w.Value([]byte("[]"))
+						continue
+					}
 					w.StartArray()
 					for _, iface := range ii {
 						if original, ok := iface.(string); ok {
