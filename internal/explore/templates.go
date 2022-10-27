@@ -17,7 +17,6 @@ import (
 	"text/template"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/google"
 )
 
 var (
@@ -158,17 +157,6 @@ Content-Type: {{.Descriptor.MediaType}}<br>
 </html>
 `
 )
-
-type RepositoryData struct {
-	Name string
-	Tags []string
-}
-
-type GoogleData struct {
-	Name string
-	JQ   string
-	Tags google.Tags
-}
 
 type RepoParent struct {
 	Parent string
