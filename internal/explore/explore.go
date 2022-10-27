@@ -450,18 +450,6 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 
 		fmt.Fprintf(w, footer)
 		return nil
-		// if strings.Contains(repo, "/") {
-		// 	base := path.Base(repo)
-		// 	dir := path.Dir(strings.TrimRight(repo, "/"))
-		// 	if base != "." && dir != "." {
-		// 		data.Up = &RepoParent{
-		// 			Parent: dir,
-		// 			Child:  base,
-		// 		}
-		// 	}
-		// }
-
-		return googleTmpl.Execute(w, data)
 	} else if ref.RepositoryStr() == "" {
 		repos, err := remote.Catalog(r.Context(), ref.Registry, h.remoteOptions(w, r, repo)...)
 		if err != nil {

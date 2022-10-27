@@ -23,16 +23,12 @@ import (
 var (
 	headerTmpl *template.Template
 	bodyTmpl   *template.Template
-	repoTmpl   *template.Template
-	googleTmpl *template.Template
 	oauthTmpl  *template.Template
 )
 
 func init() {
 	headerTmpl = template.Must(template.New("headerTemplate").Parse(headerTemplate))
 	bodyTmpl = template.Must(template.New("bodyTemplate").Parse(bodyTemplate))
-	repoTmpl = template.Must(template.New("repoTemplate").Parse(repoTemplate))
-	googleTmpl = template.Must(template.New("googleTemplate").Parse(googleTemplate))
 	oauthTmpl = template.Must(template.New("oauthTemplate").Parse(oauthTemplate))
 }
 
@@ -110,91 +106,6 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 </body>
 </html>
 `
-	repoTemplate = `
-<html>
-<body>
-<head>
-<title>{{.Name}}</title>
-<link rel="icon" href="favicon.svg">
-<style>
-body {
-	font-family: monospace;
-}
-</style>
-</head>
-<h2>{{.Name}}</h2>
-<hr>
-<h4>crane ls {{.Name}}</h4>
-<hr>
-<div>
-  <ul>{{range .Tags}}
-    <li><a href="?image={{$.Name}}:{{.}}">{{.}}</a></li>{{end}}
-  </ul>
-</div>
-</body>
-</html>
-`
-
-	googleTemplate = `
-<html>
-<body>
-<head>
-<title>{{.Name}}</title>
-<link rel="icon" href="favicon.svg">
-<style>
-body {
-	font-family: monospace;
-}
-.mt:hover {
-	text-decoration: underline;
-}
-
-.mt {
-  color: inherit;
-	text-decoration: inherit;
-}
-</style>
-</head>
-{{ if .Up }}
-<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>/{{.Up.Child}}</h2>
-{{ else }}
-<h2>{{.Name}}</h2>
-{{ end }}
-<hr>
-{{ if .JQ }}<h4>{{.JQ}}</h4>
-<hr>{{end}}
-{{ if .Tags.Children }}
-<div>
-<h4>Repositories</h4>
-<ul>{{range .Tags.Children}}
-  <li><a href="?repo={{$.Name}}/{{.}}">{{.}}</a></li>{{end}}
-</ul>
-</div>
-{{end}}
-{{ if .Tags.Tags }}
-<div>
-<h4>Tags</h4>
-  <ul>{{range .Tags.Tags}}
-    <li><a href="?image={{$.Name}}:{{.}}">{{.}}</a></li>{{end}}
-  </ul>
-</div>
-{{end}}
-{{ if .Tags.Manifests }}
-<div>
-<h4>Digests</h4>
-<ul>{{range $digest, $manifest := .Tags.Manifests}}
-  <li>
-    <a href="?image={{$.Name}}@{{$digest}}">{{$digest}}</a>
-    <ul>
-    {{range $manifest.Tags}}<li>{{.}}</li>{{end}}
-    </ul>
-  </li>{{end}}
-</ul>
-</div>
-{{end}}
-</body>
-</html>
-`
 
 	headerTemplate = `
 <html>
@@ -225,7 +136,11 @@ body {
 	bodyTemplate = `
 <body>
 <div>
+{{ if .Up }}
+<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>/{{.Up.Child}}</h2>
+{{ else }}
 <h2>{{.Reference}}{{ if .CosignTag }} (<a href="?image={{.Repo}}:{{.CosignTag}}">cosign</a>){{end}}</h2>
+{{ end }}
 {{ if .Descriptor }}
 Docker-Content-Digest: {{.Descriptor.Digest}}<br>
 Content-Length: {{.Descriptor.Size}}<br>
@@ -252,7 +167,6 @@ type RepositoryData struct {
 type GoogleData struct {
 	Name string
 	JQ   string
-	Up   *RepoParent
 	Tags google.Tags
 }
 
@@ -275,6 +189,7 @@ type HeaderData struct {
 	CosignTag  string
 	JQ         string
 	Reference  string
+	Up         *RepoParent
 	Descriptor *v1.Descriptor
 }
 
