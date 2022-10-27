@@ -24,7 +24,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -833,6 +835,60 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 
 				// Don't fall through to renderRaw.
 				continue
+			}
+		case "timeCreatedMs", "timeUploadedMs":
+			if js, ok := o[k]; ok {
+				if ts, ok := js.(string); ok {
+					if w.jth(-2) == ".manifest" {
+						ms, err := strconv.ParseInt(ts, 10, 64)
+						if err == nil {
+							sec := ms / 1000
+							ns := (ms % 1000) * 1000000
+							t := time.Unix(sec, ns)
+
+							// TODO: dedupe with Value
+							w.tabf()
+							w.Print(fmt.Sprintf(`"<span title="%s">%s</span>"`, t.String(), ts))
+							w.unfresh()
+							w.key = false
+							// Don't fall through to renderRaw.
+							continue
+						}
+					}
+				}
+			}
+		case "imageSizeBytes":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					if w.jth(-2) == ".manifest" {
+						bs, err := strconv.ParseInt(s, 10, 64)
+						if err == nil {
+							// TODO: dedupe with Value
+							w.tabf()
+							w.Print(fmt.Sprintf(`"<span title="%s">%s</span>"`, humanize.Bytes(uint64(bs)), s))
+							w.unfresh()
+							w.key = false
+							// Don't fall through to renderRaw.
+							continue
+						}
+					}
+				}
+			}
+		case "size":
+			// check we're in a descriptor
+			if _, ok := rawMap["digest"]; ok {
+				if js, ok := o[k]; ok {
+					if bs, ok := js.(float64); ok {
+						n := uint64(bs)
+						// TODO: dedupe with Value
+						w.tabf()
+						w.Print(fmt.Sprintf(`<span title="%s">%d</span>`, humanize.Bytes(n), n))
+						w.unfresh()
+						w.key = false
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
 			}
 		}
 
