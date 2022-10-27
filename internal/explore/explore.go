@@ -513,6 +513,12 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		Reference: repo,
 		JQ:        "crane ls " + repo,
 	}
+	if strings.Contains(repo, "/") {
+		data.Up = &RepoParent{
+			Parent: ref.RegistryStr(),
+			Child:  ref.RepositoryStr(),
+		}
+	}
 	if err := bodyTmpl.Execute(w, data); err != nil {
 		return err
 	}
