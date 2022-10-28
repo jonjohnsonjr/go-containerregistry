@@ -97,6 +97,15 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 		opts = append(opts, remote.WithTransport(t))
 	}
 
+	if n := r.URL.Query().Get("n"); n != "" {
+		size, err := strconv.ParseInt(n, 10, 64)
+		if err != nil {
+			log.Printf("n = %s, err: %v", n, err)
+		} else {
+			opts = append(opts, remote.WithPageSize(int(size)))
+		}
+	}
+
 	return opts
 }
 
@@ -411,6 +420,7 @@ func renderLanding(w http.ResponseWriter) error {
 
 // Render repo with tags linking to images.
 func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string) error {
+	qs := r.URL.Query()
 	ref, err := name.NewRepository(repo)
 	if err != nil {
 		return err
@@ -500,11 +510,6 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		return nil
 	}
 
-	tags, err := remote.List(ref, h.remoteOptions(w, r, repo)...)
-	if err != nil {
-		return err
-	}
-
 	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
 		return err
 	}
@@ -530,9 +535,23 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		repo:  repo,
 	}
 
-	v := remote.Tags{
-		Tags: tags,
-		Name: ref.RepositoryStr(),
+	var v *remote.Tags
+	if qs.Get("n") != "" {
+		// TODO: list page
+		v, err = remote.ListPage(ref, qs.Get("next"), h.remoteOptions(w, r, repo)...)
+		if err != nil {
+			return err
+		}
+	} else {
+		tags, err := remote.List(ref, h.remoteOptions(w, r, repo)...)
+		if err != nil {
+			return err
+		}
+
+		v = &remote.Tags{
+			Tags: tags,
+			Name: ref.RepositoryStr(),
+		}
 	}
 	b, err := json.Marshal(v)
 	if err != nil {

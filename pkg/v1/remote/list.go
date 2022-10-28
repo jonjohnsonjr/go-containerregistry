@@ -29,6 +29,7 @@ import (
 type Tags struct {
 	Name string   `json:"name"`
 	Tags []string `json:"tags"`
+	Next string   `json:"next,omitempty"`
 }
 
 // ListWithContext calls List with the given context.
@@ -63,7 +64,9 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 
 	client := http.Client{Transport: tr}
 	tagList := []string{}
-	parsed := Tags{}
+	parsed := Tags{
+		Next: uri.String(),
+	}
 
 	// get responses until there is no next page
 	for {
@@ -73,41 +76,85 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 		default:
 		}
 
-		req, err := http.NewRequestWithContext(o.context, "GET", uri.String(), nil)
+		parsed, err := listPage(o.context, client, parsed.Next)
 		if err != nil {
-			return nil, err
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := transport.CheckError(resp, http.StatusOK); err != nil {
-			return nil, err
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-			return nil, err
-		}
-
-		if err := resp.Body.Close(); err != nil {
 			return nil, err
 		}
 
 		tagList = append(tagList, parsed.Tags...)
 
-		uri, err = getNextPageURL(resp)
-		if err != nil {
-			return nil, err
-		}
 		// no next page
-		if uri == nil {
+		if parsed.Next == "" {
 			break
 		}
 	}
 
 	return tagList, nil
+}
+
+func ListPage(repo name.Repository, next string, options ...Option) (*Tags, error) {
+	o, err := makeOptions(repo, options...)
+	if err != nil {
+		return nil, err
+	}
+	scopes := []string{repo.Scope(transport.PullScope)}
+	tr, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, scopes)
+	if err != nil {
+		return nil, err
+	}
+
+	uri := &url.URL{
+		Scheme: repo.Registry.Scheme(),
+		Host:   repo.Registry.RegistryStr(),
+		Path:   fmt.Sprintf("/v2/%s/tags/list", repo.RepositoryStr()),
+	}
+	if o.pageSize > 0 {
+		uri.RawQuery = fmt.Sprintf("n=%d", o.pageSize)
+	}
+
+	if next == "" {
+		next = uri.String()
+	}
+
+	client := http.Client{Transport: tr}
+
+	return listPage(o.context, client, next)
+}
+
+func listPage(ctx context.Context, client http.Client, uri string) (*Tags, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", uri, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := transport.CheckError(resp, http.StatusOK); err != nil {
+		return nil, err
+	}
+
+	parsed := Tags{}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+
+	if err := resp.Body.Close(); err != nil {
+		return nil, err
+	}
+
+	next, err := getNextPageURL(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if next != nil {
+		parsed.Next = next.String()
+	}
+
+	return &parsed, nil
 }
 
 // getNextPageURL checks if there is a Link header in a http.Response which

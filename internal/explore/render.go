@@ -300,6 +300,14 @@ func (w *jsonOutputter) addQuery(key, value string) url.URL {
 	return u
 }
 
+func (w *jsonOutputter) setQuery(key, value string) url.URL {
+	u := *w.u
+	qs := u.Query()
+	qs.Set(key, value)
+	u.RawQuery = qs.Encode()
+	return u
+}
+
 // renderJSON formats some JSON bytes in an OCI-specific way.
 //
 // We try to convert maps to meaningful values based on a Descriptor:
@@ -742,6 +750,16 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 						}
 					}
 					w.EndArray()
+
+					// Don't fall through to renderRaw.
+					continue
+				}
+			}
+		case "next":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					u := w.setQuery("next", s)
+					w.BlueDoc(u.String(), s)
 
 					// Don't fall through to renderRaw.
 					continue
