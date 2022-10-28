@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/ioutil"
 	"log"
@@ -214,7 +215,7 @@ func (h *handler) root(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.renderResponse(w, r); err != nil {
 		if err := h.handleOauth(w, r, err); err != nil {
-			fmt.Fprintf(w, "failed: %v", err)
+			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 		}
 	}
 }
@@ -232,7 +233,6 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 	tok, err := h.oauth.Exchange(r.Context(), code)
 	if err != nil {
 		log.Printf("Exchange: %v", err)
-		fmt.Fprintf(w, "failed: %v", err)
 		return
 	}
 	if debug {
@@ -243,7 +243,6 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 	u, err := url.ParseRequestURI(state)
 	if err != nil {
 		log.Printf("ParseRequestURI: %v", err)
-		fmt.Fprintf(w, "failed: %v", err)
 		return
 	}
 	if tok.AccessToken != "" {
@@ -275,7 +274,7 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderBlob(w, r); err != nil {
 		if err := h.handleOauth(w, r, err); err != nil {
-			fmt.Fprintf(w, "failed: %v", err)
+			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 		}
 	}
 }
@@ -293,7 +292,7 @@ func (h *handler) handleOauth(w http.ResponseWriter, r *http.Request, err error)
 	}
 
 	data := OauthData{
-		Error:    err.Error(),
+		Error:    html.EscapeString(err.Error()),
 		Redirect: h.oauth.AuthCodeURL(r.URL.String()),
 	}
 
@@ -472,11 +471,6 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		fmt.Fprintf(w, footer)
 		return nil
 	} else if ref.RepositoryStr() == "" {
-		repos, err := remote.Catalog(r.Context(), ref.Registry, h.remoteOptions(w, r, repo)...)
-		if err != nil {
-			return err
-		}
-
 		if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
 			return err
 		}
@@ -495,9 +489,23 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 			fresh: []bool{},
 			repo:  repo,
 		}
-		v := Catalog{
-			Repos: repos,
+		var v *remote.Catalogs
+		if qs.Get("n") != "" {
+			v, err = remote.CatalogPage(ref.Registry, qs.Get("next"), h.remoteOptions(w, r, repo)...)
+			if err != nil {
+				return err
+			}
+		} else {
+			repos, err := remote.Catalog(r.Context(), ref.Registry, h.remoteOptions(w, r, repo)...)
+			if err != nil {
+				return err
+			}
+
+			v = &remote.Catalogs{
+				Repos: repos,
+			}
 		}
+
 		b, err := json.Marshal(v)
 		if err != nil {
 			return err
@@ -537,7 +545,6 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 
 	var v *remote.Tags
 	if qs.Get("n") != "" {
-		// TODO: list page
 		v, err = remote.ListPage(ref, qs.Get("next"), h.remoteOptions(w, r, repo)...)
 		if err != nil {
 			return err
@@ -1131,8 +1138,4 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 type DSSE struct {
 	PayloadType string `json:"payloadType"`
 	Payload     []byte `json:"payload"`
-}
-
-type Catalog struct {
-	Repos []string `json:"repositories"`
 }
