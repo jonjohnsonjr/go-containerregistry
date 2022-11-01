@@ -226,7 +226,8 @@ func New(opts ...Option) http.Handler {
 		blobs: map[*http.Request]*sizeBlob{},
 		oauth: conf,
 		cache: &headerCache{
-			maxSize:  2 * tooBig,
+			// 50 MB * 50 = 2.5GB reserved for cache.
+			maxSize:  50 * (1 << 20),
 			entryCap: 50,
 		},
 	}

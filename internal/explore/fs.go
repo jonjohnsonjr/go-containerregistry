@@ -211,14 +211,16 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 		}
 	}
 
-	// only cache full set of headers
-	fs.h.cache.Put(&headerEntry{
-		key:     fs.digest,
-		headers: fs.headers,
-		size:    size,
-	})
+	if size != 0 && len(fs.headers) != 0 {
+		// only cache full set of headers
+		fs.h.cache.Put(&headerEntry{
+			key:     fs.digest,
+			headers: fs.headers,
+			size:    size,
+		})
 
-	log.Printf("cached %s: (%d bytes)", fs.digest, size)
+		log.Printf("cached %s: (%d bytes)", fs.digest, size)
+	}
 
 	// FileServer is trying to find index.html, but it doesn't exist in the image.
 	// TODO: What if there _is_ an index.html in the root FS?
