@@ -32,6 +32,7 @@ const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking 
 func main() {
 	flag.Parse()
 
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Print("starting explore.ggcr.dev")
 
 	port := os.Getenv("PORT")

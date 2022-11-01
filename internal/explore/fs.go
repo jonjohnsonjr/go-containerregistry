@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
@@ -44,10 +45,12 @@ type layerFS struct {
 	w   http.ResponseWriter
 	h   *handler
 
-	ref     string
-	rc      io.ReadCloser
-	tr      *tar.Reader
-	headers []*tar.Header
+	ref      string
+	digest   string
+	rc       io.ReadCloser
+	tr       *tar.Reader
+	headers  []*tar.Header
+	complete bool
 }
 
 func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request) (*layerFS, error) {
@@ -66,6 +69,7 @@ func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request) (*layerFS, 
 
 // refetches the blob in case FileServer has sent us over the edge
 func (fs *layerFS) reset() error {
+	log.Printf("reset")
 	blob, ref, err := fs.h.fetchBlob(fs.w, fs.req)
 	if err != nil {
 		return err
@@ -94,12 +98,23 @@ func (fs *layerFS) reset() error {
 	fs.tr = tar.NewReader(rc)
 
 	fs.ref = ref
-	fs.headers = []*tar.Header{}
+
+	chunks := strings.SplitN(ref, "@", 2)
+	if len(chunks) != 2 {
+		return fmt.Errorf("not enough chunks: %s", ref)
+	}
+	fs.digest = chunks[1]
+	if !fs.complete {
+		fs.headers = []*tar.Header{}
+	}
 
 	return nil
 }
 
 func (fs *layerFS) Close() error {
+	if fs.rc == nil {
+		return nil
+	}
 	return fs.rc.Close()
 }
 
@@ -117,6 +132,55 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 
 	log.Printf("Open(%q) -> Open(%q)", original, name)
 
+	if fs.complete {
+		found := false
+		if debug {
+			log.Printf("headers len: %d", len(fs.headers))
+		}
+		// we already have headers, don't hit the tar reader
+		for _, header := range fs.headers {
+			if path.Clean("/"+header.Name) == name {
+				log.Printf("cached Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
+				if header.Typeflag == tar.TypeDir {
+					if debug {
+						log.Printf("is a dir")
+					}
+					return &layerFile{
+						name:   name,
+						header: header,
+						fs:     fs,
+					}, nil
+				} else {
+					if debug {
+						log.Printf("not a dir")
+					}
+					found = true
+				}
+			}
+		}
+
+		if !found {
+			// FileServer is trying to find index.html, but it doesn't exist in the image.
+			// TODO: What if there _is_ an index.html in the root FS?
+			if path.Base(name) == "index.html" {
+				return nil, fmt.Errorf("nope: %s", name)
+			}
+
+			// We didn't find the entry in the tarball, so we're probably trying to list
+			// a file or directory that does not exist.
+			return &layerFile{
+				name: name,
+				fs:   fs,
+			}, nil
+		}
+	}
+
+	if fs.tr == nil {
+		if err := fs.reset(); err != nil {
+			return nil, err
+		}
+	}
+	size := 0
 	// Scan through the layer, looking for a matching tar.Header.Name.
 	for {
 		header, err := fs.tr.Next()
@@ -136,6 +200,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 		// into play mostly for ReadDir() at the top level, where we already scan
 		// the entire layer to tell FileServer "/" and "index.html" don't exist.
 		fs.headers = append(fs.headers, header)
+		size += int(unsafe.Sizeof(*header))
 		if path.Clean("/"+header.Name) == name {
 			log.Printf("Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
 			return &layerFile{
@@ -145,6 +210,15 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 			}, nil
 		}
 	}
+
+	// only cache full set of headers
+	fs.h.cache.Put(&headerEntry{
+		key:     fs.digest,
+		headers: fs.headers,
+		size:    size,
+	})
+
+	log.Printf("cached %s: (%d bytes)", fs.digest, size)
 
 	// FileServer is trying to find index.html, but it doesn't exist in the image.
 	// TODO: What if there _is_ an index.html in the root FS?
@@ -262,6 +336,12 @@ func (f *layerFile) Read(p []byte) (int, error) {
 			// This is a surprise!
 			log.Printf("Read(%q): nil buf, cursor = %d", f.name, f.cursor)
 			return 0, fmt.Errorf("invalid cursor position: %d", f.cursor)
+		}
+
+		if f.fs.tr == nil {
+			if err := f.fs.reset(); err != nil {
+				return 0, err
+			}
 		}
 
 		if len(p) <= bufferLen {

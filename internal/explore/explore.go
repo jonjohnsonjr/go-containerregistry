@@ -14,6 +14,7 @@
 package explore
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"encoding/base64"
@@ -31,6 +32,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-containerregistry/internal/and"
@@ -58,7 +60,60 @@ type handler struct {
 	// Stupid hack because I'm too lazy to refactor.
 	blobs map[*http.Request]*sizeBlob
 
+	cache *headerCache
+
 	oauth *oauth2.Config
+}
+
+type headerCache struct {
+	sync.Mutex
+	entryCap int
+	maxSize  int
+	entries  []*headerEntry
+}
+
+type headerEntry struct {
+	key     string
+	headers []*tar.Header
+	size    int
+	access  time.Time
+}
+
+func (c *headerCache) Put(e *headerEntry) {
+	c.Lock()
+	defer c.Unlock()
+	if e.size > c.maxSize {
+		return
+	}
+
+	e.access = time.Now()
+
+	if len(c.entries) >= c.entryCap {
+		min, idx := e.access, -1
+		for i, e := range c.entries {
+			if e.access.Before(min) {
+				min = e.access
+				idx = i
+			}
+		}
+		c.entries[idx] = e
+		return
+	}
+
+	c.entries = append(c.entries, e)
+}
+
+func (c *headerCache) Get(key string) *headerEntry {
+	c.Lock()
+	defer c.Unlock()
+
+	for _, e := range c.entries {
+		if e.key == key {
+			e.access = time.Now()
+			return e
+		}
+	}
+	return nil
 }
 
 func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo string) []remote.Option {
@@ -170,6 +225,10 @@ func New(opts ...Option) http.Handler {
 		mux:   http.NewServeMux(),
 		blobs: map[*http.Request]*sizeBlob{},
 		oauth: conf,
+		cache: &headerCache{
+			maxSize:  2 * tooBig,
+			entryCap: 50,
+		},
 	}
 
 	for _, opt := range opts {
@@ -807,6 +866,30 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	if h.cache != nil {
+		log.Printf("cache is not nil")
+		dig, ref, err := h.getDigest(w, r)
+		if err != nil {
+			return err
+		}
+		if entry := h.cache.Get(dig.Identifier()); entry != nil {
+			log.Printf("cache matched")
+			fs := &layerFS{
+				req:      r,
+				w:        w,
+				h:        h,
+				ref:      ref,
+				headers:  entry.headers,
+				complete: true,
+			}
+			// Allow this to be cached for an hour.
+			w.Header().Set("Cache-Control", "max-age=3600, immutable")
+
+			http.FileServer(fs).ServeHTTP(w, r)
+			return nil
+		}
+	}
+
 	// Determine if this is actually a filesystem thing.
 	blob, ref, err := h.fetchBlob(w, r)
 	if err != nil {
@@ -871,6 +954,38 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// parse ref out of r
+// this is duplicated and desperately needs refactoring
+func (h *handler) getDigest(w http.ResponseWriter, r *http.Request) (name.Digest, string, error) {
+	path, root, err := splitFsURL(r.URL.Path)
+	if err != nil {
+		return name.Digest{}, "", err
+	}
+
+	chunks := strings.SplitN(path, "@", 2)
+	if len(chunks) != 2 {
+		return name.Digest{}, "", fmt.Errorf("not enough chunks: %s", path)
+	}
+	// 71 = len("sha256:") + 64
+	if len(chunks[1]) < 71 {
+		return name.Digest{}, "", fmt.Errorf("second chunk too short: %s", chunks[1])
+	}
+
+	digest := chunks[1][:71]
+
+	ref := strings.Join([]string{chunks[0], digest}, "@")
+	if ref == "" {
+		return name.Digest{}, "", fmt.Errorf("bad ref: %s", path)
+	}
+
+	dig, err := name.NewDigest(ref)
+	if err != nil {
+		return name.Digest{}, "", err
+	}
+
+	return dig, root + ref, nil
+}
+
 // Fetch blob from registry or URL.
 func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, string, error) {
 	path, root, err := splitFsURL(r.URL.Path)
@@ -888,7 +1003,7 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 		}
 	}
 
-	chunks := strings.Split(path, "@")
+	chunks := strings.SplitN(path, "@", 2)
 	if len(chunks) != 2 {
 		return nil, "", fmt.Errorf("not enough chunks: %s", path)
 	}
