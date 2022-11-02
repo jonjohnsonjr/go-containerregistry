@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -150,7 +149,6 @@ func (bt *bearerTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 		// the registry with which we are interacting.
 		// In case of redirect http.Client can use an empty Host, check URL too.
 		if matchesHost(bt.registry, in, bt.scheme) {
-			log.Printf("setting Bearer")
 			hdr := fmt.Sprintf("Bearer %s", bt.bearer.RegistryToken)
 			in.Header.Set("Authorization", hdr)
 		}

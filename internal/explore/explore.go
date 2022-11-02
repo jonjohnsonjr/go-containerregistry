@@ -149,7 +149,9 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
 		log.Printf("failed to get transport from cookie: %v", err)
 	} else {
-		log.Printf("restored bearer transport")
+		if debug {
+			log.Printf("restored bearer transport")
+		}
 		opts = append(opts, remote.WithTransport(t))
 	}
 
@@ -195,7 +197,9 @@ func (h *handler) googleOptions(w http.ResponseWriter, r *http.Request, repo str
 	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
 		log.Printf("failed to get transport from cookie: %v", err)
 	} else {
-		log.Printf("restored bearer transport")
+		if debug {
+			log.Printf("restored bearer transport")
+		}
 		opts = append(opts, goog.WithTransport(t))
 	}
 
@@ -841,8 +845,6 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 // Render blob, either as just ungzipped bytes, or via http.FileServer.
 func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
-	log.Printf("%v", r.URL)
-
 	if strings.HasPrefix(r.URL.Path, "/json/") {
 		return h.renderBlobJSON(w, r, "")
 	}
@@ -868,13 +870,15 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if h.cache != nil {
-		log.Printf("cache is not nil")
+		if debug {
+			log.Printf("cache is not nil")
+		}
 		dig, ref, err := h.getDigest(w, r)
 		if err != nil {
 			return err
 		}
 		if entry := h.cache.Get(dig.Identifier()); entry != nil {
-			log.Printf("cache matched")
+			log.Printf("cache hit: %s", dig.Identifier())
 			fs := &layerFS{
 				req:      r,
 				w:        w,
@@ -905,7 +909,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
 	if ok {
-		log.Printf("it is gzip")
+		if debug {
+			log.Printf("it is gzip")
+		}
 		rc, err = gzip.UnzipReadCloser(rc)
 		if err != nil {
 			return err
@@ -913,7 +919,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 	ok, pr, err = tarPeek(rc)
 	if ok {
-		log.Printf("it is tar")
+		if debug {
+			log.Printf("it is tar")
+		}
 		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
 
 		fs, err := h.newLayerFS(w, r)
@@ -943,8 +951,6 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			size = sz
 		}
 	}
-
-	log.Printf("it is neither")
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -1026,7 +1032,9 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 	}
 
 	if root == "/http/" || root == "/https/" {
-		log.Printf("chunks[0]: %v", chunks[0])
+		if debug {
+			log.Printf("chunks[0]: %v", chunks[0])
+		}
 
 		u, err := url.PathUnescape(chunks[0])
 		if err != nil {

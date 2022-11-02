@@ -69,7 +69,7 @@ func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request) (*layerFS, 
 
 // refetches the blob in case FileServer has sent us over the edge
 func (fs *layerFS) reset() error {
-	log.Printf("reset")
+	log.Printf("reset %s", fs.req.URL.String())
 	blob, ref, err := fs.h.fetchBlob(fs.w, fs.req)
 	if err != nil {
 		return err
