@@ -543,7 +543,35 @@ func (f *layerFile) Stat() (os.FileInfo, error) {
 	}
 
 	if f.header == nil {
+		// TODO: see if there's a symlink to the destination folder???
 		log.Printf("Stat(%q): no header!", f.name)
+
+		name := path.Clean("/" + f.name)
+		dirs := []string{}
+		dir := path.Dir(name)
+		if dir != "" && dir != "." {
+			prev := dir
+			// Walk up to the first directory.
+			for next := prev; next != "." && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
+				if debug {
+					log.Printf("ReadDir(%q): dir: %q, prev: %q, next: %q", f.name, dir, prev, next)
+				}
+			}
+			dirs = append(dirs, strings.TrimPrefix(prev, "/"))
+		}
+		log.Println(dirs)
+
+		// todo: func chase
+		for _, header := range f.fs.headers {
+			if header.Typeflag == tar.TypeSymlink {
+				for _, dir := range dirs {
+					if header.Name == dir {
+						// todo: re-fetch header.Linkname/<rest>
+						log.Printf(header.Linkname)
+					}
+				}
+			}
+		}
 
 		// This is a non-existent entry in the tarball, we need to synthesize one.
 		return fileInfo{f.name}, nil
