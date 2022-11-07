@@ -37,7 +37,7 @@ const (
 <body>
 <head>
 <title>explore.ggcr.dev</title>
-<link rel="icon" href="favicon.svg">
+<link rel="icon" href="/favicon.svg">
 <style>
 .mt:hover {
 	text-decoration: underline;
@@ -80,7 +80,7 @@ Enter a <strong>public</strong> repository, e.g. <tt>"ubuntu"</tt>:
 <body>
 <head>
 <title>explore.ggcr.dev</title>
-<link rel="icon" href="favicon.svg">
+<link rel="icon" href="/favicon.svg">
 <style>
 .mt:hover {
 	text-decoration: underline;
@@ -110,7 +110,7 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 <html>
 <head>
 <title>{{.Title}}</title>
-<link rel="icon" href="favicon.svg">
+<link rel="icon" href="/favicon.svg">
 <style>
 .mt:hover {
 	text-decoration: underline;
