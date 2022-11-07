@@ -174,6 +174,14 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 
 			chased, err := fs.chase(name, 0)
 			if err == nil {
+				if chased.Typeflag == tar.TypeDir {
+					log.Printf("chase(%s) -> %s, dir", name, chased.Name)
+					return &layerFile{
+						name:   chased.Name,
+						header: chased,
+						fs:     fs,
+					}, nil
+				}
 				log.Printf("chase(%s) -> %s, falling through", name, chased.Name)
 				name = path.Clean("/" + chased.Name)
 			} else {
@@ -233,6 +241,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 		size += int(unsafe.Sizeof(*header))
 		if path.Clean("/"+header.Name) == name {
 			log.Printf("Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
+
 			return &layerFile{
 				name:   name,
 				header: header,
@@ -276,8 +285,8 @@ func (fs *layerFS) chase(original string, gen int) (*tar.Header, error) {
 	}
 	log.Printf("chase(%q)", original)
 	name := path.Clean("/" + original)
-	dirs := []string{}
 	dir := path.Dir(name)
+	dirs := []string{dir}
 	if dir != "" && dir != "." {
 		prev := dir
 		// Walk up to the first directory.
@@ -432,7 +441,7 @@ func (f *layerFile) Read(p []byte) (int, error) {
 		b, err := f.buf.Peek(len(p))
 		if debug {
 			log.Printf("Read(%q): Peek(%d): (%d, %v)", f.name, len(p), len(b), err)
-			log.Printf("%s", string(b))
+			//log.Printf("%s", string(b))
 		}
 
 		f.peeked = f.cursor + int64(len(b))
@@ -483,7 +492,7 @@ func (f *layerFile) Read(p []byte) (int, error) {
 	n, err := f.buf.Read(p)
 	if debug {
 		log.Printf("Read(%q) = (%d, %v)", f.name, n, err)
-		log.Printf("%s", string(p))
+		//log.Printf("%s", string(p))
 	}
 	return n, err
 }
@@ -497,6 +506,16 @@ func (f *layerFile) Close() error {
 // TODO: respect count?
 func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 	debugf("ReadDir(%q)", f.name)
+
+	if f.header != nil && f.header.Typeflag == tar.TypeSymlink {
+		fi := f.header.FileInfo()
+		return []os.FileInfo{symlink{
+			FileInfo: fi,
+			name:     ".",
+			link:     f.header.Linkname,
+		}}, nil
+	}
+
 	prefix := path.Clean("/" + f.name)
 	if f.Root() {
 		prefix = "/"
@@ -623,6 +642,14 @@ func (f *layerFile) Stat() (os.FileInfo, error) {
 		// This is a non-existent entry in the tarball, we need to synthesize one.
 		return fileInfo{f.name}, nil
 	}
+
+	// If you try to load a symlink directly, we will render it as a directory.
+	if f.header.Typeflag == tar.TypeSymlink {
+		hdr := *f.header
+		hdr.Typeflag = tar.TypeDir
+		return hdr.FileInfo(), nil
+	}
+
 	return f.header.FileInfo(), nil
 }
 
