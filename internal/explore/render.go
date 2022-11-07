@@ -720,10 +720,10 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 				if pt, ok := js.(string); ok {
 					if href := getPredicateLink(pt); href != "" {
 						w.Doc(href, strconv.Quote(pt))
-					}
 
-					// Don't fall through to renderRaw.
-					continue
+						// Don't fall through to renderRaw.
+						continue
+					}
 				}
 			}
 		case "tags":
@@ -1171,6 +1171,9 @@ func getPredicateLink(s string) string {
 	switch s {
 	case `cosign.sigstore.dev/attestation/vuln/v1`:
 		return `https://github.com/sigstore/cosign/blob/b01a173cab389e93c5f3b46d50fe503f9c2454c2/specs/COSIGN_VULN_ATTESTATION_SPEC.md`
+	}
+	if strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://") {
+		return s
 	}
 	return ""
 }
