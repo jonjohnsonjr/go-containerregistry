@@ -268,15 +268,20 @@ func New(opts ...Option) http.Handler {
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%v", r.URL)
 
+	if r.URL.Path == "/favicon.svg" || r.URL.Path == "/favicon.ico" {
+		http.ServeFile(w, r, filepath.Join(os.Getenv("KO_DATA_PATH"), "favicon.svg"))
+		return
+	}
+	if r.URL.Path == "/robots.txt" {
+		http.ServeFile(w, r, filepath.Join(os.Getenv("KO_DATA_PATH"), "robots.txt"))
+		return
+	}
+
 	h.mux.ServeHTTP(w, r)
 }
 
 // Like http.Handler, but with error handling.
 func (h *handler) root(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/favicon.svg" || r.URL.Path == "/favicon.ico" {
-		http.ServeFile(w, r, filepath.Join(os.Getenv("KO_DATA_PATH"), "favicon.svg"))
-		return
-	}
 	if err := h.renderResponse(w, r); err != nil {
 		if err := h.handleOauth(w, r, err); err != nil {
 			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
