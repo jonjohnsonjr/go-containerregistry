@@ -36,7 +36,9 @@ import (
 const debug = false
 
 func debugf(s string, i ...interface{}) {
-	log.Printf(s, i...)
+	if debug {
+		log.Printf(s, i...)
+	}
 }
 
 // More than enough for FileServer to Peek at file contents.
@@ -170,12 +172,19 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 				return nil, fmt.Errorf("nope: %s", name)
 			}
 
-			// We didn't find the entry in the tarball, so we're probably trying to list
-			// a file or directory that does not exist.
-			return &layerFile{
-				name: name,
-				fs:   fs,
-			}, nil
+			chased, err := fs.chase(name)
+			if err == nil {
+				log.Printf("chase(%s) -> %s, falling through", name, chased.Name)
+				name = path.Clean("/" + chased.Name)
+			} else {
+				// We didn't find the entry in the tarball, so we're probably trying to list
+				// a file or directory that does not exist.
+				return &layerFile{
+					name: name,
+					fs:   fs,
+				}, nil
+			}
+
 		}
 	}
 
@@ -190,6 +199,23 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 		header, err := fs.tr.Next()
 		if err == io.EOF {
 			log.Printf("Open(%q): EOF", name)
+
+			// Don't bother chasing this.
+			if path.Base(name) == "index.html" {
+				break
+			}
+
+			chased, err := fs.chase(name)
+			if err == nil {
+				log.Printf("chase(%s) -> %s, resetting", name, chased.Name)
+				name = path.Clean("/" + chased.Name)
+				size = 0
+				if err := fs.reset(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
 			break
 		}
 		if err != nil {
@@ -238,6 +264,47 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 		name: name,
 		fs:   fs,
 	}, nil
+}
+
+func (fs *layerFS) chase(original string) (*tar.Header, error) {
+	if original == "" {
+		return nil, fmt.Errorf("empty string")
+	}
+	log.Printf("chase(%q)", original)
+	name := path.Clean("/" + original)
+	dirs := []string{}
+	dir := path.Dir(name)
+	if dir != "" && dir != "." {
+		prev := dir
+		// Walk up to the first directory.
+		for next := prev; next != "." && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
+			if debug {
+				log.Printf("ReadDir(%q): dir: %q, prev: %q, next: %q", name, dir, prev, next)
+			}
+			dirs = append(dirs, strings.TrimPrefix(next, "/"))
+		}
+	}
+
+	for _, header := range fs.headers {
+		if header.Name == original {
+			if header.Typeflag == tar.TypeSymlink {
+				return fs.chase(header.Linkname)
+			}
+			return header, nil
+		}
+		if header.Typeflag == tar.TypeSymlink {
+			for _, dir := range dirs {
+				if header.Name == dir {
+					// todo: re-fetch header.Linkname/<rest>
+					prefix := path.Clean("/" + header.Name)
+					next := path.Join(header.Linkname, strings.TrimPrefix(name, prefix))
+					return fs.chase(next)
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("could not find: %s", original)
 }
 
 type peek struct {
@@ -547,35 +614,7 @@ func (f *layerFile) Stat() (os.FileInfo, error) {
 	}
 
 	if f.header == nil {
-		// TODO: see if there's a symlink to the destination folder???
-		log.Printf("Stat(%q): no header!", f.name)
-
-		name := path.Clean("/" + f.name)
-		dirs := []string{}
-		dir := path.Dir(name)
-		if dir != "" && dir != "." {
-			prev := dir
-			// Walk up to the first directory.
-			for next := prev; next != "." && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
-				if debug {
-					log.Printf("ReadDir(%q): dir: %q, prev: %q, next: %q", f.name, dir, prev, next)
-				}
-			}
-			dirs = append(dirs, strings.TrimPrefix(prev, "/"))
-		}
-		log.Println(dirs)
-
-		// todo: func chase
-		for _, header := range f.fs.headers {
-			if header.Typeflag == tar.TypeSymlink {
-				for _, dir := range dirs {
-					if header.Name == dir {
-						// todo: re-fetch header.Linkname/<rest>
-						log.Printf(header.Linkname)
-					}
-				}
-			}
-		}
+		log.Printf("! Stat(%q): no header!", f.name)
 
 		// This is a non-existent entry in the tarball, we need to synthesize one.
 		return fileInfo{f.name}, nil
