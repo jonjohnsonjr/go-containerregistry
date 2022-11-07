@@ -35,6 +35,10 @@ import (
 // Lots of debugging that we don't want to compile into the binary.
 const debug = false
 
+func debugf(s string, i ...interface{}) {
+	log.Printf(s, i...)
+}
+
 // More than enough for FileServer to Peek at file contents.
 const bufferLen = 2 << 16
 
@@ -69,7 +73,7 @@ func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request) (*layerFS, 
 
 // refetches the blob in case FileServer has sent us over the edge
 func (fs *layerFS) reset() error {
-	log.Printf("reset %s", fs.req.URL.String())
+	debugf("reset %s", fs.req.URL.String())
 	blob, ref, err := fs.h.fetchBlob(fs.w, fs.req)
 	if err != nil {
 		return err
@@ -130,7 +134,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 	chunks := strings.Split(name, " -> ")
 	name = chunks[len(chunks)-1]
 
-	log.Printf("Open(%q) -> Open(%q)", original, name)
+	debugf("Open(%q) -> Open(%q)", original, name)
 
 	if fs.complete {
 		found := false
@@ -323,7 +327,7 @@ func (f *layerFile) Seek(offset int64, whence int) (int64, error) {
 		return 0, fmt.Errorf("not implemented")
 	}
 
-	log.Printf("Open(%q).Seek(%d, %d): whence: ???", f.name, offset, whence)
+	debugf("Open(%q).Seek(%d, %d): whence: ???", f.name, offset, whence)
 	return 0, fmt.Errorf("not implemented")
 }
 
@@ -414,14 +418,14 @@ func (f *layerFile) Read(p []byte) (int, error) {
 }
 
 func (f *layerFile) Close() error {
-	log.Printf("Close(%q)", f.name)
+	debugf("Close(%q)", f.name)
 	return nil
 }
 
 // Scan through the tarball looking for prefixes that match the layerFile's name.
 // TODO: respect count?
 func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
-	log.Printf("ReadDir(%q)", f.name)
+	debugf("ReadDir(%q)", f.name)
 	prefix := path.Clean("/" + f.name)
 	if f.Root() {
 		prefix = "/"
@@ -531,7 +535,7 @@ func isLink(hdr *tar.Header) bool {
 }
 
 func (f *layerFile) Stat() (os.FileInfo, error) {
-	log.Printf("Stat(%q)", f.name)
+	debugf("Stat(%q)", f.name)
 	if f.Root() {
 		if debug {
 			log.Printf("Stat(%q): root!", f.name)
