@@ -172,7 +172,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 				return nil, fmt.Errorf("nope: %s", name)
 			}
 
-			chased, err := fs.chase(name)
+			chased, err := fs.chase(name, 0)
 			if err == nil {
 				log.Printf("chase(%s) -> %s, falling through", name, chased.Name)
 				name = path.Clean("/" + chased.Name)
@@ -205,7 +205,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 				break
 			}
 
-			chased, err := fs.chase(name)
+			chased, err := fs.chase(name, 0)
 			if err == nil {
 				log.Printf("chase(%s) -> %s, resetting", name, chased.Name)
 				name = path.Clean("/" + chased.Name)
@@ -266,9 +266,13 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 	}, nil
 }
 
-func (fs *layerFS) chase(original string) (*tar.Header, error) {
+func (fs *layerFS) chase(original string, gen int) (*tar.Header, error) {
 	if original == "" {
 		return nil, fmt.Errorf("empty string")
+	}
+	if gen > 64 {
+		log.Printf("chase(%q) aborting at gen=%d", original, gen)
+		return nil, fmt.Errorf("too many symlinks")
 	}
 	log.Printf("chase(%q)", original)
 	name := path.Clean("/" + original)
@@ -288,7 +292,7 @@ func (fs *layerFS) chase(original string) (*tar.Header, error) {
 	for _, header := range fs.headers {
 		if header.Name == original {
 			if header.Typeflag == tar.TypeSymlink {
-				return fs.chase(header.Linkname)
+				return fs.chase(header.Linkname, gen+1)
 			}
 			return header, nil
 		}
@@ -298,7 +302,7 @@ func (fs *layerFS) chase(original string) (*tar.Header, error) {
 					// todo: re-fetch header.Linkname/<rest>
 					prefix := path.Clean("/" + header.Name)
 					next := path.Join(header.Linkname, strings.TrimPrefix(name, prefix))
-					return fs.chase(next)
+					return fs.chase(next, gen+1)
 				}
 			}
 		}
