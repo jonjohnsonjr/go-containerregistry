@@ -45,7 +45,7 @@ func NewBearer(ctx context.Context, pr *PingResp, reg name.Registry, auth authn.
 	// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
 	realm, ok := pr.Parameters["realm"]
 	if !ok {
-		return nil, nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.Parameters)
+		realm = reg.RegistryStr()
 	}
 	service := pr.Parameters["service"]
 	bt := &bearerTransport{
@@ -76,7 +76,7 @@ func OldBearer(pr *PingResp, tok *TokenResponse, reg name.Registry, auth authn.A
 	// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
 	realm, ok := pr.Parameters["realm"]
 	if !ok {
-		return nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.Parameters)
+		realm = reg.RegistryStr()
 	}
 	service := pr.Parameters["service"]
 	bt := &bearerTransport{
