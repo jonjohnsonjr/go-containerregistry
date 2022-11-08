@@ -426,6 +426,11 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 			return nil, err
 		}
 
+		// Probably no auth needed.
+		if tok == nil {
+			return t, nil
+		}
+
 		// Clear this to make cookies smaller.
 		tok.AccessToken = ""
 

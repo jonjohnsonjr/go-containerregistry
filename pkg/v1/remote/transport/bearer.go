@@ -42,10 +42,14 @@ type TokenResponse struct {
 
 // NewBearer returns a bearer transport and the registry TokenResponse for reuse.
 func NewBearer(ctx context.Context, pr *PingResp, reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scopes []string) (*Wrapper, *TokenResponse, error) {
+	switch pr.challenge.Canonical() {
+	case anonymous, basic:
+		return &Wrapper{&basicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil, nil
+	}
 	// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
 	realm, ok := pr.Parameters["realm"]
 	if !ok {
-		realm = reg.RegistryStr()
+		return nil, nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.Parameters)
 	}
 	service := pr.Parameters["service"]
 	bt := &bearerTransport{
@@ -73,10 +77,14 @@ func NewBearer(ctx context.Context, pr *PingResp, reg name.Registry, auth authn.
 
 // OldBearer returns a bearer transport based on a cached TokenResponse (see NewBearer).
 func OldBearer(pr *PingResp, tok *TokenResponse, reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scopes []string) (*Wrapper, error) {
+	switch pr.challenge.Canonical() {
+	case anonymous, basic:
+		return &Wrapper{&basicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil
+	}
 	// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
 	realm, ok := pr.Parameters["realm"]
 	if !ok {
-		realm = reg.RegistryStr()
+		return nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.Parameters)
 	}
 	service := pr.Parameters["service"]
 	bt := &bearerTransport{
