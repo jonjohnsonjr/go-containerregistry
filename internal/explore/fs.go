@@ -140,26 +140,20 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 
 	if fs.complete {
 		found := false
-		if debug {
-			log.Printf("headers len: %d", len(fs.headers))
-		}
+		debugf("headers len: %d", len(fs.headers))
 		// we already have headers, don't hit the tar reader
 		for _, header := range fs.headers {
 			if path.Clean("/"+header.Name) == name {
 				log.Printf("cached Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
 				if header.Typeflag == tar.TypeDir {
-					if debug {
-						log.Printf("is a dir")
-					}
+					debugf("is a dir")
 					return &layerFile{
 						name:   name,
 						header: header,
 						fs:     fs,
 					}, nil
 				} else {
-					if debug {
-						log.Printf("not a dir")
-					}
+					debugf("not a dir")
 					found = true
 				}
 			}
@@ -230,9 +224,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 			log.Printf("Open(%q): %v", name, err)
 			return nil, err
 		}
-		if debug {
-			log.Printf("Open(%q): header.Name = %q, header.Size = %d", name, header.Name, header.Size)
-		}
+		debugf("Open(%q): header.Name = %q, header.Size = %d", name, header.Name, header.Size)
 
 		// Cache the headers, so we don't have to re-fetch the blob. This comes
 		// into play mostly for ReadDir() at the top level, where we already scan
@@ -291,9 +283,7 @@ func (fs *layerFS) chase(original string, gen int) (*tar.Header, error) {
 		prev := dir
 		// Walk up to the first directory.
 		for next := prev; next != "." && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
-			if debug {
-				log.Printf("ReadDir(%q): dir: %q, prev: %q, next: %q", name, dir, prev, next)
-			}
+			debugf("ReadDir(%q): dir: %q, prev: %q, next: %q", name, dir, prev, next)
 			dirs = append(dirs, strings.TrimPrefix(next, "/"))
 		}
 	}
@@ -348,9 +338,7 @@ type layerFile struct {
 //
 // TODO: Handle offset better for range requests?
 func (f *layerFile) Seek(offset int64, whence int) (int64, error) {
-	if debug {
-		log.Printf("Open(%q).Seek(%d, %d) @ [%d, %d]", f.name, offset, whence, f.cursor, f.peeked)
-	}
+	debugf("Open(%q).Seek(%d, %d) @ [%d, %d]", f.name, offset, whence, f.cursor, f.peeked)
 
 	if whence == io.SeekEnd {
 		// Likely just trying to determine filesize.
@@ -412,9 +400,7 @@ func (f *layerFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *layerFile) Read(p []byte) (int, error) {
-	if debug {
-		log.Printf("Read(%q): len(p) = %d", f.name, len(p))
-	}
+	debugf("Read(%q): len(p) = %d", f.name, len(p))
 
 	// Handle first read.
 	if f.buf == nil {
@@ -447,9 +433,7 @@ func (f *layerFile) Read(p []byte) (int, error) {
 		f.peeked = f.cursor + int64(len(b))
 
 		if err == io.EOF {
-			if debug {
-				log.Printf("hit EOF")
-			}
+			debugf("hit EOF")
 			return bytes.NewReader(b).Read(p)
 		} else if err != nil {
 			if f.header.Size >= int64(len(p)) {
@@ -460,30 +444,22 @@ func (f *layerFile) Read(p []byte) (int, error) {
 		}
 
 		n, err := bytes.NewReader(b).Read(p)
-		if debug {
-			log.Printf("Read(%q): (Peek(%d)) = (%d, %v)", f.name, len(p), n, err)
-		}
+		debugf("Read(%q): (Peek(%d)) = (%d, %v)", f.name, len(p), n, err)
 		return n, err
 	}
 
 	// We did a Peek() but didn't get a Seek() to reset.
 	if f.peeked != 0 {
 		if f.peeked == f.header.Size {
-			if debug {
-				log.Printf("Read(%q): f.peeked=%d, f.header.size=%d", f.name, f.peeked, f.header.Size)
-			}
+			debugf("Read(%q): f.peeked=%d, f.header.size=%d", f.name, f.peeked, f.header.Size)
 			// We hit EOF.
 			return 0, io.EOF
 		}
 
-		if debug {
-			log.Printf("Read(%q): f.peeked=%d, f.cursor=%d, f.header.size=%d, discarding rest", f.name, f.peeked, f.cursor, f.header.Size)
-		}
+		debugf("Read(%q): f.peeked=%d, f.cursor=%d, f.header.size=%d, discarding rest", f.name, f.peeked, f.cursor, f.header.Size)
 		// We need to throw away some peeked bytes to continue with the read.
 		if _, err := f.buf.Discard(int(f.peeked - f.cursor)); err != nil {
-			if debug {
-				log.Printf("Read(%q): discard err: %v", f.name, err)
-			}
+			debugf("Read(%q): discard err: %v", f.name, err)
 			return 0, err
 		}
 		// Reset peeked to zero so we know we don't have to discard anymore.
@@ -524,15 +500,11 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 	for _, hdr := range f.fs.headers {
 		name := path.Clean("/" + hdr.Name)
 		dir := path.Dir(strings.TrimPrefix(name, prefix))
-		if debug {
-			log.Printf("hdr.Name=%q prefix=%q name=%q dir=%q", hdr.Name, prefix, name, dir)
-		}
+		debugf("hdr.Name=%q prefix=%q name=%q dir=%q", hdr.Name, prefix, name, dir)
 
 		// Is this file in this directory?
 		if strings.HasPrefix(name, prefix) && (f.Root() && dir == "." || dir == "/") {
-			if debug {
-				log.Printf("Readdir(%q) -> %q match!", f.name, hdr.Name)
-			}
+			debugf("Readdir(%q) -> %q match!", f.name, hdr.Name)
 			fi := hdr.FileInfo()
 			if !isLink(hdr) {
 				fis = append(fis, fi)
@@ -541,27 +513,21 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 
 			// For links, we need to handle hardlinks and symlinks.
 			link := hdr.Linkname
-			if debug {
-				log.Printf("name = %q, hdr.Linkname = %q, dir = %q", name, link, dir)
-			}
+			debugf("name = %q, hdr.Linkname = %q, dir = %q", name, link, dir)
 
 			// For symlinks, assume relative paths.
 			if hdr.Typeflag == tar.TypeSymlink {
 				if !path.IsAbs(hdr.Linkname) {
 					link = path.Clean(path.Join(path.Dir(name), link))
 				}
-				if debug {
-					log.Printf("symlink: %v -> %v", hdr.Linkname, link)
-				}
+				debugf("symlink: %v -> %v", hdr.Linkname, link)
 			}
 
 			// For hardlinks, assume absolute paths. This seems to hold up.
 			if hdr.Typeflag == tar.TypeLink {
 				link = path.Clean("/" + link)
 
-				if debug {
-					log.Printf("hardlink: %v -> %v", hdr.Linkname, link)
-				}
+				debugf("hardlink: %v -> %v", hdr.Linkname, link)
 			}
 
 			// The symlink struct handles magic names for making things work.
@@ -591,17 +557,13 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 				prev := dir
 				// Walk up to the first directory.
 				for next := prev; next != "." && next != prefix && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
-					if debug {
-						log.Printf("ReadDir(%q): dir: %q, prev: %q, next: %q", f.name, dir, prev, next)
-					}
+					debugf("ReadDir(%q): dir: %q, prev: %q, next: %q", f.name, dir, prev, next)
 				}
 				dirs[prev] = struct{}{}
 			}
 		}
 		for dir := range dirs {
-			if debug {
-				log.Printf("ReadDir(%q): dir: %q", f.name, dir)
-			}
+			debugf("ReadDir(%q): dir: %q", f.name, dir)
 			fis = append(fis, fileInfo{dir})
 		}
 	}
@@ -627,14 +589,10 @@ func isLink(hdr *tar.Header) bool {
 func (f *layerFile) Stat() (os.FileInfo, error) {
 	debugf("Stat(%q)", f.name)
 	if f.Root() {
-		if debug {
-			log.Printf("Stat(%q): root!", f.name)
-		}
+		debugf("Stat(%q): root!", f.name)
 		return fileInfo{f.name}, nil
 	}
-	if debug {
-		log.Printf("Stat(%q): nonroot!", f.name)
-	}
+	debugf("Stat(%q): nonroot!", f.name)
 
 	if f.header == nil {
 		log.Printf("! Stat(%q): no header!", f.name)
@@ -663,30 +621,22 @@ type fileInfo struct {
 }
 
 func (f fileInfo) Name() string {
-	if debug {
-		log.Printf("%q.Name()", f.name)
-	}
+	debugf("%q.Name()", f.name)
 	return f.name
 }
 
 func (f fileInfo) Size() int64 {
-	if debug {
-		log.Printf("%q.Size()", f.name)
-	}
+	debugf("%q.Size()", f.name)
 	return 0
 }
 
 func (f fileInfo) Mode() os.FileMode {
-	if debug {
-		log.Printf("%q.Mode()", f.name)
-	}
+	debugf("%q.Mode()", f.name)
 	return os.ModeDir
 }
 
 func (f fileInfo) ModTime() time.Time {
-	if debug {
-		log.Printf("%q.ModTime()", f.name)
-	}
+	debugf("%q.ModTime()", f.name)
 	if f.name == "" || f.name == "/" || f.name == "/index.html" {
 		return time.Now()
 	}
@@ -694,16 +644,12 @@ func (f fileInfo) ModTime() time.Time {
 }
 
 func (f fileInfo) IsDir() bool {
-	if debug {
-		log.Printf("%q.IsDir()", f.name)
-	}
+	debugf("%q.IsDir()", f.name)
 	return true
 }
 
 func (f fileInfo) Sys() interface{} {
-	if debug {
-		log.Printf("%q.Sys()", f.name)
-	}
+	debugf("%q.Sys()", f.name)
 	return nil
 }
 
