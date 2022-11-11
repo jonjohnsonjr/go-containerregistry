@@ -1,3 +1,9 @@
+User-agent: MJ12bot
+Disallow: /
+
+User-agent: PetalBot
+Disallow: /
+
 User-agent: *
 Allow: /$
 Disallow: /
