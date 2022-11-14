@@ -126,7 +126,7 @@ func Catalog(ctx context.Context, target name.Registry, options ...Option) ([]st
 		ctx = o.context
 	}
 
-	parsed := Catalogs{
+	parsed := &Catalogs{
 		Next: uri.String(),
 	}
 	repoList := []string{}
@@ -139,7 +139,7 @@ func Catalog(ctx context.Context, target name.Registry, options ...Option) ([]st
 		default:
 		}
 
-		parsed, err := catalogPage(o.context, client, parsed.Next)
+		parsed, err = catalogPage(o.context, client, parsed.Next)
 		if err != nil {
 			return nil, err
 		}

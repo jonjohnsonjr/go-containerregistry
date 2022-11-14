@@ -64,7 +64,7 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 
 	client := http.Client{Transport: tr}
 	tagList := []string{}
-	parsed := Tags{
+	parsed := &Tags{
 		Next: uri.String(),
 	}
 
@@ -76,7 +76,7 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 		default:
 		}
 
-		parsed, err := listPage(o.context, client, parsed.Next)
+		parsed, err = listPage(o.context, client, parsed.Next)
 		if err != nil {
 			return nil, err
 		}

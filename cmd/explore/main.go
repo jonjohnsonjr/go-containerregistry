@@ -34,6 +34,7 @@ func main() {
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Print("starting explore.ggcr.dev")
+	//logs.Debug.SetOutput(os.Stderr)
 
 	port := os.Getenv("PORT")
 	if port == "" {
