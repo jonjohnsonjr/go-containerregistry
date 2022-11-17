@@ -262,6 +262,10 @@ func New(opts ...Option) http.Handler {
 
 	h.mux.HandleFunc("/oauth", h.oauthHandler)
 
+	//TODO: APK?
+	// curl https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz | tar -tvzf -
+	// curl https://packages.wolfi.dev/os/x86_64/giflib-doc-5.2.1-r0.apk | tar -tzvf -
+
 	return &h
 }
 
