@@ -846,7 +846,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 				// Don't fall through to renderRaw.
 				continue
 			}
-		case "timeCreatedMs", "timeUploadedMs":
+		case "timeCreatedMs", "timeUploadedMs", "integratedTime":
 			if js, ok := o[k]; ok {
 				if ts, ok := js.(string); ok {
 					if w.jth(-2) == ".manifest" {
@@ -865,6 +865,17 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 							continue
 						}
 					}
+				} else if f64, ok := js.(float64); ok {
+					i64 := int64(f64)
+					t := time.Unix(i64, 0)
+
+					// TODO: dedupe with Value
+					w.tabf()
+					w.Print(fmt.Sprintf(`<span title="%s">%d</span>`, t.String(), i64))
+					w.unfresh()
+					w.key = false
+					// Don't fall through to renderRaw.
+					continue
 				}
 			}
 		case "imageSizeBytes":
