@@ -637,6 +637,20 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					}
 				}
 			}
+		case "referenceLocator":
+			if js, ok := o[k]; ok {
+				if ps, ok := js.(string); ok {
+					p, err := parsePurl(ps)
+					if err == nil {
+						href, err := p.url(w.repo)
+						if err == nil {
+							w.BlueDoc(href, ps)
+							// Don't fall through to renderRaw.
+							continue
+						}
+					}
+				}
+			}
 		case "logIndex":
 			if inside(w.u, "dev.sigstore.cosign/bundle") {
 				if js, ok := rawMap[k]; ok {
@@ -1222,4 +1236,117 @@ func inside(u *url.URL, ann string) bool {
 		}
 	}
 	return false
+}
+
+type purl struct {
+	tipe       string
+	namespace  string
+	name       string
+	version    string
+	qualifiers url.Values
+	subpath    string
+}
+
+func (p *purl) url(repo string) (string, error) {
+	log.Println(p)
+	switch p.tipe {
+	case "oci":
+		if p.version == "" {
+			return "", fmt.Errorf("no version in purl")
+		}
+		repository := p.qualifiers.Get("repository_url")
+		if repository != "" {
+			if p.namespace != "" {
+				repository = path.Join(repository, p.namespace, p.name)
+			} else {
+				repository = path.Join(repository, p.name)
+			}
+		} else {
+			repository = repo
+		}
+		mt := p.qualifiers.Get("mediaType")
+		if mt == "" {
+			mt = string(types.OCIManifestSchema1)
+		}
+		h := handlerForMT(mt)
+		delim := "@"
+		if !strings.Contains(p.version, ":") {
+			delim = ":"
+		}
+		return fmt.Sprintf("/%s%s%s%s", h, repository, delim, p.version), nil
+	case "github":
+		return fmt.Sprintf("https://github.com/%s/%s/tree/%s", p.namespace, p.name, p.version), nil
+	case "apk":
+		if p.namespace == "alpine" {
+			arch := p.qualifiers.Get("arch")
+			return fmt.Sprintf("https://pkgs.alpinelinux.org/packages?name=%s&branch=edge&arch=%s", p.name, arch), nil
+		}
+	}
+
+	return "", fmt.Errorf("nope")
+}
+
+// scheme:type/namespace/name@version?qualifiers#subpath
+func parsePurl(s string) (*purl, error) {
+	if !strings.HasPrefix(s, "pkg:") {
+		return nil, fmt.Errorf("does not start with 'pkg:': %s", s)
+	}
+
+	p := &purl{}
+	s = strings.TrimPrefix(s, "pkg:")
+	chunks := strings.SplitN(s, "/", 2)
+	if len(chunks) != 2 {
+		return nil, fmt.Errorf("weird purl: %s", s)
+	}
+
+	p.tipe = chunks[0]
+	s = chunks[1]
+
+	chunks = strings.SplitN(s, "/", 2)
+	if len(chunks) == 2 {
+		p.namespace = chunks[0]
+		s = chunks[1]
+	}
+
+	// Optional stuff...
+	version := false
+	qualifiers := false
+
+	chunks = strings.SplitN(s, "@", 2)
+	if len(chunks) == 2 {
+		p.name = chunks[0]
+		s = chunks[1]
+		version = true
+	}
+
+	chunks = strings.SplitN(s, "?", 2)
+	if len(chunks) == 2 {
+		if version {
+			p.version = chunks[0]
+		} else {
+			p.name = chunks[0]
+		}
+		s = chunks[1]
+		qualifiers = true
+		version = false
+	}
+
+	chunks = strings.Split(s, "#")
+	if len(chunks) == 2 {
+		p.subpath = chunks[1]
+	}
+
+	if qualifiers {
+		q, err := url.ParseQuery(chunks[0])
+		if err != nil {
+			return nil, err
+		}
+		p.qualifiers = q
+	} else if version {
+		p.version = chunks[0]
+	} else {
+		p.name = chunks[0]
+	}
+
+	return p, nil
 }

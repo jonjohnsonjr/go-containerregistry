@@ -29,7 +29,7 @@ func evalBytes(j string, b []byte) ([]byte, string, error) {
 		}
 		switch item.Typ {
 		case lexer.ItemError:
-			return nil, "", fmt.Errorf("lexer.ItemError: %w", item.Val)
+			return nil, "", fmt.Errorf("lexer.ItemError: %s", item.Val)
 		case lexer.ItemAccessor:
 			quote = true
 			vv, ok := v.(map[string]interface{})
