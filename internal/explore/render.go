@@ -1248,7 +1248,6 @@ type purl struct {
 }
 
 func (p *purl) url(repo string) (string, error) {
-	log.Println(p)
 	switch p.tipe {
 	case "oci":
 		if p.version == "" {
