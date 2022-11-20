@@ -15,17 +15,22 @@
 package cmd
 
 import (
+	"archive/tar"
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"log"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/google/go-containerregistry/internal/and"
+	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -87,13 +92,18 @@ type choice struct {
 }
 
 type model struct {
-	b       []byte
+	// oneof {
+	b []byte
+	f string
+	// }
+
 	ref     name.Reference
 	options crane.Options
 	w       *outputter
 
 	cursor  int
 	choices []choice
+	files   []string
 
 	// to avoid reloading everything on backspace
 	back *model
@@ -116,6 +126,7 @@ func initialModel(desc *remote.Descriptor, ref name.Reference, options crane.Opt
 		b:       desc.Manifest,
 		ref:     ref,
 		choices: []choice{},
+		files:   []string{},
 		options: options,
 	}
 	return m
@@ -130,13 +141,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
+			if m.f != "" {
+				defer os.Remove(m.f)
+			}
 			return m, tea.Quit
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
+				m.zoomin = false
 			} else if m.offset > 0 {
 				m.offset--
-				m.zoomin = false
+				m.zoomin = true
 			}
 		case "down", "j":
 			if m.cursor < len(m.choices)-1 {
@@ -155,13 +170,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			mt := types.MediaType(c.mt)
 			var b []byte
+			var fname string
 			if mt.IsIndex() || mt.IsImage() {
 				desc, err := remote.Get(ref, m.options.Remote...)
 				if err != nil {
 					panic(err)
 				}
 				b = desc.Manifest
-			} else if strings.HasSuffix(c.mt, "+json") {
+			} else {
 				blobRef, err := name.NewDigest(c.ref)
 				if err != nil {
 					panic(err)
@@ -176,17 +192,30 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					panic(err)
 				}
 				defer rc.Close()
-				b, err = io.ReadAll(rc)
-				if err != nil {
-					panic(err)
+
+				if strings.HasSuffix(c.mt, "+json") {
+					b, err = io.ReadAll(rc)
+					if err != nil {
+						panic(err)
+					}
+				} else {
+					f, err := os.CreateTemp("", "")
+					if err != nil {
+						panic(err)
+					}
+					defer f.Close()
+					if _, err := io.Copy(f, rc); err != nil {
+						panic(err)
+					}
+					fname = f.Name()
 				}
-			} else {
-				// todo: return a model that renders filesystems
 			}
 			newM := &model{
 				b:       b,
+				f:       fname,
 				ref:     ref,
 				choices: []choice{},
+				files:   []string{},
 				options: m.options,
 				back:    m,
 				lines:   []string{},
@@ -195,6 +224,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return newM, nil
 		case "backspace":
+			if m.f != "" {
+				defer os.Remove(m.f)
+			}
 			if m.back != nil {
 				return m.back, nil
 			}
@@ -212,26 +244,64 @@ func (m *model) View() string {
 		// we don't have to re-render cuz we're just scrolling
 		return strings.Join(m.visibleLines(), "\n")
 	}
-	var w strings.Builder
-	m.w = &outputter{
-		w:       &w,
-		cursor:  m.cursor,
-		fresh:   []bool{},
-		repo:    m.ref.Context().String(),
-		choices: []choice{},
-	}
-	if err := renderJSON(m.w, m.b); err != nil {
-		panic(err)
-	}
-	m.choices = m.w.choices
-	m.lines = strings.Split(w.String(), "\n")
-	if m.cursor < len(m.choices) {
-		buffer := int(float32(m.height) * .25)
-		c := m.choices[m.cursor]
-		if c.line+buffer > m.offset+m.height {
-			m.offset = min(len(m.lines)-m.height, c.line+buffer-m.height)
-		} else if c.line-buffer < m.offset {
-			m.offset = max(0, c.line-buffer)
+
+	if m.f != "" {
+		blob, err := os.Open(m.f)
+		if err != nil {
+			panic(err)
+		}
+		defer blob.Close()
+		var rc io.ReadCloser = blob
+		ok, pr, err := gzip.Peek(blob)
+		if err != nil {
+			panic(err)
+		}
+
+		rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
+		if ok {
+			// gzip
+			rc, err = gzip.UnzipReadCloser(rc)
+			if err != nil {
+				panic(err)
+			}
+		}
+		ok, pr, err = tarPeek(rc)
+		if ok {
+			tr := tar.NewReader(pr)
+			// tar
+			for {
+				header, err := tr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					panic(err)
+				}
+				m.lines = append(m.lines, header.Name)
+			}
+		}
+	} else {
+		var w strings.Builder
+		m.w = &outputter{
+			w:       &w,
+			cursor:  m.cursor,
+			fresh:   []bool{},
+			repo:    m.ref.Context().String(),
+			choices: []choice{},
+		}
+		if err := renderJSON(m.w, m.b); err != nil {
+			panic(err)
+		}
+		m.choices = m.w.choices
+		m.lines = strings.Split(w.String(), "\n")
+		if m.cursor < len(m.choices) {
+			buffer := int(float32(m.height) * .25)
+			c := m.choices[m.cursor]
+			if c.line+buffer > m.offset+m.height {
+				m.offset = min(len(m.lines)-m.height, c.line+buffer-m.height)
+			} else if c.line-buffer < m.offset {
+				m.offset = max(0, c.line-buffer)
+			}
 		}
 	}
 
@@ -1285,4 +1355,27 @@ func parsePurl(s string) (*purl, error) {
 	}
 
 	return p, nil
+}
+
+const (
+	magicGNU, versionGNU     = "ustar ", " \x00"
+	magicUSTAR, versionUSTAR = "ustar\x00", "00"
+)
+
+func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
+	// Make sure it's more than 512
+	pr := bufio.NewReaderSize(r, 1024)
+
+	block, err := pr.Peek(512)
+	if err != nil {
+		// https://github.com/google/go-containerregistry/issues/367
+		if err == io.EOF {
+			return false, pr, nil
+		}
+		return false, pr, err
+	}
+
+	magic := string(block[257:][:6])
+	isTar := magic == magicGNU || magic == magicUSTAR
+	return isTar, pr, nil
 }
