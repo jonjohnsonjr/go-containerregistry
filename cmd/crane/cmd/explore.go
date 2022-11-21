@@ -161,6 +161,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.offset++
 				m.zoomin = true
 			}
+		case "ctrl+b":
+			m.zoomin = true
+			if m.offset > 0 {
+				m.offset = max(0, m.offset-m.height)
+			}
+		case "ctrl+f":
+			m.zoomin = true
+			if m.offset < len(m.lines)-m.height {
+				m.offset = min(m.offset+m.height, len(m.lines)-m.height)
+			}
 		case "enter", " ":
 			// todo: pull this out of here
 			c := m.choices[m.cursor]
