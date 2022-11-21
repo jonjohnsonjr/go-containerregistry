@@ -17,9 +17,9 @@ package cmd
 import (
 	"archive/tar"
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net/url"
@@ -31,6 +31,7 @@ import (
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
+	"github.com/google/go-containerregistry/internal/lexer"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -48,10 +49,9 @@ var underline = lipgloss.NewStyle().Underline(true)
 // NewCmdExplore creates a new cobra.Command for the explore subcommand.
 func NewCmdExplore(options *[]crane.Option) *cobra.Command {
 	return &cobra.Command{
-		Use:     "explore SRC DST",
-		Aliases: []string{"cp"},
-		Short:   "Explore a registry or OCI layout via interactive tui",
-		Args:    cobra.ExactArgs(1),
+		Use:   "explore IMAGE",
+		Short: "Explore a registry or OCI layout via interactive tui",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			options := crane.GetOptions(*options...)
 			return explore(args[0], options)
@@ -75,8 +75,13 @@ func explore(src string, options crane.Options) error {
 		return err
 	}
 	p := tea.NewProgram(initialModel(desc, ref, options), tea.WithAltScreen(), tea.WithMouseCellMotion())
-	if _, err := p.Run(); err != nil {
+	m, err := p.Run()
+	if err != nil {
 		return err
+	}
+
+	if m, ok := m.(*model); ok {
+		fmt.Println(m.expr)
 	}
 
 	return nil
@@ -84,11 +89,12 @@ func explore(src string, options crane.Options) error {
 
 // links
 type choice struct {
-	ref  string
-	mt   string
-	size int64
-	text string
-	line int
+	ref   string
+	mt    string
+	size  int64
+	text  string
+	line  int
+	query url.Values
 }
 
 type model struct {
@@ -98,12 +104,14 @@ type model struct {
 	// }
 
 	ref     name.Reference
+	mt      string
 	options crane.Options
 	w       *outputter
+	expr    string
 
 	cursor  int
 	choices []choice
-	files   []string
+	choice  *choice
 
 	// to avoid reloading everything on backspace
 	back *model
@@ -124,9 +132,10 @@ type model struct {
 func initialModel(desc *remote.Descriptor, ref name.Reference, options crane.Options) *model {
 	m := &model{
 		b:       desc.Manifest,
+		expr:    "crane manifest " + ref.String(),
 		ref:     ref,
+		mt:      string(desc.MediaType),
 		choices: []choice{},
-		files:   []string{},
 		options: options,
 	}
 	return m
@@ -173,6 +182,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter", " ":
 			// todo: pull this out of here
+			if len(m.choices) == 0 {
+				return m, nil
+			}
 			c := m.choices[m.cursor]
 			ref, err := name.ParseReference(c.ref)
 			if err != nil {
@@ -181,13 +193,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			mt := types.MediaType(c.mt)
 			var b []byte
 			var fname string
-			if mt.IsIndex() || mt.IsImage() {
+			var expr string
+			if mt.IsIndex() || mt.IsImage() || isSchema1(mt) {
 				desc, err := remote.Get(ref, m.options.Remote...)
 				if err != nil {
 					panic(err)
 				}
 				b = desc.Manifest
+				if c.query != nil {
+					b, expr, err = jq(c.ref, b, c.query)
+					if err != nil {
+						panic(err)
+					}
+				}
 			} else {
+				expr = "crane blob " + c.ref
 				blobRef, err := name.NewDigest(c.ref)
 				if err != nil {
 					panic(err)
@@ -203,7 +223,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				defer rc.Close()
 
-				if strings.HasSuffix(c.mt, "+json") {
+				if c.mt == "application/json" || strings.HasSuffix(c.mt, "+json") {
 					b, err = io.ReadAll(rc)
 					if err != nil {
 						panic(err)
@@ -223,9 +243,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newM := &model{
 				b:       b,
 				f:       fname,
+				expr:    expr,
 				ref:     ref,
+				mt:      c.mt,
+				choice:  &c,
 				choices: []choice{},
-				files:   []string{},
 				options: m.options,
 				back:    m,
 				lines:   []string{},
@@ -262,21 +284,26 @@ func (m *model) View() string {
 		}
 		defer blob.Close()
 		var rc io.ReadCloser = blob
-		ok, pr, err := gzip.Peek(blob)
+		gzipped, pr, err := gzip.Peek(blob)
 		if err != nil {
 			panic(err)
 		}
 
 		rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
-		if ok {
+		if gzipped {
 			// gzip
 			rc, err = gzip.UnzipReadCloser(rc)
 			if err != nil {
 				panic(err)
 			}
 		}
-		ok, pr, err = tarPeek(rc)
+		ok, pr, err := tarPeek(rc)
 		if ok {
+			if gzipped {
+				m.expr += " | tar -tzf -"
+			} else {
+				m.expr += " | tar -tf -"
+			}
 			tr := tar.NewReader(pr)
 			// tar
 			for {
@@ -296,14 +323,23 @@ func (m *model) View() string {
 			w:       &w,
 			cursor:  m.cursor,
 			fresh:   []bool{},
+			ref:     m.ref.String(),
+			mt:      m.mt,
 			repo:    m.ref.Context().String(),
 			choices: []choice{},
 		}
-		if err := renderJSON(m.w, m.b); err != nil {
-			panic(err)
+		if m.choice != nil {
+			m.w.query = m.choice.query
 		}
-		m.choices = m.w.choices
-		m.lines = strings.Split(w.String(), "\n")
+		if m.w.query.Get("render") == "raw" {
+			m.lines = strings.Split(string(m.b), "\n")
+		} else {
+			if err := renderJSON(m.w, m.b); err != nil {
+				panic(err)
+			}
+			m.choices = m.w.choices
+			m.lines = strings.Split(w.String(), "\n")
+		}
 		if m.cursor < len(m.choices) {
 			buffer := int(float32(m.height) * .25)
 			c := m.choices[m.cursor]
@@ -318,6 +354,30 @@ func (m *model) View() string {
 	// Todo: maybe do this streaming or at least write to tmp file
 	// instead of keeping everything in memory
 	return strings.Join(m.visibleLines(), "\n")
+}
+
+func jq(ref string, b []byte, qs url.Values) ([]byte, string, error) {
+	jq, ok := qs["jq"]
+	if !ok {
+		return b, "", nil
+	}
+
+	var (
+		err error
+		exp string
+	)
+
+	exps := []string{"crane maniest " + ref}
+
+	for _, j := range jq {
+		b, exp, err = evalBytes(j, b)
+		if err != nil {
+			return nil, "", err
+		}
+		exps = append(exps, exp)
+	}
+
+	return b, strings.Join(exps, " | "), nil
 }
 
 // cribbed from bubbletea viewport
@@ -354,12 +414,13 @@ func max(a, b int) int {
 // TODO: this was hastily adapted from http handler stuff, rewrite the whole
 // thing to be a lot simpler
 type outputter struct {
-	w    *strings.Builder
-	u    *url.URL
-	name string
-	repo string
-	mt   string
-	pt   string
+	w     *strings.Builder
+	query url.Values
+	name  string
+	repo  string
+	ref   string
+	mt    string
+	pt    string
 
 	fresh []bool
 	jq    []string
@@ -372,44 +433,40 @@ type outputter struct {
 	line    int
 }
 
-// TODO: Lots of stuff used this in explore.ggcr.dev that we need to recreate
-// (mostly the jq stuff, but also repo pagination)
-func (w *outputter) BlueDoc(url, text string) {
-	w.tabf()
-	w.Printf(`"<a href="%s">%s</a>"`, url, html.EscapeString(strings.Trim(strconv.Quote(text), `"`)))
-	w.unfresh()
-	w.key = false
+func (w *outputter) BlueDoc(query url.Values, text string) {
+	w.Echo(w.ref, w.mt, 0, text, query)
 }
 
 func (w *outputter) URL(url, text string) {
-	w.Echo(url, "url", 0, text)
+	w.Echo(url, "url", 0, text, nil)
 }
 
 func (w *outputter) Linkify(mt string, h v1.Hash, size int64) {
-	w.Echo(w.repo+"@"+h.String(), mt, size, h.String())
+	w.Echo(w.repo+"@"+h.String(), mt, size, h.String(), nil)
 }
 
-func (w *outputter) Blob(ref, text string) {
-	w.Echo(ref, "application/json", 0, text)
+func (w *outputter) JSON(ref, text string) {
+	w.Echo(ref, "application/json", 0, text, nil)
 }
 
 func (w *outputter) LinkImage(ref, text string) {
-	w.Echo(ref, string(types.OCIImageIndex), 0, text)
+	w.Echo(ref, string(types.OCIImageIndex), 0, text, nil)
 }
 
 // TODO: have a way to query for repos
 func (w *outputter) LinkRepo(ref, text string) {
-	w.Echo(ref, "repo", 0, text)
+	w.Echo(ref, "repo", 0, text, nil)
 }
 
-func (w *outputter) Echo(ref, mt string, size int64, text string) {
+func (w *outputter) Echo(ref, mt string, size int64, text string, query url.Values) {
+	text = strings.Trim(strconv.Quote(text), `"`)
 	w.tabf()
 	rendered := text
 	if len(w.choices) == w.cursor {
 		rendered = underline.Render(text)
 	}
-	w.choices = append(w.choices, choice{ref, mt, 0, text, w.line})
-	w.Print(rendered)
+	w.choices = append(w.choices, choice{ref, mt, 0, text, w.line, query})
+	w.Print(`"` + rendered + `"`)
 	w.unfresh()
 	w.key = false
 }
@@ -573,21 +630,25 @@ func (w *outputter) refresh() {
 	w.fresh[len(w.fresh)-1] = true
 }
 
-// todo: rewrite this stuff to not roundtrip through urls
-func (w *outputter) addQuery(key, value string) url.URL {
-	u := *w.u
-	qs := u.Query()
-	qs.Add(key, value)
-	u.RawQuery = qs.Encode()
-	return u
+func (w *outputter) Query() url.Values {
+	raw := w.query.Encode()
+	q, err := url.ParseQuery(raw)
+	if err != nil {
+		panic(err)
+	}
+	return q
 }
 
-func (w *outputter) setQuery(key, value string) url.URL {
-	u := *w.u
-	qs := u.Query()
+func (w *outputter) addQuery(key, value string) url.Values {
+	qs := w.Query()
+	qs.Add(key, value)
+	return qs
+}
+
+func (w *outputter) setQuery(key, value string) url.Values {
+	qs := w.Query()
 	qs.Set(key, value)
-	u.RawQuery = qs.Encode()
-	return u
+	return qs
 }
 
 // renderJSON formats some JSON bytes in an OCI-specific way.
@@ -797,10 +858,20 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 					}
 				}
 			}
-			if w.pt == "application/vnd.in-toto+json" {
-				if name, ok := o["name"]; ok {
-					if ns, ok := name.(string); ok {
-						w.name = ns // cleared by EndMap
+			if name, ok := o["name"]; ok {
+				if ns, ok := name.(string); ok {
+					w.name = ns // cleared by EndMap
+				}
+			}
+		case "sha256":
+			// set above in digest
+			if w.name != "" {
+				if js, ok := o["sha256"]; ok {
+					if d, ok := js.(string); ok {
+						w.LinkImage(w.name+"@"+"sha256"+":"+d, d)
+
+						// Don't fall through to renderRaw.
+						continue
 					}
 				}
 			}
@@ -850,6 +921,31 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 					}
 				}
 			}
+		case "Docker-reference", "docker-reference":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					ref, err := name.ParseReference(s)
+					if err != nil {
+						log.Printf("Parse[%q](%q): %v", k, ref, err)
+					} else {
+						w.LinkImage(ref.String(), ref.String())
+
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
+			}
+
+		case "Docker-manifest-digest", "docker-manifest-digest":
+			h := v1.Hash{}
+			if err := json.Unmarshal(v, &h); err != nil {
+				log.Printf("Unmarshal digest %q: %v", string(v), err)
+			} else {
+				w.LinkImage(w.repo+"@"+h.String(), h.String())
+
+				// Don't fall through to renderRaw.
+				continue
+			}
 		case "blobSum":
 			h := v1.Hash{}
 			if err := json.Unmarshal(v, &h); err != nil {
@@ -865,11 +961,13 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 				if href, ok := js.(string); ok {
 					if pt, ok := o["payloadType"]; ok {
 						if s, ok := pt.(string); ok {
-							u := w.addQuery("payloadType", s)
-							w.BlueDoc(u.String(), href)
+							if s == "application/json" || strings.HasSuffix(s, "+json") {
+								qs := w.addQuery("jq", strings.Join(w.jq, ""))
+								w.BlueDoc(qs, href)
 
-							// Don't fall through to renderRaw.
-							continue
+								// Don't fall through to renderRaw.
+								continue
+							}
 						}
 					}
 				}
@@ -881,7 +979,7 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 					if err == nil {
 						ref, err := p.url(w.repo)
 						if err == nil {
-							w.Echo(ref, p.qualifiers.Get("mediaType"), 0, ps)
+							w.Echo(ref, p.qualifiers.Get("mediaType"), 0, ps, nil)
 							// Don't fall through to renderRaw.
 							continue
 						}
@@ -889,17 +987,15 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 				}
 			}
 		case "body":
-			if inside(w.u, "dev.sigstore.cosign/bundle") {
+			if inside(w.query, "dev.sigstore.cosign/bundle") {
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
 						jq := strings.Join(w.jq, "")
 						if jq == ".Payload.body" {
-							u := *w.u
-							qs := u.Query()
+							qs := w.Query()
 							qs.Add("jq", jq)
 							qs.Add("jq", "base64 -d")
-							u.RawQuery = qs.Encode()
-							w.BlueDoc(u.String(), s)
+							w.BlueDoc(qs, s)
 
 							continue
 						}
@@ -907,17 +1003,15 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 				}
 			}
 		case "content", "publicKey":
-			if inside(w.u, "dev.sigstore.cosign/bundle") {
+			if inside(w.query, "dev.sigstore.cosign/bundle") {
 				if js, ok := o[k]; ok {
 					if s, ok := js.(string); ok {
 						if (w.path(".spec.publicKey") && w.kindVer("intoto/0.0.1")) || (w.path(".spec.signature.publicKey.content") && w.kindVer("hashedrekord/0.0.1")) {
-							u := *w.u
-							qs := u.Query()
+							qs := w.Query()
 							qs.Add("jq", strings.Join(w.jq, ""))
 							qs.Add("jq", "base64 -d")
 							qs.Set("render", "raw")
-							u.RawQuery = qs.Encode()
-							w.BlueDoc(u.String(), s)
+							w.BlueDoc(qs, s)
 
 							continue
 						}
@@ -925,14 +1019,14 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 				}
 			}
 		case "value":
-			if inside(w.u, "dev.sigstore.cosign/bundle") {
+			if inside(w.query, "dev.sigstore.cosign/bundle") {
 				if (w.path(".spec.content.hash.value") && w.kindVer("intoto/0.0.1")) || (w.path(".spec.data.hash.value") && w.kindVer("hashedrekord/0.0.1")) {
 					if i, ok := o["algorithm"]; ok {
 						if s, ok := i.(string); ok {
 							if s == "sha256" {
 								if js, ok := o[k]; ok {
 									if d, ok := js.(string); ok {
-										w.Blob(w.repo+"@sha256:"+d, d)
+										w.JSON(w.repo+"@sha256:"+d, d)
 										continue
 									}
 								}
@@ -945,8 +1039,8 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
 					if w.jth(-2) == ".history" {
-						u := w.addQuery("jq", strings.Join(w.jq, ""))
-						w.BlueDoc(u.String(), s)
+						qs := w.addQuery("jq", strings.Join(w.jq, ""))
+						w.BlueDoc(qs, s)
 
 						continue
 					}
@@ -984,8 +1078,8 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 		case "next":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
-					u := w.setQuery("next", s)
-					w.BlueDoc(u.String(), s)
+					qs := w.setQuery("next", s)
+					w.BlueDoc(qs, s)
 
 					// Don't fall through to renderRaw.
 					continue
@@ -1085,8 +1179,8 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 	return nil
 }
 
-func inside(u *url.URL, ann string) bool {
-	for _, jq := range u.Query()["jq"] {
+func inside(qs url.Values, ann string) bool {
+	for _, jq := range qs["jq"] {
 		if strings.Contains(jq, `.annotations["`+ann+`"]`) {
 			return true
 		}
@@ -1175,20 +1269,9 @@ func renderAnnotations(w *outputter, o map[string]interface{}, raw *json.RawMess
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
 					if w.jth(-1) == ".annotations" {
-						u := w.addQuery("jq", strings.Join(w.jq, ""))
-						w.BlueDoc(u.String(), s)
+						qs := w.addQuery("jq", strings.Join(w.jq, ""))
+						w.BlueDoc(qs, s)
 
-						continue
-					}
-				}
-			}
-		case "org.opencontainers.image.documentation", "org.opencontainers.image.source", "org.opencontainers.image.url":
-			if js, ok := o[k]; ok {
-				if href, ok := js.(string); ok {
-					if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
-						w.BlueDoc(href, href)
-
-						// Don't fall through to renderRaw.
 						continue
 					}
 				}
@@ -1252,7 +1335,7 @@ func renderManifest(w *outputter, o map[string]interface{}, raw *json.RawMessage
 			if len(w.choices) == w.cursor {
 				rendered = underline.Render(k)
 			}
-			w.choices = append(w.choices, choice{ref, string(types.OCIImageIndex), 0, k, w.line})
+			w.choices = append(w.choices, choice{ref, string(types.OCIImageIndex), 0, k, w.line, nil})
 			w.Key(rendered)
 		}
 
@@ -1388,4 +1471,94 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 	magic := string(block[257:][:6])
 	isTar := magic == magicGNU || magic == magicUSTAR
 	return isTar, pr, nil
+}
+
+func evalBytes(j string, b []byte) ([]byte, string, error) {
+	quote := false // this is a hack, we should be lexing properly instead
+	l := lexer.Lex(j, j)
+	item := l.NextItem()
+
+	// Test the first thing to see if it's expected to be JSON.
+	var v interface{} = b
+	if item.Typ == lexer.ItemAccessor || item.Typ == lexer.ItemIndex {
+		if err := json.Unmarshal(json.RawMessage(b), &v); err != nil {
+			return nil, "", fmt.Errorf("unmarshal: %w", err)
+		}
+	}
+
+	for {
+		if item.Typ == lexer.ItemEOF {
+			break
+		}
+		switch item.Typ {
+		case lexer.ItemError:
+			return nil, "", fmt.Errorf("lexer.ItemError: %w", item.Val)
+		case lexer.ItemAccessor:
+			quote = true
+			vv, ok := v.(map[string]interface{})
+			if !ok {
+				return nil, "", fmt.Errorf("eval: access %s", item.Val)
+			}
+			v = vv[item.Val]
+		case lexer.ItemIndex:
+			vv, ok := v.([]interface{})
+			if !ok {
+				return nil, "", fmt.Errorf("eval: index %s", item.Val)
+			}
+			idx, err := strconv.Atoi(item.Val)
+			if err != nil {
+				return nil, "", fmt.Errorf("atoi: %w", err)
+			}
+			v = vv[idx]
+		case lexer.ItemSentinel:
+			switch strings.TrimSpace(item.Val) {
+			case "base64 -d":
+				s, err := toString(v)
+				if err != nil {
+					return nil, "", err
+				}
+
+				v, err = base64.StdEncoding.DecodeString(s)
+				if err != nil {
+					return nil, "", fmt.Errorf("base64 -d: %w", err)
+				}
+			}
+		}
+		item = l.NextItem()
+	}
+
+	b, err := toBytes(v)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if quote {
+		j = "jq -r '" + j + "'"
+	}
+
+	return b, j, nil
+}
+
+func toString(v interface{}) (string, error) {
+	switch vv := v.(type) {
+	case string:
+		return vv, nil
+	case []byte:
+		return string(vv), nil
+	}
+	return "", fmt.Errorf("cannot convert %T to string", v)
+}
+
+func toBytes(v interface{}) ([]byte, error) {
+	switch vv := v.(type) {
+	case string:
+		return []byte(vv), nil
+	case []byte:
+		return vv, nil
+	}
+	return nil, fmt.Errorf("cannot convert %T to bytes", v)
+}
+
+func isSchema1(mt types.MediaType) bool {
+	return mt == types.DockerManifestSchema1 || mt == types.DockerManifestSchema1Signed
 }
