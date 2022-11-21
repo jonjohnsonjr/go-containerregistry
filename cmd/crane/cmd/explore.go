@@ -262,6 +262,36 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.back != nil {
 				return m.back, nil
 			}
+
+			if strings.HasPrefix(m.expr, "crane ls ") {
+				// todo: catalog or gcrane
+				return m, nil
+			}
+
+			ts, err := remote.List(m.ref.Context(), m.options.Remote...)
+			if err != nil {
+				panic(err)
+			}
+
+			v := &tags{
+				Tags: ts,
+				Name: m.ref.Context().RepositoryStr(),
+			}
+			b, err := json.Marshal(v)
+			if err != nil {
+				panic(err)
+			}
+
+			return &model{
+				b:       b,
+				expr:    "crane ls " + m.ref.Context().String(),
+				ref:     m.ref,
+				choices: []choice{},
+				options: m.options,
+				lines:   []string{},
+				height:  m.height,
+				width:   m.width,
+			}, nil
 		}
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
@@ -1561,4 +1591,9 @@ func toBytes(v interface{}) ([]byte, error) {
 
 func isSchema1(mt types.MediaType) bool {
 	return mt == types.DockerManifestSchema1 || mt == types.DockerManifestSchema1Signed
+}
+
+type tags struct {
+	Name string   `json:"name"`
+	Tags []string `json:"tags"`
 }
