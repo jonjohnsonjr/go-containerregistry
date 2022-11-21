@@ -26,10 +26,11 @@ import (
 
 // Options hold the options that crane uses when calling other packages.
 type Options struct {
-	Name     []name.Option
-	Remote   []remote.Option
-	Platform *v1.Platform
-	Keychain authn.Keychain
+	Name      []name.Option
+	Remote    []remote.Option
+	Platform  *v1.Platform
+	Keychain  authn.Keychain
+	Transport http.RoundTripper
 }
 
 // GetOptions exposes the underlying []remote.Option, []name.Option, and
@@ -60,6 +61,7 @@ type Option func(*Options)
 // for remote operations.
 func WithTransport(t http.RoundTripper) Option {
 	return func(o *Options) {
+		o.Transport = t
 		o.Remote = append(o.Remote, remote.WithTransport(t))
 	}
 }

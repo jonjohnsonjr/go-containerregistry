@@ -36,6 +36,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/spf13/cobra"
 
@@ -53,19 +54,37 @@ func NewCmdExplore(options *[]crane.Option) *cobra.Command {
 		Short: "Explore a registry or OCI layout via interactive tui",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			options := crane.GetOptions(*options...)
-			return explore(args[0], options)
+			return explore(args[0], *options)
 		},
 	}
 }
 
-func explore(src string, options crane.Options) error {
+func explore(src string, opts []crane.Option) error {
+	options := crane.GetOptions(opts...)
+
 	ref, err := name.ParseReference(src)
 	if err != nil {
 		return err
 	}
+
+	auth, err := options.Keychain.Resolve(ref.Context())
+	if err != nil {
+		return err
+	}
+
+	t := options.Transport
+	t = transport.NewLogger(t)
+	t = transport.NewRetry(t)
+	t = transport.NewUserAgent(t, "")
+	t, err = transport.New(ref.Context().Registry, auth, t, []string{ref.Scope(transport.PullScope)})
+	if err != nil {
+		return err
+	}
+
+	opts = append(opts, crane.WithTransport(t))
+	options = crane.GetOptions(opts...)
+
 	// TODO: HEAD for cache to avoid rate limit
-	// TODO: Reuse transport to avoid reauth
 	// d, err := remote.Head(ref, opts...)
 	// if err != nil {
 	// 	return err
