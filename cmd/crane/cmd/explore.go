@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -32,6 +33,7 @@ import (
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/lexer"
+	"github.com/google/go-containerregistry/internal/verify"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -164,6 +166,11 @@ func (m *model) Init() tea.Cmd {
 	return nil
 }
 
+func (m *model) update(msg tea.Msg) (tea.Model, error) {
+	// TODO: errorful version
+	return nil, nil
+}
+
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -205,15 +212,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			c := m.choices[m.cursor]
-			ref, err := name.ParseReference(c.ref)
-			if err != nil {
-				panic(err)
-			}
 			mt := types.MediaType(c.mt)
+			var err error
 			var b []byte
 			var fname string
 			var expr string
 			if mt.IsIndex() || mt.IsImage() || isSchema1(mt) {
+				ref, err := name.ParseReference(c.ref)
+				if err != nil {
+					panic(err)
+				}
 				desc, err := remote.Get(ref, m.options.Remote...)
 				if err != nil {
 					panic(err)
@@ -224,23 +232,51 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						panic(err)
 					}
+				} else {
+					expr = "crane manifest " + ref.String()
 				}
 			} else {
 				expr = "crane blob " + c.ref
-				blobRef, err := name.NewDigest(c.ref)
-				if err != nil {
-					panic(err)
-				}
 
-				l, err := remote.Layer(blobRef, m.options.Remote...)
-				if err != nil {
-					panic(err)
+				var rc io.ReadCloser
+				if c.mt == "url" {
+					chunks := strings.SplitN(c.ref, "@", 2)
+					if len(chunks) != 2 {
+						panic(fmt.Errorf("weird url: %s", c.ref))
+					}
+					u := chunks[0]
+					digest := chunks[1]
+					resp, err := http.Get(u)
+					if err != nil {
+						panic(err)
+					}
+					if resp.StatusCode == http.StatusOK {
+						expr = "curl -L " + u
+						h, err := v1.NewHash(digest)
+						if err != nil {
+							panic(err)
+						}
+						rc, err = verify.ReadCloser(resp.Body, resp.ContentLength, h)
+						if err != nil {
+							panic(err)
+						}
+						defer rc.Close()
+					}
+				} else {
+					blobRef, err := name.NewDigest(c.ref)
+					if err != nil {
+						panic(err)
+					}
+					l, err := remote.Layer(blobRef, m.options.Remote...)
+					if err != nil {
+						panic(err)
+					}
+					rc, err = l.Compressed()
+					if err != nil {
+						panic(err)
+					}
+					defer rc.Close()
 				}
-				rc, err := l.Compressed()
-				if err != nil {
-					panic(err)
-				}
-				defer rc.Close()
 
 				if c.mt == "application/json" || strings.HasSuffix(c.mt, "+json") {
 					b, err = io.ReadAll(rc)
@@ -263,7 +299,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				b:       b,
 				f:       fname,
 				expr:    expr,
-				ref:     ref,
+				ref:     m.ref,
 				mt:      c.mt,
 				choice:  &c,
 				choices: []choice{},
@@ -272,6 +308,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				lines:   []string{},
 				height:  m.height,
 				width:   m.width,
+			}
+
+			if ref, err := name.ParseReference(c.ref); err == nil {
+				newM.ref = ref
 			}
 			return newM, nil
 		case "backspace":
@@ -939,17 +979,9 @@ func renderMap(w *outputter, o map[string]interface{}, raw *json.RawMessage) err
 							}
 							w.StartArray()
 							for _, iface := range ii {
-								if original, ok := iface.(string); ok {
-									scheme := "https"
-									u := original
-									if strings.HasPrefix(original, "https://") {
-										u = strings.TrimPrefix(original, "https://")
-									} else if strings.HasPrefix(original, "http://") {
-										u = strings.TrimPrefix(original, "http://")
-										scheme = "http"
-									}
+								if u, ok := iface.(string); ok {
 									// TODO: size
-									w.URL("/"+scheme+"/"+url.PathEscape(u)+"@"+h.String(), original)
+									w.URL(u+"@"+h.String(), u)
 								} else {
 									// This wasn't a list of strings, render whatever we found.
 									b, err := json.Marshal(iface)
