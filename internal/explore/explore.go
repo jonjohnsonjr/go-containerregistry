@@ -954,7 +954,8 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	qs := r.URL.Query()
 	mt := qs.Get("mt")
-	if mt != "" {
+	if mt != "" && !strings.Contains(mt, ".layer.") {
+		// Avoid setting this for steve's artifacts stupidity.
 		w.Header().Set("Content-Type", mt)
 	}
 	qsize := qs.Get("size")
@@ -964,6 +965,10 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		} else {
 			size = sz
 		}
+	}
+
+	if debug {
+		log.Printf("size=%d", size)
 	}
 
 	// Allow this to be cached for an hour.
@@ -1221,7 +1226,8 @@ func (s *sizeSeeker) Read(p []byte) (int, error) {
 			b, err := s.buf.Peek(len(p))
 			if err != nil {
 				if err == io.EOF {
-					return bytes.NewReader(b).Read(p)
+					n, _ := bytes.NewReader(b).Read(p)
+					return n, io.EOF
 				} else {
 					return 0, err
 				}
