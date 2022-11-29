@@ -94,7 +94,9 @@ func (w *jsonOutputter) Linkify(mt string, h v1.Hash, size int64) {
 	if strings.Contains(handler, "?") {
 		qs = "&"
 	}
-	if size != 0 {
+	if strings.HasSuffix(mt, "+wasm") {
+		w.Printf(`"<a href="https://github.com/opencontainers/artifacts/issues/61">%s</a>"`, html.EscapeString(h.String()))
+	} else if size != 0 {
 		w.Printf(`"<a href="/%s%s@%s%smt=%s&size=%d">%s</a>"`, handler, w.repo, h.String(), qs, url.QueryEscape(mt), size, html.EscapeString(h.String()))
 	} else if h.String() == emptyDigest {
 		w.Printf(`"<a href="/%s%s@%s%smt=%s" title="this is an empty layer that only modifies metadata, so it has no filesystem content">%s</a>"`, handler, w.repo, h.String(), qs, url.QueryEscape(mt), html.EscapeString(h.String()))
