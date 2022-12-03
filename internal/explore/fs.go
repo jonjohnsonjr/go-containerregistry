@@ -399,8 +399,17 @@ func (f *layerFile) Seek(offset int64, whence int) (int64, error) {
 	return 0, fmt.Errorf("not implemented")
 }
 
+func (f *layerFile) tooBig() []byte {
+	return []byte("this file is too big for cloud run to serve, I'll fix it later, sorry")
+}
+
 func (f *layerFile) Read(p []byte) (int, error) {
 	debugf("Read(%q): len(p) = %d", f.name, len(p))
+
+	if f.header.Size > respTooBig {
+		log.Printf("too big")
+		return bytes.NewReader(f.tooBig()).Read(p)
+	}
 
 	// Handle first read.
 	if f.buf == nil {
@@ -608,6 +617,13 @@ func (f *layerFile) Stat() (os.FileInfo, error) {
 		return hdr.FileInfo(), nil
 	}
 
+	if f.header.Size > respTooBig {
+		return bigFifo{
+			name:    f.header.Name,
+			content: f.tooBig(),
+		}, nil
+	}
+
 	return f.header.FileInfo(), nil
 }
 
@@ -680,4 +696,40 @@ func typeStr(t byte) string {
 	}
 
 	return string(t)
+}
+
+// Implements os.FileInfo for empty directory.
+type bigFifo struct {
+	name    string
+	content []byte
+}
+
+func (b bigFifo) Name() string {
+	debugf("%q.Name()", b.name)
+	return b.name
+}
+
+func (b bigFifo) Size() int64 {
+	debugf("%q.Size()", b.name)
+	return int64(len(b.content))
+}
+
+func (b bigFifo) Mode() os.FileMode {
+	debugf("%q.Mode()", b.name)
+	return 0
+}
+
+func (b bigFifo) ModTime() time.Time {
+	debugf("%q.ModTime()", b.name)
+	return time.Now()
+}
+
+func (b bigFifo) IsDir() bool {
+	debugf("%q.IsDir()", b.name)
+	return false
+}
+
+func (b bigFifo) Sys() interface{} {
+	debugf("%q.Sys()", b.name)
+	return nil
 }

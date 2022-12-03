@@ -49,8 +49,9 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// We should not buffer blobs greater than 1MB
-const tooBig = 2 << 20
+// We should not buffer blobs greater than 2MB
+const tooBig = 1 << 21
+const respTooBig = 1 << 25
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
 
 type handler struct {
