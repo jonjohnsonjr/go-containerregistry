@@ -110,34 +110,72 @@ func (dk *defaultKeychain) Resolve(target Resource) (Authenticator, error) {
 	// See:
 	// https://github.com/google/ko/issues/90
 	// https://github.com/moby/moby/blob/fc01c2b481097a6057bec3cd1ab2d7b4488c50c4/registry/config.go#L397-L404
-	var cfg, empty types.AuthConfig
-	for _, key := range []string{
-		target.String(),
-		target.RegistryStr(),
-	} {
-		if key == name.DefaultRegistry {
-			key = DefaultAuthKey
-		}
+	ca := &configAuth{cf, target.String(), nil}
+	next := &configAuth{cf, target.RegistryStr(), nil}
 
-		cfg, err = cf.GetAuthConfig(key)
-		if err != nil {
-			return nil, err
-		}
-		if cfg != empty {
-			break
-		}
+	// TODO: Do we need to do this so eagerly? Probably yes for backward compat.
+	auth, err := ca.resolve()
+	if err != nil {
+		return nil, err
+	}
+
+	if auth == Anonymous {
+		return next.resolve()
+	}
+
+	if ca.key == next.key {
+		return auth, nil
+	}
+
+	return &nextConfig{auth, next}, nil
+}
+
+type configAuth struct {
+	cf  *configfile.ConfigFile
+	key string
+
+	cfg *AuthConfig
+}
+
+func (c *configAuth) resolve() (Authenticator, error) {
+	var empty types.AuthConfig
+	key := c.key
+	if key == name.DefaultRegistry {
+		key = DefaultAuthKey
+	}
+
+	cfg, err := c.cf.GetAuthConfig(key)
+	if err != nil {
+		return nil, err
 	}
 	if cfg == empty {
 		return Anonymous, nil
 	}
-
-	return FromConfig(AuthConfig{
+	c.cfg = &AuthConfig{
 		Username:      cfg.Username,
 		Password:      cfg.Password,
 		Auth:          cfg.Auth,
 		IdentityToken: cfg.IdentityToken,
 		RegistryToken: cfg.RegistryToken,
-	}), nil
+	}
+	return c, nil
+}
+
+func (c *configAuth) Authorization() (*AuthConfig, error) {
+	return c.cfg, nil
+}
+
+type nextConfig struct {
+	auth Authenticator
+	next *configAuth
+}
+
+func (n *nextConfig) Authorization() (*AuthConfig, error) {
+	return n.auth.Authorization()
+}
+
+func (n *nextConfig) Next() (Authenticator, error) {
+	return n.next.resolve()
 }
 
 // fileExists returns true if the given path exists and is not a directory.

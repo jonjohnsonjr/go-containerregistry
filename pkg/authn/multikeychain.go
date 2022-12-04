@@ -28,14 +28,57 @@ func NewMultiKeychain(kcs ...Keychain) Keychain {
 
 // Resolve implements Keychain.
 func (mk *multiKeychain) Resolve(target Resource) (Authenticator, error) {
-	for _, kc := range mk.keychains {
-		auth, err := kc.Resolve(target)
+	n := &mkNext{
+		mk:     mk,
+		target: target,
+		index:  0,
+	}
+	return n.Next()
+}
+
+type mkNext struct {
+	mk      *multiKeychain
+	target  Resource
+	index   int
+	wrapped Authenticator
+}
+
+type hasNext interface {
+	Next() (Authenticator, error)
+}
+
+func (m *mkNext) Next() (Authenticator, error) {
+	if hn, ok := m.wrapped.(hasNext); ok {
+		next, err := hn.Next()
+		if next != Anonymous {
+			return &mkNext{
+				mk:      m.mk,
+				target:  m.target,
+				index:   m.index,
+				wrapped: next,
+			}, err
+		}
+	}
+	for i := m.index; i < len(m.mk.keychains); i += 1 {
+		kc := m.mk.keychains[i]
+		next := &mkNext{
+			mk:     m.mk,
+			target: m.target,
+			index:  i + 1,
+		}
+		auth, err := kc.Resolve(m.target)
 		if err != nil {
-			return nil, err
+			// TODO: discuss -- this allows callers to handle errors and continue
+			return next, err
 		}
 		if auth != Anonymous {
-			return auth, nil
+			next.wrapped = auth
+			return next, nil
 		}
 	}
 	return Anonymous, nil
+}
+
+func (m *mkNext) Authorization() (*AuthConfig, error) {
+	return m.wrapped.Authorization()
 }

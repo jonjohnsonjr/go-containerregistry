@@ -68,11 +68,12 @@ func (gk *googleKeychain) Resolve(target authn.Resource) (authn.Authenticator, e
 	return gk.auth, nil
 }
 
+// TODO: we can probably clean up all this logging once Next() works.
 func resolve() authn.Authenticator {
 	auth, envErr := NewEnvAuthenticator()
 	if envErr == nil && auth != authn.Anonymous {
 		logs.Debug.Println("google.Keychain: using Application Default Credentials")
-		return auth
+		return &nextAuth{auth, NewGcloudAuthenticator}
 	}
 
 	auth, gErr := NewGcloudAuthenticator()
@@ -89,4 +90,17 @@ func resolve() authn.Authenticator {
 		logs.Debug.Printf("gcloud error: %v", gErr)
 	}
 	return authn.Anonymous
+}
+
+type nextAuth struct {
+	auth authn.Authenticator
+	next func() (authn.Authenticator, error)
+}
+
+func (n *nextAuth) Authorization() (*authn.AuthConfig, error) {
+	return n.auth.Authorization()
+}
+
+func (n *nextAuth) Next() (authn.Authenticator, error) {
+	return n.next()
 }

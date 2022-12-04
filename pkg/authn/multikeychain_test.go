@@ -71,6 +71,7 @@ func TestMultiKeychain(t *testing.T) {
 		),
 		want: Anonymous,
 	}}
+	// TODO: multikeychain with nextable authenticators
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -78,8 +79,16 @@ func TestMultiKeychain(t *testing.T) {
 			if err != nil {
 				t.Errorf("Resolve() = %v", err)
 			}
-			if got != test.want {
-				t.Errorf("Resolve() = %v, wanted %v", got, test.want)
+			gotAuth, err := got.Authorization()
+			if err != nil {
+				t.Errorf("Authorization() = %v", err)
+			}
+			wantAuth, err := test.want.Authorization()
+			if err != nil {
+				t.Errorf("Authorization() = %v", err)
+			}
+			if *gotAuth != *wantAuth {
+				t.Errorf("Resolve() = %v, wanted %v", gotAuth, wantAuth)
 			}
 		})
 	}
