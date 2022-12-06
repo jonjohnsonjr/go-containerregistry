@@ -165,6 +165,11 @@ func (c *configAuth) Authorization() (*AuthConfig, error) {
 	return c.cfg, nil
 }
 
+// Allows falling back to anonymous even if we did find creds.
+func (c *configAuth) Next() (Authenticator, error) {
+	return Anonymous, nil
+}
+
 type nextConfig struct {
 	auth Authenticator
 	next *configAuth

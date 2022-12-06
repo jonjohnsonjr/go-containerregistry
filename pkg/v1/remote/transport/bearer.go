@@ -19,11 +19,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	authchallenge "github.com/docker/distribution/registry/client/auth/challenge"
 	"github.com/google/go-containerregistry/internal/redact"
@@ -35,19 +37,22 @@ import (
 type bearerTransport struct {
 	// Wrapped by bearerTransport.
 	inner http.RoundTripper
-	// Basic credentials that we exchange for bearer tokens.
-	basic authn.Authenticator
-	// Holds the bearer response from the token service.
-	bearer authn.AuthConfig
 	// Registry to which we send bearer tokens.
 	registry name.Registry
 	// See https://tools.ietf.org/html/rfc6750#section-3
 	realm string
 	// See https://docs.docker.com/registry/spec/auth/token/
 	service string
-	scopes  []string
 	// Scheme we should use, determined by ping response.
 	scheme string
+
+	sync.Mutex
+	// Basic credentials that we exchange for bearer tokens.
+	basic authn.Authenticator
+	// Holds the bearer response from the token service.
+	bearer authn.AuthConfig
+	// See https://docs.docker.com/registry/spec/auth/token/
+	scopes []string
 }
 
 var _ http.RoundTripper = (*bearerTransport)(nil)
@@ -80,44 +85,95 @@ func (bt *bearerTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 		return bt.inner.RoundTrip(in)
 	}
 
-	res, err := sendRequest()
-	if err != nil {
-		return nil, err
-	}
+	// Keep track of whether the last iteration with the same creds saw a challenge.
+	// It's possible to get stuck in a 401 loop because registries will successfully
+	// refresh with the subset of scopes you are actually allowed to have.
+	challenged := false
 
-	// If we hit a WWW-Authenticate challenge, it might be due to expired tokens or insufficient scope.
-	if challenges := authchallenge.ResponseChallenges(res); len(challenges) != 0 {
-		// close out old response, since we will not return it.
-		res.Body.Close()
-
-		newScopes := []string{}
-		for _, wac := range challenges {
-			// TODO(jonjohnsonjr): Should we also update "realm" or "service"?
-			if want, ok := wac.Parameters["scope"]; ok {
-				// Add any scopes that we don't already request.
-				got := stringSet(bt.scopes)
-				if _, ok := got[want]; !ok {
-					newScopes = append(newScopes, want)
-				}
-			}
-		}
-
-		// Some registries seem to only look at the first scope parameter during a token exchange.
-		// If a request fails because it's missing a scope, we should put those at the beginning,
-		// otherwise the registry might just ignore it :/
-		newScopes = append(newScopes, bt.scopes...)
-		bt.scopes = newScopes
-
-		// TODO(jonjohnsonjr): Teach transport.Error about "error" and "error_description" from challenge.
-
-		// Retry the request to attempt to get a valid token.
-		if err = bt.refresh(in.Context()); err != nil {
+	for {
+		res, err := sendRequest()
+		if err != nil {
 			return nil, err
 		}
-		return sendRequest()
-	}
+		if !(res.StatusCode == http.StatusForbidden || res.StatusCode == http.StatusUnauthorized) {
+			return res, nil
+		}
 
-	return res, err
+		// Rewind the body in case we are retrying a request with a body.
+		if in.GetBody != nil {
+			body, err := in.GetBody()
+			if err != nil {
+				return nil, err
+			}
+			in.Body = body
+		}
+
+		// TODO: We could make this a lot better...
+		bt.Lock()
+		defer bt.Unlock()
+
+		challenges := authchallenge.ResponseChallenges(res)
+		canRefresh := !challenged && len(challenges) != 0
+		if canRefresh {
+			// close out old response, since we will not return it.
+			io.Copy(ioutil.Discard, res.Body)
+			res.Body.Close()
+
+			newScopes := []string{}
+			for _, wac := range challenges {
+				// TODO(jonjohnsonjr): Should we also update "realm" or "service"?
+				if want, ok := wac.Parameters["scope"]; ok {
+					// Add any scopes that we don't already request.
+					got := stringSet(bt.scopes)
+					if _, ok := got[want]; !ok {
+						newScopes = append(newScopes, want)
+					}
+				}
+			}
+
+			// Some registries seem to only look at the first scope parameter during a token exchange.
+			// If a request fails because it's missing a scope, we should put those at the beginning,
+			// otherwise the registry might just ignore it :/
+			newScopes = append(newScopes, bt.scopes...)
+			bt.scopes = newScopes
+
+			// TODO(jonjohnsonjr): Teach transport.Error about "error" and "error_description" from challenge.
+
+			// Retry the request to attempt to get a valid token.
+			if err := bt.refresh(in.Context()); err != nil {
+				return nil, err
+			}
+
+			challenged = true
+			continue
+		}
+
+		nextable, hasNext := bt.basic.(interface {
+			Next() (authn.Authenticator, error)
+		})
+		if !hasNext {
+			return res, err
+		}
+
+		// Clear this because we are going to retry with the next authenticator.
+		challenged = false
+		next, nextErr := nextable.Next()
+		if nextErr != nil {
+			if next == nil {
+				return res, err
+			}
+			logs.Debug.Printf("Next(): %v", nextErr)
+		}
+
+		// close out old response, since we will not return it.
+		io.Copy(ioutil.Discard, res.Body)
+		res.Body.Close()
+
+		bt.basic = next
+		if err := bt.refresh(in.Context()); err != nil {
+			return nil, err
+		}
+	}
 }
 
 // It's unclear which authentication flow to use based purely on the protocol,

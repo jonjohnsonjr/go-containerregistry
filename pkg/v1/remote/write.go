@@ -589,11 +589,17 @@ func (w *writer) commitManifest(ctx context.Context, t Taggable, ref name.Refere
 		u := w.url(fmt.Sprintf("/v2/%s/manifests/%s", w.repo.RepositoryStr(), ref.Identifier()))
 
 		// Make the request to PUT the serialized manifest
-		req, err := http.NewRequest(http.MethodPut, u.String(), bytes.NewBuffer(raw))
+		req, err := http.NewRequest(http.MethodPut, u.String(), bytes.NewReader(raw))
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Content-Type", string(desc.MediaType))
+
+		// Allow net/http to retry these
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(raw)), nil
+		}
+		req.Header[http.CanonicalHeaderKey("Idempotency-Key")] = []string{}
 
 		resp, err := w.client.Do(req.WithContext(ctx))
 		if err != nil {
