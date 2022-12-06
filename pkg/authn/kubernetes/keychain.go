@@ -301,12 +301,38 @@ func urlsMatch(globURL *url.URL, targetURL *url.URL) (bool, error) {
 	return true, nil
 }
 
-func toAuthenticator(configs []authn.AuthConfig) (authn.Authenticator, error) {
-	cfg := configs[0]
-
+func redact(cfg authn.AuthConfig) authn.AuthConfig {
 	if cfg.Auth != "" {
 		cfg.Auth = ""
 	}
+	return cfg
+}
 
-	return authn.FromConfig(cfg), nil
+func toAuthenticator(configs []authn.AuthConfig) (authn.Authenticator, error) {
+	if len(configs) == 1 {
+		return authn.FromConfig(redact(configs[0])), nil
+	}
+
+	return &authenticator{configs}, nil
+}
+
+type authenticator struct {
+	configs []authn.AuthConfig
+}
+
+func (a *authenticator) Authorization() (*authn.AuthConfig, error) {
+	cfg := redact(a.configs[0])
+	return &cfg, nil
+}
+
+func (a *authenticator) Next() (authn.Authenticator, error) {
+	if len(a.configs) < 2 {
+		// This shouldn't happen.
+		return authn.Anonymous, nil
+	}
+	if len(a.configs) == 2 {
+		return authn.FromConfig(redact(a.configs[1])), nil
+	}
+
+	return &authenticator{a.configs[1:]}, nil
 }

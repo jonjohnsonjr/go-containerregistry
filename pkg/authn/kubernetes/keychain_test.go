@@ -160,7 +160,7 @@ func TestAttachedServiceAccount(t *testing.T) {
 		&authn.Basic{Username: username, Password: password})
 }
 
-// Prioritze picking the first secret
+// Prioritize picking the first secret
 func TestSecretPriority(t *testing.T) {
 	secrets := []corev1.Secret{
 		*dockerCfgSecretType.Create(t, "ns", "secret", "fake.registry.io", authn.AuthConfig{
@@ -176,8 +176,11 @@ func TestSecretPriority(t *testing.T) {
 		t.Fatalf("NewFromPullSecrets() = %v", err)
 	}
 
-	expectedAuth := &authn.Basic{Username: "user", Password: "pass"}
-	testResolve(t, kc, registry(t, "fake.registry.io"), expectedAuth)
+	expectedAuths := []authn.Authenticator{
+		&authn.Basic{Username: "user", Password: "pass"},
+		&authn.Basic{Username: "anotherUser", Password: "anotherPass"},
+	}
+	testResolve(t, kc, registry(t, "fake.registry.io"), expectedAuths...)
 }
 
 func TestResolveTargets(t *testing.T) {
@@ -345,23 +348,35 @@ func TestAuthWithGlobs(t *testing.T) {
 	testResolve(t, kc, repo(t, "blah.registry.io/repo"), authn.FromConfig(auth))
 }
 
-func testResolve(t *testing.T, kc authn.Keychain, target authn.Resource, expectedAuth authn.Authenticator) {
+func testResolve(t *testing.T, kc authn.Keychain, target authn.Resource, expectedAuths ...authn.Authenticator) {
 	t.Helper()
 
 	auth, err := kc.Resolve(target)
 	if err != nil {
 		t.Errorf("Resolve(%v) = %v", target, err)
 	}
-	got, err := auth.Authorization()
-	if err != nil {
-		t.Errorf("Authorization() = %v", err)
-	}
-	want, err := expectedAuth.Authorization()
-	if err != nil {
-		t.Errorf("Authorization() = %v", err)
-	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Error("Resolve() diff (-want, +got)\n", diff)
+	for _, expectedAuth := range expectedAuths {
+		got, err := auth.Authorization()
+		if err != nil {
+			t.Errorf("Authorization() = %v", err)
+		}
+		want, err := expectedAuth.Authorization()
+		if err != nil {
+			t.Errorf("Authorization() = %v", err)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Error("Resolve() diff (-want, +got)\n", diff)
+		}
+
+		wn, ok := auth.(interface {
+			Next() (authn.Authenticator, error)
+		})
+		if ok {
+			auth, err = wn.Next()
+			if err != nil {
+				t.Fatalf("Next() = %v", err)
+			}
+		}
 	}
 }
 
