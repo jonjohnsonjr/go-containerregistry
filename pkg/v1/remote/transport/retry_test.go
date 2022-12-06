@@ -17,8 +17,10 @@ package transport
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,12 +29,19 @@ import (
 
 type mockTransport struct {
 	errs  []error
+	resps []*http.Response
 	count int
 }
 
 func (t *mockTransport) RoundTrip(in *http.Request) (out *http.Response, err error) {
 	defer func() { t.count++ }()
-	return nil, t.errs[t.count]
+	if t.count < len(t.resps) {
+		out = t.resps[t.count]
+	}
+	if t.count < len(t.errs) {
+		err = t.errs[t.count]
+	}
+	return
 }
 
 type perm struct{}
@@ -51,9 +60,17 @@ func (e temp) Temporary() bool {
 	return true
 }
 
+func resp(code int) *http.Response {
+	return &http.Response{
+		StatusCode: code,
+		Body:       io.NopCloser(strings.NewReader("hi")),
+	}
+}
+
 func TestRetryTransport(t *testing.T) {
 	for _, test := range []struct {
 		errs  []error
+		resps []*http.Response
 		count int
 	}{{
 		// Don't retry permanent.
@@ -67,12 +84,26 @@ func TestRetryTransport(t *testing.T) {
 		// Stop at some max.
 		errs:  []error{temp{}, temp{}, temp{}, temp{}, temp{}},
 		count: 3,
+	}, {
+		// Retry http errors.
+		errs: []error{nil, nil, temp{}, temp{}, temp{}},
+		resps: []*http.Response{
+			resp(http.StatusRequestTimeout),
+			resp(http.StatusInternalServerError),
+			nil,
+		},
+		count: 3,
 	}} {
 		mt := mockTransport{
-			errs: test.errs,
+			errs:  test.errs,
+			resps: test.resps,
 		}
 
-		tr := NewRetry(&mt, WithRetryBackoff(retry.Backoff{Steps: 3}), WithRetryPredicate(retry.IsTemporary))
+		tr := NewRetry(&mt,
+			WithRetryBackoff(retry.Backoff{Steps: 3}),
+			WithRetryPredicate(retry.IsTemporary),
+			WithRetryStatusCodes(http.StatusRequestTimeout, http.StatusInternalServerError),
+		)
 
 		tr.RoundTrip(nil)
 		if mt.count != test.count {
