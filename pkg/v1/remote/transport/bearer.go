@@ -157,12 +157,14 @@ func (bt *bearerTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 
 		// Clear this because we are going to retry with the next authenticator.
 		challenged = false
+
 		next, nextErr := nextable.Next()
 		if nextErr != nil {
 			if next == nil {
 				return res, err
 			}
 			logs.Debug.Printf("Next(): %v", nextErr)
+			// TODO: Should we keep calling Next() or just let it do another cycle?
 		}
 
 		// close out old response, since we will not return it.
