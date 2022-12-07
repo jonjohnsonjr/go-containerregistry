@@ -28,7 +28,7 @@ func NewMultiKeychain(kcs ...Keychain) Keychain {
 
 // Resolve implements Keychain.
 func (mk *multiKeychain) Resolve(target Resource) (Authenticator, error) {
-	n := &mkNext{
+	n := &mkCursor{
 		mk:     mk,
 		target: target,
 		index:  0,
@@ -36,7 +36,24 @@ func (mk *multiKeychain) Resolve(target Resource) (Authenticator, error) {
 	return n.Next()
 }
 
-type mkNext struct {
+// mkCursor acts as a cursor for the multiKeychain.
+//
+// Each keychain has the ability to Resolve() a single Authenticator.
+// We can't return that Authenticator directly without losing our cursor, so we
+// wrap it in an mkCursor, which maintains the index for our mk.keychains.
+//
+// For most wrapped Authenticators, calling Next() will result in mkCursor
+// calling Resolve() on the next keychain.
+//
+// However, if an Authenticator happens to implement Next() already, mkCursor
+// will call that Next() and return a new mkCursor that wraps it.
+//
+// This allows callers to iterate over both chains of Authenticators that
+// implement Next() and chains of Keychains from multiKeychain.
+//
+// Like with multiKeychain.Resolve, mkCursor.Next() will skip over Anonymous and
+// call Resolve on the next Keychain.
+type mkCursor struct {
 	mk      *multiKeychain
 	target  Resource
 	index   int
@@ -47,11 +64,11 @@ type hasNext interface {
 	Next() (Authenticator, error)
 }
 
-func (m *mkNext) Next() (Authenticator, error) {
+func (m *mkCursor) Next() (Authenticator, error) {
 	if hn, ok := m.wrapped.(hasNext); ok {
 		next, err := hn.Next()
 		if next != Anonymous {
-			return &mkNext{
+			return &mkCursor{
 				mk:      m.mk,
 				target:  m.target,
 				index:   m.index,
@@ -61,14 +78,13 @@ func (m *mkNext) Next() (Authenticator, error) {
 	}
 	for i := m.index; i < len(m.mk.keychains); i += 1 {
 		kc := m.mk.keychains[i]
-		next := &mkNext{
+		next := &mkCursor{
 			mk:     m.mk,
 			target: m.target,
 			index:  i + 1,
 		}
 		auth, err := kc.Resolve(m.target)
 		if err != nil {
-			// TODO: discuss -- this allows callers to handle errors and continue
 			return next, err
 		}
 		if auth != Anonymous {
@@ -79,6 +95,10 @@ func (m *mkNext) Next() (Authenticator, error) {
 	return Anonymous, nil
 }
 
-func (m *mkNext) Authorization() (*AuthConfig, error) {
+func (m *mkCursor) Authorization() (*AuthConfig, error) {
+	if m.wrapped == nil {
+		// Avoid panicking here in case Next() err is unchecked.
+		return Anonymous.Authorization()
+	}
 	return m.wrapped.Authorization()
 }

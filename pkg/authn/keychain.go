@@ -113,7 +113,6 @@ func (dk *defaultKeychain) Resolve(target Resource) (Authenticator, error) {
 	ca := &configAuth{cf, target.String(), nil}
 	next := &configAuth{cf, target.RegistryStr(), nil}
 
-	// TODO: Do we need to do this so eagerly? Probably yes for backward compat.
 	auth, err := ca.resolve()
 	if err != nil {
 		return nil, err

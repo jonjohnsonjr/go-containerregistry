@@ -15,6 +15,7 @@
 package authn
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -24,6 +25,7 @@ func TestMultiKeychain(t *testing.T) {
 	one := &Basic{Username: "one", Password: "secret"}
 	two := &Basic{Username: "two", Password: "secret"}
 	three := &Basic{Username: "three", Password: "secret"}
+	four := &Basic{Username: "four", Password: "secret"}
 
 	regOne, _ := name.NewRegistry("one.gcr.io", name.StrictValidation)
 	regTwo, _ := name.NewRegistry("two.gcr.io", name.StrictValidation)
@@ -33,27 +35,27 @@ func TestMultiKeychain(t *testing.T) {
 		name string
 		reg  name.Registry
 		kc   Keychain
-		want Authenticator
+		want []Authenticator
 	}{{
 		// Make sure our test keychain WAI
 		name: "simple fixed test (match)",
 		reg:  regOne,
 		kc:   fixedKeychain{regOne: one},
-		want: one,
+		want: []Authenticator{one},
 	}, {
 		// Make sure our test keychain WAI
 		name: "simple fixed test (no match)",
 		reg:  regTwo,
 		kc:   fixedKeychain{regOne: one},
-		want: Anonymous,
+		want: []Authenticator{Anonymous},
 	}, {
-		name: "match first keychain",
+		name: "match first and second keychain",
 		reg:  regOne,
 		kc: NewMultiKeychain(
 			fixedKeychain{regOne: one},
 			fixedKeychain{regOne: three, regTwo: two},
 		),
-		want: one,
+		want: []Authenticator{one, three},
 	}, {
 		name: "match second keychain",
 		reg:  regTwo,
@@ -61,7 +63,7 @@ func TestMultiKeychain(t *testing.T) {
 			fixedKeychain{regOne: one},
 			fixedKeychain{regOne: three, regTwo: two},
 		),
-		want: two,
+		want: []Authenticator{two},
 	}, {
 		name: "match no keychain",
 		reg:  regThree,
@@ -69,9 +71,17 @@ func TestMultiKeychain(t *testing.T) {
 			fixedKeychain{regOne: one},
 			fixedKeychain{regOne: three, regTwo: two},
 		),
-		want: Anonymous,
+		want: []Authenticator{Anonymous},
+	}, {
+		name: "match first and second keychain and an error then next",
+		reg:  regOne,
+		kc: NewMultiKeychain(
+			fixedKeychain{regOne: one},
+			&errKeychain{errors.New("this is an error")},
+			fixedKeychain{regOne: &chainedAuth{three, four}, regTwo: two},
+		),
+		want: []Authenticator{one, Anonymous, three, four},
 	}}
-	// TODO: multikeychain with nextable authenticators
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -79,16 +89,30 @@ func TestMultiKeychain(t *testing.T) {
 			if err != nil {
 				t.Errorf("Resolve() = %v", err)
 			}
-			gotAuth, err := got.Authorization()
-			if err != nil {
-				t.Errorf("Authorization() = %v", err)
-			}
-			wantAuth, err := test.want.Authorization()
-			if err != nil {
-				t.Errorf("Authorization() = %v", err)
-			}
-			if *gotAuth != *wantAuth {
-				t.Errorf("Resolve() = %v, wanted %v", gotAuth, wantAuth)
+			for _, want := range test.want {
+				gotAuth, err := got.Authorization()
+				if err != nil {
+					t.Errorf("Authorization() = %v", err)
+				}
+				wantAuth, err := want.Authorization()
+				if err != nil {
+					t.Errorf("Authorization() = %v", err)
+				}
+				if *gotAuth != *wantAuth {
+					t.Errorf("Resolve() = %v, wanted %v", gotAuth, wantAuth)
+				}
+
+				wn, ok := got.(interface {
+					Next() (Authenticator, error)
+				})
+				if ok {
+					got, err = wn.Next()
+					if err != nil {
+						if got == nil {
+							t.Fatalf("Next() = %v", err)
+						}
+					}
+				}
 			}
 		})
 	}
@@ -104,4 +128,29 @@ func (fk fixedKeychain) Resolve(target Resource) (Authenticator, error) {
 		return auth, nil
 	}
 	return Anonymous, nil
+}
+
+type chainedAuth struct {
+	auth Authenticator
+	next Authenticator
+}
+
+func (c *chainedAuth) Authorization() (*AuthConfig, error) {
+	return c.auth.Authorization()
+}
+
+// Allows falling back to anonymous even if we did find creds.
+func (c *chainedAuth) Next() (Authenticator, error) {
+	return c.next, nil
+}
+
+type errKeychain struct {
+	err error
+}
+
+var _ Keychain = (*errKeychain)(nil)
+
+// Resolve implements Keychain.
+func (e *errKeychain) Resolve(target Resource) (Authenticator, error) {
+	return nil, e.err
 }
