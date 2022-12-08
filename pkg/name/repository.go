@@ -77,7 +77,7 @@ func NewRepository(name string, opts ...Option) (Repository, error) {
 	}
 
 	// TODO: Ugh.
-	if strings.Count(name, ".") > 1 && !strings.Contains(name, "/") {
+	if strings.Count(name, ".") > 0 && !strings.Contains(name, "/") && name != "rocket.chat" {
 		return Repository{
 			Registry: Registry{
 				insecure: false,

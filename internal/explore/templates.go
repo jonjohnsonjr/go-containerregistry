@@ -136,9 +136,9 @@ body {
 <body>
 <div>
 {{ if .Up }}
-<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>/{{.Up.Child}}</h2>
+<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}{{.Up.Child}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ else }}
-<h2>{{.Reference}}{{ if .CosignTag }} (<a href="?image={{.Repo}}:{{.CosignTag}}">cosign</a>){{end}}</h2>
+<h2>{{.Reference}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ end }}
 {{ if .Descriptor }}
 Docker-Content-Digest: {{.Descriptor.Digest}}<br>
@@ -159,8 +159,9 @@ Content-Type: {{.Descriptor.MediaType}}<br>
 )
 
 type RepoParent struct {
-	Parent string
-	Child  string
+	Parent    string
+	Child     string
+	Separator string
 }
 
 type OauthData struct {
@@ -171,10 +172,14 @@ type OauthData struct {
 type TitleData struct {
 	Title string
 }
+type CosignTag struct {
+	Tag   string
+	Short string
+}
 
 type HeaderData struct {
 	Repo       string
-	CosignTag  string
+	CosignTags []CosignTag
 	JQ         string
 	Reference  string
 	Up         *RepoParent

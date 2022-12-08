@@ -63,6 +63,9 @@ type handler struct {
 
 	cache *headerCache
 
+	sync.Mutex
+	sawTags map[string][]string
+
 	oauth *oauth2.Config
 }
 
@@ -235,6 +238,7 @@ func New(opts ...Option) http.Handler {
 			maxSize:  50 * (1 << 20),
 			entryCap: 50,
 		},
+		sawTags: map[string][]string{},
 	}
 
 	for _, opt := range opts {
@@ -509,6 +513,9 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		if err != nil {
 			return err
 		}
+		h.Lock()
+		h.sawTags[ref.String()] = tags.Tags
+		h.Unlock()
 		if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
 			return err
 		}
@@ -524,8 +531,9 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 			dir := path.Dir(strings.TrimRight(repo, "/"))
 			if base != "." && dir != "." {
 				data.Up = &RepoParent{
-					Parent: dir,
-					Child:  base,
+					Parent:    dir,
+					Child:     base,
+					Separator: "/",
 				}
 			}
 		}
@@ -606,9 +614,14 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		JQ:        "crane ls " + repo,
 	}
 	if strings.Contains(repo, "/") {
-		data.Up = &RepoParent{
-			Parent: ref.RegistryStr(),
-			Child:  ref.RepositoryStr(),
+		base := path.Base(repo)
+		dir := path.Dir(strings.TrimRight(repo, "/"))
+		if base != "." && dir != "." {
+			data.Up = &RepoParent{
+				Parent:    dir,
+				Child:     base,
+				Separator: "/",
+			}
 		}
 	}
 	if err := bodyTmpl.Execute(w, data); err != nil {
@@ -633,6 +646,9 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		if err != nil {
 			return err
 		}
+		h.Lock()
+		h.sawTags[ref.String()] = tags
+		h.Unlock()
 
 		v = &remote.Tags{
 			Tags: tags,
@@ -653,8 +669,6 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 
 // Render manifests with links to blobs, manifests, etc.
 func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image string) error {
-	qs := r.URL.Query()
-
 	ref, err := name.ParseReference(image, name.WeakValidation)
 	if err != nil {
 		return err
@@ -673,8 +687,9 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	}
 
 	data := HeaderData{
-		Repo:      ref.Context().String(),
-		Reference: ref.String(),
+		Repo:       ref.Context().String(),
+		Reference:  ref.String(),
+		CosignTags: []CosignTag{},
 		Descriptor: &v1.Descriptor{
 			Digest:    desc.Digest,
 			MediaType: desc.MediaType,
@@ -683,15 +698,40 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		JQ: "crane manifest " + ref.String(),
 	}
 
-	if _, ok := qs["discovery"]; ok {
-		cosignRef, err := munge(ref.Context().Digest(desc.Digest.String()))
-		if err != nil {
-			return err
+	if strings.Contains(ref.String(), ":") {
+		chunks := strings.SplitN(ref.String(), ":", 2)
+		data.Up = &RepoParent{
+			Parent:    ref.Context().String(),
+			Child:     chunks[1],
+			Separator: ":",
 		}
-		if _, err := remote.Head(cosignRef, opts...); err != nil {
-			log.Printf("remote.Head(%q): %v", cosignRef.String(), err)
-		} else {
-			data.CosignTag = cosignRef.Identifier()
+	} else if strings.Contains(ref.String(), "@") {
+		chunks := strings.SplitN(ref.String(), "@", 2)
+		data.Up = &RepoParent{
+			Parent:    ref.Context().String(),
+			Child:     chunks[1],
+			Separator: "@",
+		}
+	} else {
+		data.Up = &RepoParent{
+			Parent: ref.String(),
+		}
+	}
+	prefix := strings.Replace(desc.Digest.String(), ":", "-", 1) + "."
+	h.Lock()
+	tags, ok := h.sawTags[ref.Context().String()]
+	h.Unlock()
+	if ok {
+		for _, tag := range tags {
+			if strings.HasPrefix(tag, prefix) {
+				chunks := strings.SplitN(tag, ".", 2)
+				if len(chunks) == 2 && len(chunks[1]) != 0 {
+					data.CosignTags = append(data.CosignTags, CosignTag{
+						Tag:   tag,
+						Short: chunks[1],
+					})
+				}
+			}
 		}
 	}
 
