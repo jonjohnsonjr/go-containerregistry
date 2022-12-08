@@ -1153,7 +1153,7 @@ func handlerForMT(s string) string {
 	case types.OCIContentDescriptor, CosignMediaType, types.OCIConfigJSON, types.DockerConfigJSON:
 		return `json/`
 	case cosignPointee:
-		return `?discovery=true&image=`
+		return `?image=`
 	case types.DockerManifestSchema1, types.DockerManifestSchema1Signed:
 		return `?image=`
 	}

@@ -500,6 +500,36 @@ func renderLanding(w http.ResponseWriter) error {
 	return err
 }
 
+func (h *handler) getTags(repo name.Repository, opts ...remote.Option) ([]string, bool) {
+	h.Lock()
+	tags, ok := h.sawTags[repo.String()]
+	h.Unlock()
+	return tags, ok
+
+	// TODO: This is too slow to do by default :/
+	// if ok {
+	// 	return tags, ok
+	// }
+
+	// tags, err := remote.List(repo, opts...)
+	// h.Lock()
+	// defer h.Unlock()
+	// if err != nil {
+	// 	if oldTags, ok := h.sawTags[repo.String()]; ok {
+	// 		return oldTags, true
+	// 	}
+
+	// 	// Listing tags failed, so we won't keep doing it
+	// 	// unless explicitly requested.
+	// 	log.Printf("getTags(%q): %v", repo, err)
+	// 	h.sawTags[repo.String()] = []string{}
+
+	// 	return nil, false
+	// }
+	// h.sawTags[repo.String()] = tags
+	// return tags, true
+}
+
 // Render repo with tags linking to images.
 func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string) error {
 	qs := r.URL.Query()
@@ -698,19 +728,19 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		JQ: "crane manifest " + ref.String(),
 	}
 
-	if strings.Contains(ref.String(), ":") {
-		chunks := strings.SplitN(ref.String(), ":", 2)
-		data.Up = &RepoParent{
-			Parent:    ref.Context().String(),
-			Child:     chunks[1],
-			Separator: ":",
-		}
-	} else if strings.Contains(ref.String(), "@") {
+	if strings.Contains(ref.String(), "@") && strings.Index(ref.String(), "@") < strings.Index(ref.String(), ":") {
 		chunks := strings.SplitN(ref.String(), "@", 2)
 		data.Up = &RepoParent{
 			Parent:    ref.Context().String(),
 			Child:     chunks[1],
 			Separator: "@",
+		}
+	} else if strings.Contains(ref.String(), ":") {
+		chunks := strings.SplitN(ref.String(), ":", 2)
+		data.Up = &RepoParent{
+			Parent:    ref.Context().String(),
+			Child:     chunks[1],
+			Separator: ":",
 		}
 	} else {
 		data.Up = &RepoParent{
@@ -718,9 +748,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		}
 	}
 	prefix := strings.Replace(desc.Digest.String(), ":", "-", 1)
-	h.Lock()
-	tags, ok := h.sawTags[ref.Context().String()]
-	h.Unlock()
+	tags, ok := h.getTags(ref.Context(), opts...)
 	if ok {
 		for _, tag := range tags {
 			if tag == prefix {

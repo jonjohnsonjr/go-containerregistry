@@ -22,15 +22,23 @@ import (
 
 	"github.com/google/go-containerregistry/internal/explore"
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
 var auth = flag.Bool("auth", false, "use docker credentials")
+var verbose = flag.Bool("v", false, "verbose logs")
 
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
 
 func main() {
 	flag.Parse()
+
+	if *verbose {
+		logs.Debug.SetOutput(os.Stderr)
+		logs.Warn.SetOutput(os.Stderr)
+		logs.Progress.SetOutput(os.Stderr)
+	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Print("starting explore.ggcr.dev")
