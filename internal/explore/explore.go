@@ -717,13 +717,20 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			Parent: ref.String(),
 		}
 	}
-	prefix := strings.Replace(desc.Digest.String(), ":", "-", 1) + "."
+	prefix := strings.Replace(desc.Digest.String(), ":", "-", 1)
 	h.Lock()
 	tags, ok := h.sawTags[ref.Context().String()]
 	h.Unlock()
 	if ok {
 		for _, tag := range tags {
-			if strings.HasPrefix(tag, prefix) {
+			if tag == prefix {
+				// Referrers tag schema
+				data.CosignTags = append(data.CosignTags, CosignTag{
+					Tag:   tag,
+					Short: "referrers",
+				})
+			} else if strings.HasPrefix(tag, prefix) {
+				// Cosign tag schema
 				chunks := strings.SplitN(tag, ".", 2)
 				if len(chunks) == 2 && len(chunks[1]) != 0 {
 					data.CosignTags = append(data.CosignTags, CosignTag{
