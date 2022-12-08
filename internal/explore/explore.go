@@ -129,7 +129,6 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 	opts := []remote.Option{}
 	opts = append(opts, h.remote...)
 	opts = append(opts, remote.WithContext(ctx))
-	opts = append(opts, remote.WithMaxSize(tooBig))
 
 	auth := authn.Anonymous
 
@@ -705,6 +704,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		return err
 	}
 	opts := h.remoteOptions(w, r, ref.Context().Name())
+	opts = append(opts, remote.WithMaxSize(tooBig))
 	desc, err := remote.Get(ref, opts...)
 	if err != nil {
 		return err
@@ -824,7 +824,9 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		}
 		ref = dig
 
-		l, err := remote.Layer(dig, h.remoteOptions(w, r, dig.Context().Name())...)
+		opts := h.remoteOptions(w, r, dig.Context().Name())
+		opts = append(opts, remote.WithMaxSize(tooBig))
+		l, err := remote.Layer(dig, opts...)
 		if err != nil {
 			return err
 		}
@@ -1170,20 +1172,24 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 		return nil, "", err
 	}
 
-	l, err := remote.Layer(blobRef, h.remoteOptions(w, r, blobRef.Context().Name())...)
+	opts := h.remoteOptions(w, r, blobRef.Context().Name())
+	l, err := remote.Layer(blobRef, opts...)
 	if err != nil {
 		return nil, "", err
 	}
+
+	rc, err := l.Compressed()
+	if err != nil {
+		return nil, "", err
+	}
+
 	size := expectedSize
 	if size == 0 {
 		size, err = l.Size()
 		if err != nil {
+			defer rc.Close()
 			return nil, "", err
 		}
-	}
-	rc, err := l.Compressed()
-	if err != nil {
-		return nil, "", err
 	}
 	sb := &sizeBlob{rc, size}
 	return sb, root + ref, err

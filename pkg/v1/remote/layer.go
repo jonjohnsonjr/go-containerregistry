@@ -31,17 +31,23 @@ import (
 type remoteLayer struct {
 	fetcher
 	digest v1.Hash
+	size   int64
 }
 
 // Compressed implements partial.CompressedLayer
 func (rl *remoteLayer) Compressed() (io.ReadCloser, error) {
 	// We don't want to log binary layers -- this can break terminals.
 	ctx := redact.NewContext(rl.context, "omitting binary blobs from logs")
-	return rl.fetchBlob(ctx, verify.SizeUnknown, rl.digest)
+	rc, size, err := rl.fetchBlob(ctx, verify.SizeUnknown, rl.digest)
+	rl.size = size
+	return rc, err
 }
 
 // Compressed implements partial.CompressedLayer
 func (rl *remoteLayer) Size() (int64, error) {
+	if rl.size > 0 {
+		return rl.size, nil
+	}
 	var (
 		resp *http.Response
 		err  error

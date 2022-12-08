@@ -365,21 +365,21 @@ func (f *fetcher) headManifest(ref name.Reference, acceptable []types.MediaType)
 	}, nil
 }
 
-func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.ReadCloser, error) {
+func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.ReadCloser, int64, error) {
 	u := f.url("blobs", h.String())
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 
 	resp, err := f.Client.Do(req.WithContext(ctx))
 	if err != nil {
-		return nil, redact.Error(err)
+		return nil, -1, redact.Error(err)
 	}
 
 	if err := transport.CheckError(resp, http.StatusOK); err != nil {
 		resp.Body.Close()
-		return nil, err
+		return nil, -1, err
 	}
 
 	// Do whatever we can.
@@ -389,11 +389,12 @@ func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.Read
 		if size == verify.SizeUnknown {
 			size = hsize
 		} else if hsize != size {
-			return nil, fmt.Errorf("GET %s: Content-Length header %d does not match expected size %d", u.String(), hsize, size)
+			return nil, -1, fmt.Errorf("GET %s: Content-Length header %d does not match expected size %d", u.String(), hsize, size)
 		}
 	}
 
-	return verify.ReadCloser(resp.Body, size, h)
+	rc, err := verify.ReadCloser(resp.Body, size, h)
+	return rc, size, err
 }
 
 func (f *fetcher) getBlob(h v1.Hash) (*http.Response, error) {
