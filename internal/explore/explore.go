@@ -129,6 +129,7 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 	opts := []remote.Option{}
 	opts = append(opts, h.remote...)
 	opts = append(opts, remote.WithContext(ctx))
+	opts = append(opts, remote.WithMaxSize(tooBig))
 
 	auth := authn.Anonymous
 
@@ -704,13 +705,6 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		return err
 	}
 	opts := h.remoteOptions(w, r, ref.Context().Name())
-	d, err := remote.Head(ref, opts...)
-	if err != nil {
-		return err
-	}
-	if d.Size > tooBig {
-		return fmt.Errorf("manifest %s too big: %d", ref, d.Size)
-	}
 	desc, err := remote.Get(ref, opts...)
 	if err != nil {
 		return err

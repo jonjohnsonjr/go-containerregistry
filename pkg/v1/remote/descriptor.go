@@ -214,6 +214,7 @@ func (d *Descriptor) remoteIndex() *remoteIndex {
 type fetcher struct {
 	Ref     name.Reference
 	Client  *http.Client
+	options *options
 	context context.Context
 }
 
@@ -226,6 +227,7 @@ func makeFetcher(ref name.Reference, o *options) (*fetcher, error) {
 		Ref:     ref,
 		Client:  &http.Client{Transport: tr},
 		context: o.context,
+		options: o,
 	}, nil
 }
 
@@ -260,9 +262,13 @@ func (f *fetcher) fetchManifest(ref name.Reference, acceptable []types.MediaType
 		return nil, nil, err
 	}
 
-	manifest, err := ioutil.ReadAll(resp.Body)
+	lr := io.LimitedReader{resp.Body, f.options.maxSize}
+	manifest, err := ioutil.ReadAll(&lr)
 	if err != nil {
 		return nil, nil, err
+	}
+	if int64(len(manifest)) > f.options.maxSize {
+		return nil, nil, fmt.Errorf("manifest is bigger than %d", f.options.maxSize)
 	}
 
 	digest, size, err := v1.SHA256(bytes.NewReader(manifest))

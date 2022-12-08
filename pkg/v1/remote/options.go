@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"syscall"
@@ -46,6 +47,7 @@ type options struct {
 	pageSize                       int
 	retryBackoff                   Backoff
 	retryPredicate                 retry.Predicate
+	maxSize                        int64
 }
 
 var defaultPlatform = v1.Platform{
@@ -109,6 +111,7 @@ func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
 		pageSize:       defaultPageSize,
 		retryPredicate: defaultRetryPredicate,
 		retryBackoff:   defaultRetryBackoff,
+		maxSize:        math.MaxInt64,
 	}
 
 	for _, option := range opts {
@@ -287,6 +290,13 @@ func WithRetryBackoff(backoff Backoff) Option {
 func WithRetryPredicate(predicate retry.Predicate) Option {
 	return func(o *options) error {
 		o.retryPredicate = predicate
+		return nil
+	}
+}
+
+func WithMaxSize(size int64) Option {
+	return func(o *options) error {
+		o.maxSize = size
 		return nil
 	}
 }

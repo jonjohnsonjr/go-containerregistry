@@ -194,10 +194,12 @@ func (r *remoteIndex) imageByPlatform(platform v1.Platform) (v1.Image, error) {
 // This naively matches the first manifest with matching platform attributes.
 //
 // We should probably use this instead:
-//	 github.com/containerd/containerd/platforms
+//
+//	github.com/containerd/containerd/platforms
 //
 // But first we'd need to migrate to:
-//   github.com/opencontainers/image-spec/specs-go/v1
+//
+//	github.com/opencontainers/image-spec/specs-go/v1
 func (r *remoteIndex) childByPlatform(platform v1.Platform) (*Descriptor, error) {
 	index, err := r.IndexManifest()
 	if err != nil {
@@ -253,6 +255,7 @@ func (r *remoteIndex) childDescriptor(child v1.Descriptor, platform v1.Platform)
 			Ref:     ref,
 			Client:  r.Client,
 			context: r.context,
+			options: r.fetcher.options,
 		},
 		Manifest:   manifest,
 		Descriptor: child,
