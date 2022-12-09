@@ -39,6 +39,7 @@ import (
 	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/verify"
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	goog "github.com/google/go-containerregistry/pkg/v1/google"
@@ -278,10 +279,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%v", r.URL)
 
 	if r.URL.Path == "/favicon.svg" || r.URL.Path == "/favicon.ico" {
+		w.Header().Set("Cache-Control", "max-age=3600")
 		http.ServeFile(w, r, filepath.Join(os.Getenv("KO_DATA_PATH"), "favicon.svg"))
 		return
 	}
 	if r.URL.Path == "/robots.txt" {
+		w.Header().Set("Cache-Control", "max-age=3600")
 		http.ServeFile(w, r, filepath.Join(os.Getenv("KO_DATA_PATH"), "robots.txt"))
 		return
 	}
@@ -418,9 +421,11 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 	}
 
 	t := remote.DefaultTransport
-	t = transport.NewLogger(t)
 	t = transport.NewRetry(t)
 	t = transport.NewUserAgent(t, ua)
+	if logs.Enabled(logs.Trace) {
+		t = transport.NewTracer(t)
+	}
 
 	if pr == nil {
 		pr, err = transport.Ping(r.Context(), reg, t)

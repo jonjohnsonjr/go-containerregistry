@@ -34,10 +34,12 @@ const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking 
 func main() {
 	flag.Parse()
 
+	logs.Trace.SetOutput(os.Stderr)
+	logs.Trace.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+
 	if *verbose {
 		logs.Debug.SetOutput(os.Stderr)
-		logs.Warn.SetOutput(os.Stderr)
-		logs.Progress.SetOutput(os.Stderr)
+		logs.Debug.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)

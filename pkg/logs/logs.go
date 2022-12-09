@@ -29,6 +29,9 @@ var (
 
 	// Debug is used to log information that is useful for debugging.
 	Debug = log.New(ioutil.Discard, "", log.LstdFlags)
+
+	// Trace shows HTTP requests.
+	Trace = log.New(ioutil.Discard, "", log.LstdFlags)
 )
 
 // Enabled checks to see if the logger's writer is set to something other

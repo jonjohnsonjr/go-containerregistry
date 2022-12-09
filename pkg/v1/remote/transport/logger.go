@@ -89,3 +89,23 @@ func (t *logTransport) RoundTrip(in *http.Request) (out *http.Response, err erro
 	}
 	return
 }
+
+type traceTransport struct {
+	inner http.RoundTripper
+}
+
+func NewTracer(inner http.RoundTripper) http.RoundTripper {
+	return &traceTransport{inner}
+}
+
+func (t *traceTransport) RoundTrip(in *http.Request) (out *http.Response, err error) {
+	start := time.Now()
+	out, err = t.inner.RoundTrip(in)
+	duration := time.Since(start)
+	if err != nil {
+		logs.Trace.Printf("%s %s --> %v (%s)", in.Method, in.URL, err, duration)
+	} else {
+		logs.Trace.Printf("%s %s --> %d (%s)", in.Method, in.URL, out.StatusCode, duration)
+	}
+	return out, err
+}

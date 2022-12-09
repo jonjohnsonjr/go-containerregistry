@@ -224,7 +224,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 			log.Printf("Open(%q): %v", name, err)
 			return nil, err
 		}
-		debugf("Open(%q): header.Name = %q, header.Size = %d", name, header.Name, header.Size)
+		// debugf("Open(%q): header.Name = %q, header.Size = %d", name, header.Name, header.Size)
 
 		// Cache the headers, so we don't have to re-fetch the blob. This comes
 		// into play mostly for ReadDir() at the top level, where we already scan
@@ -509,7 +509,7 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 	for _, hdr := range f.fs.headers {
 		name := path.Clean("/" + hdr.Name)
 		dir := path.Dir(strings.TrimPrefix(name, prefix))
-		debugf("hdr.Name=%q prefix=%q name=%q dir=%q", hdr.Name, prefix, name, dir)
+		//debugf("hdr.Name=%q prefix=%q name=%q dir=%q", hdr.Name, prefix, name, dir)
 
 		// Is this file in this directory?
 		if strings.HasPrefix(name, prefix) && (f.Root() && dir == "." || dir == "/") {
