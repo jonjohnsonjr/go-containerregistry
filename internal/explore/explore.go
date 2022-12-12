@@ -797,7 +797,13 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		return err
 	}
 
-	if r.URL.Query().Get("render") == "raw" {
+	if r.URL.Query().Get("render") == "cert" {
+		fmt.Fprintf(w, "<pre>")
+		if err := renderCert(w, b); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "</pre>")
+	} else if r.URL.Query().Get("render") == "raw" {
 		fmt.Fprintf(w, "<pre>")
 		if _, err := w.Write(b); err != nil {
 			return err

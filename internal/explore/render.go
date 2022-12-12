@@ -14,7 +14,11 @@
 package explore
 
 import (
+	"crypto/ecdsa"
+	"crypto/x509"
+	"encoding/asn1"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"html"
 	"io"
@@ -694,7 +698,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 							qs := u.Query()
 							qs.Add("jq", strings.Join(w.jq, ""))
 							qs.Add("jq", "base64 -d")
-							qs.Set("render", "raw")
+							qs.Set("render", "cert")
 							u.RawQuery = qs.Encode()
 							w.BlueDoc(u.String(), s)
 
@@ -1350,4 +1354,286 @@ func parsePurl(s string) (*purl, error) {
 	}
 
 	return p, nil
+}
+
+// TODO: render links!
+/*
+Certificate:
+    Data:
+        Version: 3 (0x2)
+        Serial Number:
+            22:d1:a2:19:26:f1:ac:e4:87:b4:b9:fa:fb:df:89:42:ca:dc:ce:a0
+        Signature Algorithm: ecdsa-with-SHA384
+        Issuer: O = sigstore.dev, CN = sigstore-intermediate
+        Validity
+            Not Before: Jul 20 21:23:51 2022 GMT
+            Not After : Jul 20 21:33:51 2022 GMT
+        Subject:
+        Subject Public Key Info:
+            Public Key Algorithm: id-ecPublicKey
+                Public-Key: (256 bit)
+                pub:
+                    04:4f:76:63:aa:43:9c:b4:8a:e2:59:12:ed:62:90:
+                    64:d1:9e:a1:d3:ad:3c:6b:ad:ce:74:90:95:3f:87:
+                    3a:2a:4f:3e:b0:60:0c:60:ac:28:44:e9:f1:56:26:
+                    fe:fb:6f:87:38:1e:7b:83:f3:8a:2a:96:45:56:72:
+                    bf:c7:a2:17:4a
+                ASN1 OID: prime256v1
+                NIST CURVE: P-256
+        X509v3 extensions:
+            X509v3 Key Usage: critical
+                Digital Signature
+            X509v3 Extended Key Usage:
+                Code Signing
+            X509v3 Subject Key Identifier:
+                0B:4D:47:3B:EF:69:A4:C8:0E:2A:2A:34:27:34:39:B8:31:09:48:BF
+            X509v3 Authority Key Identifier:
+                DF:D3:E9:CF:56:24:11:96:F9:A8:D8:E9:28:55:A2:C6:2E:18:64:3F
+            X509v3 Subject Alternative Name: critical
+                email:krel-trust@k8s-releng-prod.iam.gserviceaccount.com
+            1.3.6.1.4.1.57264.1.1:
+                https://accounts.google.com
+            CT Precertificate SCTs:
+                Signed Certificate Timestamp:
+                    Version   : v1 (0x0)
+                    Log ID    : 08:60:92:F0:28:52:FF:68:45:D1:D1:6B:27:84:9C:45:
+                                67:18:AC:16:3D:C3:38:D2:6D:E6:BC:22:06:36:6F:72
+                    Timestamp : Jul 20 21:23:52.023 2022 GMT
+                    Extensions: none
+                    Signature : ecdsa-with-SHA256
+                                30:46:02:21:00:E2:7B:5F:04:0F:B3:54:6B:82:55:0C:
+                                80:2A:34:C7:9B:8F:AD:42:F0:F3:A1:17:C3:DC:54:17:
+                                C7:C8:5C:FD:F8:02:21:00:B1:1C:8B:AD:21:7C:47:96:
+                                DB:E2:DC:57:67:0C:3C:E4:BE:EE:DC:F9:F8:60:93:F2:
+                                55:93:99:85:0E:52:FF:6C
+    Signature Algorithm: ecdsa-with-SHA384
+    Signature Value:
+        30:65:02:31:00:ad:dd:e9:6d:9a:4e:87:74:37:03:0b:b6:2f:
+        11:ab:86:87:36:f6:c5:d3:14:dd:3e:ed:30:77:42:38:a6:c7:
+        a1:1c:64:4f:f4:4f:fb:ec:ab:cd:2d:49:64:6f:85:74:88:02:
+        30:6f:cc:2e:1a:0a:38:d8:10:d3:8f:dc:60:52:9d:36:8c:db:
+        60:97:f0:51:9d:22:db:d7:df:fa:32:56:b3:08:88:ed:c3:6a:
+        52:d9:c8:ef:79:35:9d:30:f9:ea:d9:2d:ad
+*/
+func renderCert(w io.Writer, b []byte) error {
+	block, rest := pem.Decode(b)
+	if block == nil || len(rest) > 0 {
+		return fmt.Errorf("pem.Decode: %v, %d", block, len(rest))
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, "Certificate:\n")
+	fmt.Fprintf(w, "    Data:\n")
+	fmt.Fprintf(w, "        Version: %d (0x%x)\n", cert.Version, cert.Version-1)
+	fmt.Fprintf(w, "        Serial Number:\n")
+	fmt.Fprintf(w, "            ")
+	printHex(w, cert.SerialNumber.Bytes())
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "        Signature Algorithm: %s\n", cert.SignatureAlgorithm)
+	fmt.Fprintf(w, "        Issuer: %s\n", cert.Issuer)
+	fmt.Fprintf(w, "        Validity:\n")
+	fmt.Fprintf(w, "            Not Before: %s\n", cert.NotBefore)
+	fmt.Fprintf(w, "            Not After : %s\n", cert.NotAfter)
+	fmt.Fprintf(w, "        Subject:\n")
+	fmt.Fprintf(w, "        Subject Public Key Info:\n")
+	fmt.Fprintf(w, "            Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm)
+
+	pub := cert.PublicKey
+	switch p := pub.(type) {
+	case *ecdsa.PublicKey:
+		bits := p.Params().BitSize
+		name := p.Params().Name
+
+		fmt.Fprintf(w, "                Public Key: (%d bit)\n", bits)
+		fmt.Fprintf(w, "                pub:")
+		bs := []byte{0x04} // uncompressed public keys start with 04?
+		bs = append(bs, p.X.Bytes()...)
+		bs = append(bs, p.Y.Bytes()...)
+		for i, b := range bs {
+			if i%15 == 0 {
+				fmt.Fprintf(w, "\n                    ")
+			}
+			fmt.Fprintf(w, "%02x", b)
+			if i < len(bs)-1 {
+				fmt.Fprintf(w, ":")
+			} else {
+				fmt.Fprintf(w, "\n")
+			}
+		}
+		fmt.Fprintf(w, "                NIST CURVE: %s\n", name)
+	default:
+		return fmt.Errorf("TODO: renderCert with %T", pub)
+	}
+
+	fmt.Fprintf(w, "        X509v3 extensions:\n")
+	for _, ext := range cert.Extensions {
+		fmt.Fprintf(w, "            %s:", oidKey(ext.Id))
+		if ext.Critical {
+			fmt.Fprintf(w, " critical")
+		}
+		fmt.Fprintf(w, "\n")
+		h := find(ext.Id)
+		if h != nil && h.format != nil {
+			for line := range strings.Split(h.format(cert, ext.Value), "\n") {
+				fmt.Fprintf(w, "                %s\n", line)
+			}
+		} else {
+			fmt.Fprintf(w, "                %v\n", ext.Value)
+		}
+	}
+
+	return nil
+}
+
+func printHex(w io.Writer, bs []byte) {
+	for i, b := range bs {
+		fmt.Fprintf(w, "%02x", b)
+		if i < len(bs)-1 {
+			fmt.Fprintf(w, ":")
+		}
+	}
+}
+
+type oidHelper struct {
+	Id     asn1.ObjectIdentifier
+	Name   string
+	format func(*x509.Certificate, []byte) string
+}
+
+func (lhs *oidHelper) Equals(rhs asn1.ObjectIdentifier) bool {
+	if len(lhs.Id) != len(rhs) {
+		return false
+	}
+	for i, l := range lhs.Id {
+		if l != rhs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func find(id asn1.ObjectIdentifier) *oidHelper {
+	for _, h := range helpers {
+		if h.Equals(id) {
+			return &h
+		}
+	}
+	return nil
+}
+
+func oidKey(id asn1.ObjectIdentifier) string {
+	h := find(id)
+	if h == nil {
+		return id.String()
+	}
+
+	return h.Name
+}
+
+var helpers = []oidHelper{
+	{[]int{2, 5, 29, 15}, "X509v3 Key Usage", keyUsage},
+	//{[]int{2, 5, 29, 15}, "X509v3 Key Usage", nil},
+	{[]int{2, 5, 29, 37}, "X509v3 Extended Key Usage", extKeyUsage},
+	{[]int{2, 5, 29, 14}, "X509v3 Subject Key Identifier", hexify},
+	{[]int{2, 5, 29, 35}, "X509v3 Authority Key Identifier", hexify},
+	{[]int{2, 5, 29, 17}, "X509v3 Subject Alternative Name", printSan},
+	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 1}, "Fulcio Issuer", nil},
+	{[]int{1, 3, 6, 1, 4, 1, 11129, 2, 4, 2}, "CT Precertificate SCTs", nil},
+}
+
+var keyUsages = []struct {
+	KeyUsage x509.KeyUsage
+	Name     string
+}{
+	{x509.KeyUsageDigitalSignature, "Digital Signature"},
+	{x509.KeyUsageContentCommitment, "Content Commitment"},
+	{x509.KeyUsageKeyEncipherment, "Key Encipherment"},
+	{x509.KeyUsageDataEncipherment, "Data Encipherment"},
+	{x509.KeyUsageKeyAgreement, "Key Agreement"},
+	{x509.KeyUsageCertSign, "Certificate Sign"},
+	{x509.KeyUsageCRLSign, "CRL Sign"},
+	{x509.KeyUsageEncipherOnly, "Encipher Only"},
+	{x509.KeyUsageDecipherOnly, "Decipher Only"},
+}
+
+func keyUsage(cert *x509.Certificate, b []byte) string {
+	kus := []string{}
+	for _, ku := range keyUsages {
+		if ku.KeyUsage&cert.KeyUsage != 0 {
+			kus = append(kus, ku.Name)
+		}
+	}
+	if len(kus) > 0 {
+		return strings.Join(kus, ", ")
+	}
+	return "None"
+}
+
+var extKeyUsages = []struct {
+	KeyUsage x509.ExtKeyUsage
+	Name     string
+}{
+	{x509.ExtKeyUsageAny, "Any Usage"},
+	{x509.ExtKeyUsageServerAuth, "TLS Web Server Authentication"},
+	{x509.ExtKeyUsageClientAuth, "TLS Web Client Authentication"},
+	{x509.ExtKeyUsageCodeSigning, "Code Signing"},
+	{x509.ExtKeyUsageEmailProtection, "Email Protection"},
+	{x509.ExtKeyUsageIPSECEndSystem, "IPSEC End System"},
+	{x509.ExtKeyUsageIPSECTunnel, "IPSEC Tunnel"},
+	{x509.ExtKeyUsageIPSECUser, "UPSEC User"},
+	{x509.ExtKeyUsageTimeStamping, "Time Stamping"},
+	{x509.ExtKeyUsageOCSPSigning, "OCSP Signing"},
+	{x509.ExtKeyUsageMicrosoftServerGatedCrypto, "Microsoft Server Gated Crypto"},
+	{x509.ExtKeyUsageNetscapeServerGatedCrypto, "Netscape Server Gated Crypto"},
+	{x509.ExtKeyUsageMicrosoftCommercialCodeSigning, "Microsoft Commercial Code Signing"},
+	{x509.ExtKeyUsageMicrosoftKernelCodeSigning, "Microsoft Kernel Code Signing"},
+}
+
+func extKeyUsage(cert *x509.Certificate, b []byte) string {
+	kus := []string{}
+	for _, eku := range cert.ExtKeyUsage {
+		for _, ku := range extKeyUsages {
+			if ku.KeyUsage == eku {
+				kus = append(kus, ku.Name)
+				break
+			}
+		}
+	}
+	if len(kus) > 0 {
+		return strings.Join(kus, ", ")
+	}
+	return "None"
+}
+
+func hexify(cert *x509.Certificate, b []byte) string {
+	var builder strings.Builder
+	printHex(&builder, b)
+	return builder.String()
+}
+
+func printSan(cert *x509.Certificate, b []byte) string {
+	names := [][]string{{}, {}, {}, {}}
+	for _, dns := range cert.DNSNames {
+		names[0] = append(names[0], "DNS:"+dns)
+	}
+	for _, email := range cert.EmailAddresses {
+		names[1] = append(names[1], "email:"+email)
+	}
+	for _, ip := range cert.IPAddresses {
+		names[2] = append(names[2], "ip:"+ip.String())
+	}
+	for _, uri := range cert.URIs {
+		names[3] = append(names[3], "URI:"+uri.String())
+	}
+	outs := []string{}
+	for _, name := range names {
+		if len(name) != 0 {
+			outs = append(outs, strings.Join(name, ", "))
+		}
+	}
+
+	return strings.Join(outs, "\n")
 }
