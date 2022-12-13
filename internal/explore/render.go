@@ -15,8 +15,10 @@ package explore
 
 import (
 	"crypto/ecdsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -1418,40 +1420,6 @@ Certificate:
         60:97:f0:51:9d:22:db:d7:df:fa:32:56:b3:08:88:ed:c3:6a:
         52:d9:c8:ef:79:35:9d:30:f9:ea:d9:2d:ad
 */
-
-// 00:79:00:77:00:08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72:00:00:01:82:1d:7e:e6:57:00:00:04:03:00:48:30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c
-/*
-in: [4 123 0 121 0 119 0 8 96 146 240 40 82 255 104 69 209 209 107 39 132 156 69 103 24 172 22 61 195 56 210 109 230 188 34 6 54 111 114 0 0 1 130 29 126 230 87 0 0 4 3 0 72 48 70 2 33 0 226 123 95 4 15 179 84 107 130 85 12 128 42 52 199 155 143 173 66 240 243 161 23 195 220 84 23 199 200 92 253 248 2 33 0 177 28 139 173 33 124 71 150 219 226 220 87 103 12 60 228 190 238 220 249 248 96 147 242 85 147 153 133 14 82 255 108]
-
-04:7b:
-	00:79:
-		00:77:
-			00: // Version
-			08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72: // log id
-			00:00:01:82:1d:7e:e6:57: // unix ms
-			00:00: // extensions
-			04:03: // sha256 ecdsa
-			00:48: // length of signature
-			30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c // signature bytes
-00:79:00:77:00:08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72:00:00:01:82:1d:7e:e6:57:00:00:04:03:00:48:30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c
-2022/12/12 15:53:49.070580 outTag: 4
-00:77:00:08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72:00:00:01:82:1d:7e:e6:57:00:00:04:03:00:48:30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c
-2022/12/12 15:53:49.071924 outTag: 0
-
-version?
-00:
-log id?
-08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72:
-timestamp?
-00:00:01:82:1d:7e:e6:57:00:00:04:03:00:48:
-signature?
-30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c
-
-2022/12/12 15:53:49.073277 outTag: 0
-60:92:f0:28:52:ff:68:45
-
-*/
-
 func renderCert(w io.Writer, b []byte) error {
 	block, rest := pem.Decode(b)
 	if block == nil || len(rest) > 0 {
@@ -1531,8 +1499,6 @@ func renderCert(w io.Writer, b []byte) error {
 		fmt.Fprintf(w, "%02x", b)
 		if i < len(cert.Signature)-1 {
 			fmt.Fprintf(w, ":")
-		} else {
-			fmt.Fprintf(w, "\n")
 		}
 	}
 	return nil
@@ -1596,7 +1562,7 @@ var helpers = []oidHelper{
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 4}, "GitHub Workflow Name", nil},
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 5}, "GitHub Workflow Repository", nil},
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 6}, "GitHub Workflow Ref", nil},
-	{[]int{1, 3, 6, 1, 4, 1, 11129, 2, 4, 2}, "CT Precertificate SCTs", nil},
+	{[]int{1, 3, 6, 1, 4, 1, 11129, 2, 4, 2}, "CT Precertificate SCTs", printSCTs},
 }
 
 var keyUsages = []struct {
@@ -1672,7 +1638,7 @@ func hexify(cert *x509.Certificate, b []byte) string {
 func printSan(cert *x509.Certificate, b []byte) string {
 	names := [][]string{{}, {}, {}, {}}
 	for _, dns := range cert.DNSNames {
-		names[0] = append(names[0], "DNS:"+dns)
+		names[0] = append(names[0], "dns:"+dns)
 	}
 	for _, email := range cert.EmailAddresses {
 		names[1] = append(names[1], "email:"+email)
@@ -1681,7 +1647,7 @@ func printSan(cert *x509.Certificate, b []byte) string {
 		names[2] = append(names[2], "ip:"+ip.String())
 	}
 	for _, uri := range cert.URIs {
-		names[3] = append(names[3], "URI:"+uri.String())
+		names[3] = append(names[3], "uri:"+uri.String())
 	}
 	outs := []string{}
 	for _, name := range names {
@@ -1693,8 +1659,196 @@ func printSan(cert *x509.Certificate, b []byte) string {
 	return strings.Join(outs, "\n")
 }
 
+//	OCTET STRING {
+//		sct_list {
+//			sct {
+//				Version (0x0 or v1)
+//				LogID (opaque)
+//				uint64 timestamp
+//				CtExtensions
+//				signed_struct {
+//					// tls.SignatureScheme.String()
+//					SigAndHashAlgorithm {
+//						hash
+//						signature
+//					}
+//					Signature (opaque)
+//				}
+//			}
+//		}
+//	}
+//
+//	digitally-signed struct {
+//		Version
+//		SignatureType
+//		uint64 timestamp
+//		LogEntryType
+//		ASN.1Cert | PreCert
+//		extensions
+//	}
 func printSCTs(cert *x509.Certificate, b []byte) string {
-	return ""
+	cb := cryptobyte.String(b)
+	var out []byte
+	if !cb.ReadASN1Bytes(&out, casn1.OCTET_STRING) {
+		return "oops"
+	}
+
+	ss, err := parseScts(out)
+	if err != nil {
+		return err.Error()
+	}
+
+	w := &strings.Builder{}
+	for _, s := range ss {
+		w.WriteString(s.String())
+	}
+	return w.String()
+}
+
+func parseScts(b []byte) ([]*sct, error) {
+	if len(b) < 2 {
+		return nil, fmt.Errorf("len only %d", len(b))
+	}
+
+	hdr := b[:2]
+	if hdr[0] != 0 {
+		return nil, fmt.Errorf("hdr[0] = %d", hdr[0])
+	}
+
+	l := int(hdr[1])
+	if l != len(b)-2 {
+		return nil, fmt.Errorf("l = %d", l)
+	}
+
+	scts := []*sct{}
+	c := b[2:]
+	for {
+		if len(c) < 2 {
+			return nil, fmt.Errorf("len only %d", len(c))
+		}
+		hdr := c[:2]
+		if hdr[0] != 0 {
+			return nil, fmt.Errorf("hdr[0] = %d", hdr[0])
+		}
+
+		l := int(hdr[1])
+
+		rest := c[2:]
+
+		if l < len(rest) {
+			return nil, fmt.Errorf("l (%d) < len(rest) (%d)", l, len(rest))
+		}
+		s, err := parseSct(rest[:l])
+		if err != nil {
+			return nil, err
+		}
+		scts = append(scts, s)
+
+		if l == len(rest) {
+			break
+		}
+		c = rest
+	}
+
+	return scts, nil
+}
+
+func parseSct(b []byte) (*sct, error) {
+	if len(b) < 41 {
+		return nil, fmt.Errorf("len(b) only %d", len(b))
+	}
+
+	s := sct{}
+
+	s.Version = int(b[0])
+	s.LogID = b[1:33]
+
+	rest := b[33:]
+	if len(rest) < 2 {
+		return nil, fmt.Errorf("len(rest) only %d", len(rest))
+	}
+	ts := binary.BigEndian.Uint64(rest[:8])
+	s.Timestamp = time.UnixMilli(int64(ts))
+	rest = rest[8:]
+
+	// Extensions
+	hdr := rest[:2]
+	if hdr[0] != 0 {
+		return nil, fmt.Errorf("hdr[0] = %d", hdr[0])
+	}
+	l := int(hdr[1])
+	if l != 0 {
+		return nil, fmt.Errorf("TODO: handle SCT extensions, l = %d", l)
+	}
+
+	rest = rest[2:]
+	if len(rest) < 2 {
+		return nil, fmt.Errorf("len(rest) only %d", len(rest))
+	}
+	s.SigHashAlg = tls.SignatureScheme(binary.BigEndian.Uint16(rest[:2]))
+
+	if len(rest) < 2 {
+		return nil, fmt.Errorf("len(rest) only %d", len(rest))
+	}
+	rest = rest[2:]
+
+	// Signature
+	hdr = rest[:2]
+	if hdr[0] != 0 {
+		return nil, fmt.Errorf("hdr[0] = %d", hdr[0])
+	}
+	l = int(hdr[1])
+	if l != len(rest)-2 {
+		return nil, fmt.Errorf("len(rest) = %d, l = %d", len(rest), l)
+	}
+	s.Sig = rest[2:]
+
+	return &s, nil
+}
+
+type sct struct {
+	Version    int
+	LogID      []byte
+	Timestamp  time.Time
+	Extensions [][]byte
+	SigHashAlg tls.SignatureScheme
+	Sig        []byte
+}
+
+// TODO: these should be capital hex??
+func (s *sct) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "Signed Certificate Timestamp:\n")
+	fmt.Fprintf(w, "    Version   : v%d (0x%x)\n", s.Version+1, s.Version)
+	fmt.Fprintf(w, "    Log ID    : ")
+	for i, b := range s.LogID {
+		if i != 0 && i%16 == 0 {
+			fmt.Fprintf(w, "\n                ")
+		}
+		fmt.Fprintf(w, "%02x", b)
+		if i < len(s.LogID)-1 {
+			fmt.Fprintf(w, ":")
+		} else {
+			fmt.Fprintf(w, "\n")
+		}
+	}
+	fmt.Fprintf(w, "    Timestamp : %s\n", s.Timestamp.UTC().String())
+	if len(s.Extensions) == 0 {
+		fmt.Fprintf(w, "    Extensions: none\n")
+	} else {
+		fmt.Fprintf(w, "    Extensions: TODO render %d extensions\n", len(s.Extensions))
+	}
+	fmt.Fprintf(w, "    Signature : %s", s.SigHashAlg)
+	for i, b := range s.Sig {
+		if i%16 == 0 {
+			fmt.Fprintf(w, "\n                ")
+		}
+		fmt.Fprintf(w, "%02x", b)
+		if i < len(s.Sig)-1 {
+			fmt.Fprintf(w, ":")
+		}
+	}
+	return w.String()
 }
 
 func asn1debug(cert *x509.Certificate, b []byte) string {
