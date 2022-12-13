@@ -30,6 +30,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/cryptobyte"
+	casn1 "golang.org/x/crypto/cryptobyte/asn1"
+
 	"github.com/dustin/go-humanize"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -1415,6 +1418,40 @@ Certificate:
         60:97:f0:51:9d:22:db:d7:df:fa:32:56:b3:08:88:ed:c3:6a:
         52:d9:c8:ef:79:35:9d:30:f9:ea:d9:2d:ad
 */
+
+// 00:79:00:77:00:08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72:00:00:01:82:1d:7e:e6:57:00:00:04:03:00:48:30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c
+/*
+in: [4 123 0 121 0 119 0 8 96 146 240 40 82 255 104 69 209 209 107 39 132 156 69 103 24 172 22 61 195 56 210 109 230 188 34 6 54 111 114 0 0 1 130 29 126 230 87 0 0 4 3 0 72 48 70 2 33 0 226 123 95 4 15 179 84 107 130 85 12 128 42 52 199 155 143 173 66 240 243 161 23 195 220 84 23 199 200 92 253 248 2 33 0 177 28 139 173 33 124 71 150 219 226 220 87 103 12 60 228 190 238 220 249 248 96 147 242 85 147 153 133 14 82 255 108]
+
+04:7b:
+	00:79:
+		00:77:
+			00: // Version
+			08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72: // log id
+			00:00:01:82:1d:7e:e6:57: // unix ms
+			00:00: // extensions
+			04:03: // sha256 ecdsa
+			00:48: // length of signature
+			30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c // signature bytes
+00:79:00:77:00:08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72:00:00:01:82:1d:7e:e6:57:00:00:04:03:00:48:30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c
+2022/12/12 15:53:49.070580 outTag: 4
+00:77:00:08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72:00:00:01:82:1d:7e:e6:57:00:00:04:03:00:48:30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c
+2022/12/12 15:53:49.071924 outTag: 0
+
+version?
+00:
+log id?
+08:60:92:f0:28:52:ff:68:45:d1:d1:6b:27:84:9c:45:67:18:ac:16:3d:c3:38:d2:6d:e6:bc:22:06:36:6f:72:
+timestamp?
+00:00:01:82:1d:7e:e6:57:00:00:04:03:00:48:
+signature?
+30:46:02:21:00:e2:7b:5f:04:0f:b3:54:6b:82:55:0c:80:2a:34:c7:9b:8f:ad:42:f0:f3:a1:17:c3:dc:54:17:c7:c8:5c:fd:f8:02:21:00:b1:1c:8b:ad:21:7c:47:96:db:e2:dc:57:67:0c:3c:e4:be:ee:dc:f9:f8:60:93:f2:55:93:99:85:0e:52:ff:6c
+
+2022/12/12 15:53:49.073277 outTag: 0
+60:92:f0:28:52:ff:68:45
+
+*/
+
 func renderCert(w io.Writer, b []byte) error {
 	block, rest := pem.Decode(b)
 	if block == nil || len(rest) > 0 {
@@ -1477,14 +1514,27 @@ func renderCert(w io.Writer, b []byte) error {
 		fmt.Fprintf(w, "\n")
 		h := find(ext.Id)
 		if h != nil && h.format != nil {
-			for line := range strings.Split(h.format(cert, ext.Value), "\n") {
+			for _, line := range strings.Split(h.format(cert, ext.Value), "\n") {
 				fmt.Fprintf(w, "                %s\n", line)
 			}
 		} else {
-			fmt.Fprintf(w, "                %v\n", ext.Value)
+			fmt.Fprintf(w, "                %v\n", asn1debug(cert, ext.Value))
 		}
 	}
 
+	fmt.Fprintf(w, "    Signature Algorithm: %s\n", cert.SignatureAlgorithm)
+	fmt.Fprintf(w, "    Signature Value:")
+	for i, b := range cert.Signature {
+		if i%18 == 0 {
+			fmt.Fprintf(w, "\n        ")
+		}
+		fmt.Fprintf(w, "%02x", b)
+		if i < len(cert.Signature)-1 {
+			fmt.Fprintf(w, ":")
+		} else {
+			fmt.Fprintf(w, "\n")
+		}
+	}
 	return nil
 }
 
@@ -1541,6 +1591,11 @@ var helpers = []oidHelper{
 	{[]int{2, 5, 29, 35}, "X509v3 Authority Key Identifier", hexify},
 	{[]int{2, 5, 29, 17}, "X509v3 Subject Alternative Name", printSan},
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 1}, "Fulcio Issuer", nil},
+	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 2}, "GitHub Workflow Trigger", nil},
+	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 3}, "GitHub Workflow SHA", nil},
+	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 4}, "GitHub Workflow Name", nil},
+	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 5}, "GitHub Workflow Repository", nil},
+	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 6}, "GitHub Workflow Ref", nil},
 	{[]int{1, 3, 6, 1, 4, 1, 11129, 2, 4, 2}, "CT Precertificate SCTs", nil},
 }
 
@@ -1636,4 +1691,37 @@ func printSan(cert *x509.Certificate, b []byte) string {
 	}
 
 	return strings.Join(outs, "\n")
+}
+
+func printSCTs(cert *x509.Certificate, b []byte) string {
+	return ""
+}
+
+func asn1debug(cert *x509.Certificate, b []byte) string {
+	var (
+		outTag casn1.Tag
+		out    cryptobyte.String
+	)
+	cb := cryptobyte.String(b)
+
+	if cb.ReadAnyASN1(&out, &outTag) {
+		// log.Printf("out: %v\n", out)
+		// printHex(os.Stderr, out)
+		// fmt.Fprintf(os.Stderr, "\n")
+		// log.Printf("outTag: %v", outTag)
+
+		// cb = out
+		// for cb.ReadAnyASN1(&out, &outTag) {
+		// 	log.Printf("out: %v\n", out)
+		// 	printHex(os.Stderr, out)
+		// 	fmt.Fprintf(os.Stderr, "\n")
+		// 	log.Printf("outTag: %v", outTag)
+		// 	cb = out
+		// }
+	} else {
+		log.Printf("not asn1?")
+		return string(b)
+	}
+
+	return hexify(cert, b)
 }

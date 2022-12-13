@@ -793,11 +793,30 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		return err
 	}
 
+	if r.URL.Query().Get("render") == "x509" {
+		data.JQ += " | openssl x509 -in /dev/stdin -text"
+	}
+
 	if err := bodyTmpl.Execute(w, data); err != nil {
 		return err
 	}
 
 	if r.URL.Query().Get("render") == "cert" {
+		u := *r.URL
+		qs := u.Query()
+		qs.Set("render", "x509")
+		u.RawQuery = qs.Encode()
+
+		fmt.Fprintf(w, `<div><a href="%s">`, u.String())
+
+		for _, line := range bytes.Split(b, []byte("\n")) {
+			if _, err := w.Write(line); err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "<br>")
+		}
+		fmt.Fprintf(w, "</a></div>")
+	} else if r.URL.Query().Get("render") == "x509" {
 		fmt.Fprintf(w, "<pre>")
 		if err := renderCert(w, b); err != nil {
 			return err
