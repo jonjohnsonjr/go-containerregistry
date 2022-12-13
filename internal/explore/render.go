@@ -118,7 +118,7 @@ func (w *jsonOutputter) Linkify(mt string, h v1.Hash, size int64) {
 
 func (w *jsonOutputter) Blob(ref, text string) {
 	w.tabf()
-	w.Printf(`"<a href="/json/%s">%s</a>"`, url.PathEscape(ref), html.EscapeString(text))
+	w.Printf(`"<a href="/?blob=%s">%s</a>"`, url.PathEscape(ref), html.EscapeString(text))
 	w.unfresh()
 	w.key = false
 }
@@ -1175,14 +1175,14 @@ func handlerForMT(s string) string {
 	case types.OCILayer, types.OCIUncompressedLayer, types.DockerLayer, types.DockerUncompressedLayer:
 		return `fs/`
 	case types.OCIContentDescriptor, CosignMediaType, types.OCIConfigJSON, types.DockerConfigJSON:
-		return `json/`
+		return `?blob=`
 	case cosignPointee:
 		return `?image=`
 	case types.DockerManifestSchema1, types.DockerManifestSchema1Signed:
 		return `?image=`
 	}
 	if strings.HasSuffix(s, "+json") {
-		return `json/`
+		return `?blob=`
 	}
 
 	return `blob/`

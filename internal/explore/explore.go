@@ -488,6 +488,9 @@ func (h *handler) renderResponse(w http.ResponseWriter, r *http.Request) error {
 	if images, ok := qs["image"]; ok {
 		return h.renderManifest(w, r, images[0])
 	}
+	if blobs, ok := qs["blob"]; ok {
+		return h.renderBlobJSON(w, r, blobs[0])
+	}
 	// We shouldn't hit this anymore, but keep these around for backward compat.
 	if blob, ok := getBlobQuery(r); ok {
 		return h.renderBlobJSON(w, r, blob)
@@ -724,7 +727,8 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			MediaType: desc.MediaType,
 			Size:      desc.Size,
 		},
-		JQ: "crane manifest " + ref.String(),
+		Handler: handlerForMT(string(desc.MediaType)),
+		JQ:      "crane manifest " + ref.String(),
 	}
 
 	if strings.Contains(ref.String(), "@") && strings.Index(ref.String(), "@") < strings.Index(ref.String(), ":") {
@@ -925,7 +929,8 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 			Digest:    hash,
 			MediaType: mediaType,
 		},
-		JQ: "crane blob " + ref.String(),
+		Handler: handlerForMT(string(mediaType)),
+		JQ:      "crane blob " + ref.String(),
 	}
 
 	// TODO: Can we do this in a streaming way?
