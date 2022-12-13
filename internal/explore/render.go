@@ -1040,6 +1040,21 @@ func renderAnnotations(w *jsonOutputter, o map[string]interface{}, raw *json.Raw
 					}
 				}
 			}
+		case "dev.sigstore.cosign/certificate", "dev.sigstore.cosign/chain":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					if w.jth(-1) == ".annotations" {
+						u := *w.u
+						qs := u.Query()
+						qs.Add("jq", strings.Join(w.jq, ""))
+						qs.Set("render", "cert")
+						u.RawQuery = qs.Encode()
+						w.BlueDoc(u.String(), s)
+
+						continue
+					}
+				}
+			}
 		case "org.opencontainers.image.documentation", "org.opencontainers.image.source", "org.opencontainers.image.url":
 			if js, ok := o[k]; ok {
 				if href, ok := js.(string); ok {
@@ -1422,84 +1437,93 @@ Certificate:
 */
 func renderCert(w io.Writer, b []byte) error {
 	block, rest := pem.Decode(b)
-	if block == nil || len(rest) > 0 {
-		return fmt.Errorf("pem.Decode: %v, %d", block, len(rest))
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return err
-	}
+	for {
+		if block == nil {
+			return fmt.Errorf("pem.Decode: %v, %d", block, len(rest))
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return err
+		}
 
-	fmt.Fprintf(w, "Certificate:\n")
-	fmt.Fprintf(w, "    Data:\n")
-	fmt.Fprintf(w, "        Version: %d (0x%x)\n", cert.Version, cert.Version-1)
-	fmt.Fprintf(w, "        Serial Number:\n")
-	fmt.Fprintf(w, "            ")
-	printHex(w, cert.SerialNumber.Bytes())
-	fmt.Fprintf(w, "\n")
-	fmt.Fprintf(w, "        Signature Algorithm: %s\n", cert.SignatureAlgorithm)
-	fmt.Fprintf(w, "        Issuer: %s\n", cert.Issuer)
-	fmt.Fprintf(w, "        Validity:\n")
-	fmt.Fprintf(w, "            Not Before: %s\n", cert.NotBefore)
-	fmt.Fprintf(w, "            Not After : %s\n", cert.NotAfter)
-	fmt.Fprintf(w, "        Subject:\n")
-	fmt.Fprintf(w, "        Subject Public Key Info:\n")
-	fmt.Fprintf(w, "            Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm)
+		fmt.Fprintf(w, "Certificate:\n")
+		fmt.Fprintf(w, "    Data:\n")
+		fmt.Fprintf(w, "        Version: %d (0x%x)\n", cert.Version, cert.Version-1)
+		fmt.Fprintf(w, "        Serial Number:\n")
+		fmt.Fprintf(w, "            ")
+		printHex(w, cert.SerialNumber.Bytes())
+		fmt.Fprintf(w, "\n")
+		fmt.Fprintf(w, "        Signature Algorithm: %s\n", cert.SignatureAlgorithm)
+		fmt.Fprintf(w, "        Issuer: %s\n", cert.Issuer)
+		fmt.Fprintf(w, "        Validity:\n")
+		fmt.Fprintf(w, "            Not Before: %s\n", cert.NotBefore)
+		fmt.Fprintf(w, "            Not After : %s\n", cert.NotAfter)
+		fmt.Fprintf(w, "        Subject:\n")
+		fmt.Fprintf(w, "        Subject Public Key Info:\n")
+		fmt.Fprintf(w, "            Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm)
 
-	pub := cert.PublicKey
-	switch p := pub.(type) {
-	case *ecdsa.PublicKey:
-		bits := p.Params().BitSize
-		name := p.Params().Name
+		pub := cert.PublicKey
+		switch p := pub.(type) {
+		case *ecdsa.PublicKey:
+			bits := p.Params().BitSize
+			name := p.Params().Name
 
-		fmt.Fprintf(w, "                Public Key: (%d bit)\n", bits)
-		fmt.Fprintf(w, "                pub:")
-		bs := []byte{0x04} // uncompressed public keys start with 04?
-		bs = append(bs, p.X.Bytes()...)
-		bs = append(bs, p.Y.Bytes()...)
-		for i, b := range bs {
-			if i%15 == 0 {
-				fmt.Fprintf(w, "\n                    ")
+			fmt.Fprintf(w, "                Public Key: (%d bit)\n", bits)
+			fmt.Fprintf(w, "                pub:")
+			bs := []byte{0x04} // uncompressed public keys start with 04?
+			bs = append(bs, p.X.Bytes()...)
+			bs = append(bs, p.Y.Bytes()...)
+			for i, b := range bs {
+				if i%15 == 0 {
+					fmt.Fprintf(w, "\n                    ")
+				}
+				fmt.Fprintf(w, "%02x", b)
+				if i < len(bs)-1 {
+					fmt.Fprintf(w, ":")
+				} else {
+					fmt.Fprintf(w, "\n")
+				}
+			}
+			fmt.Fprintf(w, "                NIST CURVE: %s\n", name)
+		default:
+			return fmt.Errorf("TODO: renderCert with %T", pub)
+		}
+
+		fmt.Fprintf(w, "        X509v3 extensions:\n")
+		for _, ext := range cert.Extensions {
+			fmt.Fprintf(w, "            %s:", oidKey(ext.Id))
+			if ext.Critical {
+				fmt.Fprintf(w, " critical")
+			}
+			fmt.Fprintf(w, "\n")
+			h := find(ext.Id)
+			if h != nil && h.format != nil {
+				for _, line := range strings.Split(h.format(cert, ext.Value), "\n") {
+					fmt.Fprintf(w, "                %s\n", line)
+				}
+			} else {
+				fmt.Fprintf(w, "                %v\n", asn1debug(cert, ext.Value))
+			}
+		}
+
+		fmt.Fprintf(w, "    Signature Algorithm: %s\n", cert.SignatureAlgorithm)
+		fmt.Fprintf(w, "    Signature Value:")
+		for i, b := range cert.Signature {
+			if i%18 == 0 {
+				fmt.Fprintf(w, "\n        ")
 			}
 			fmt.Fprintf(w, "%02x", b)
-			if i < len(bs)-1 {
+			if i < len(cert.Signature)-1 {
 				fmt.Fprintf(w, ":")
 			} else {
 				fmt.Fprintf(w, "\n")
 			}
-		}
-		fmt.Fprintf(w, "                NIST CURVE: %s\n", name)
-	default:
-		return fmt.Errorf("TODO: renderCert with %T", pub)
-	}
 
-	fmt.Fprintf(w, "        X509v3 extensions:\n")
-	for _, ext := range cert.Extensions {
-		fmt.Fprintf(w, "            %s:", oidKey(ext.Id))
-		if ext.Critical {
-			fmt.Fprintf(w, " critical")
 		}
-		fmt.Fprintf(w, "\n")
-		h := find(ext.Id)
-		if h != nil && h.format != nil {
-			for _, line := range strings.Split(h.format(cert, ext.Value), "\n") {
-				fmt.Fprintf(w, "                %s\n", line)
-			}
-		} else {
-			fmt.Fprintf(w, "                %v\n", asn1debug(cert, ext.Value))
+		if len(rest) == 0 {
+			break
 		}
-	}
-
-	fmt.Fprintf(w, "    Signature Algorithm: %s\n", cert.SignatureAlgorithm)
-	fmt.Fprintf(w, "    Signature Value:")
-	for i, b := range cert.Signature {
-		if i%18 == 0 {
-			fmt.Fprintf(w, "\n        ")
-		}
-		fmt.Fprintf(w, "%02x", b)
-		if i < len(cert.Signature)-1 {
-			fmt.Fprintf(w, ":")
-		}
+		block, rest = pem.Decode(rest)
 	}
 	return nil
 }
@@ -1556,6 +1580,7 @@ var helpers = []oidHelper{
 	{[]int{2, 5, 29, 14}, "X509v3 Subject Key Identifier", hexify},
 	{[]int{2, 5, 29, 35}, "X509v3 Authority Key Identifier", hexify},
 	{[]int{2, 5, 29, 17}, "X509v3 Subject Alternative Name", printSan},
+	{[]int{2, 5, 29, 19}, "X509v3 Basic Constraints", constraints},
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 1}, "Fulcio Issuer", nil},
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 2}, "GitHub Workflow Trigger", nil},
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 3}, "GitHub Workflow SHA", nil},
@@ -1563,6 +1588,22 @@ var helpers = []oidHelper{
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 5}, "GitHub Workflow Repository", nil},
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 6}, "GitHub Workflow Ref", nil},
 	{[]int{1, 3, 6, 1, 4, 1, 11129, 2, 4, 2}, "CT Precertificate SCTs", printSCTs},
+}
+
+func constraints(cert *x509.Certificate, b []byte) string {
+	w := &strings.Builder{}
+	if cert.IsCA {
+		w.WriteString("CA:TRUE")
+	} else {
+		w.WriteString("CA:FALSE")
+	}
+
+	if cert.MaxPathLenZero {
+		w.WriteString(", pathlen:0")
+	} else if cert.MaxPathLen > 0 {
+		fmt.Fprintf(w, ", pathlen:%d", cert.MaxPathLen)
+	}
+	return w.String()
 }
 
 var keyUsages = []struct {
@@ -1630,9 +1671,9 @@ func extKeyUsage(cert *x509.Certificate, b []byte) string {
 }
 
 func hexify(cert *x509.Certificate, b []byte) string {
-	var builder strings.Builder
-	printHex(&builder, b)
-	return builder.String()
+	w := &strings.Builder{}
+	printHex(w, b)
+	return w.String()
 }
 
 func printSan(cert *x509.Certificate, b []byte) string {

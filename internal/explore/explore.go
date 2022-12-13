@@ -794,7 +794,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	}
 
 	if r.URL.Query().Get("render") == "x509" {
-		data.JQ += " | openssl x509 -in /dev/stdin -text"
+		data.JQ += " | while openssl x509 -text -noout 2>/dev/null; do :; done"
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
