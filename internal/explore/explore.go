@@ -720,7 +720,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 
 	data := HeaderData{
 		Repo:       ref.Context().String(),
-		Reference:  ref.String(),
+		Reference:  url.QueryEscape(ref.String()),
 		CosignTags: []CosignTag{},
 		Descriptor: &v1.Descriptor{
 			Digest:    desc.Digest,
@@ -924,7 +924,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 	data := HeaderData{
 		Repo:      ref.Context().String(),
-		Reference: ref.String(),
+		Reference: url.QueryEscape(ref.String()),
 		Descriptor: &v1.Descriptor{
 			Size:      size,
 			Digest:    hash,
