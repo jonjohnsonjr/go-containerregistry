@@ -894,21 +894,24 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		if err != nil {
 			return err
 		}
-		size, err = l.Size()
-		if err != nil {
-			log.Printf("layer %s Size(): %v", ref, err)
-		} else if size > tooBig {
-			return fmt.Errorf("layer %s too big: %d", ref, size)
-		}
 		blob, err = l.Compressed()
 		if err != nil {
 			return err
+		}
+		defer blob.Close()
+		size, err = l.Size()
+		if err != nil {
+			log.Printf("layer %s Size(): %v", ref, err)
+			return fmt.Errorf("cannot check blob size: %v", err)
+		} else if size > tooBig {
+			return fmt.Errorf("layer %s too big: %d", ref, size)
 		}
 	} else {
 		fetched, prefix, err := h.fetchBlob(w, r)
 		if err != nil {
 			return err
 		}
+		defer fetched.Close()
 		_, root, err := splitFsURL(r.URL.Path)
 		if err != nil {
 			return err
@@ -922,7 +925,6 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		blob = fetched
 		size = fetched.size
 	}
-	defer blob.Close()
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
