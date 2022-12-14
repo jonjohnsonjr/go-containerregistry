@@ -727,8 +727,9 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			MediaType: desc.MediaType,
 			Size:      desc.Size,
 		},
-		Handler: handlerForMT(string(desc.MediaType)),
-		JQ:      "crane manifest " + ref.String(),
+		Handler:          handlerForMT(string(desc.MediaType)),
+		EscapedMediaType: url.QueryEscape(string(desc.MediaType)),
+		JQ:               "crane manifest " + ref.String(),
 	}
 
 	if strings.Contains(ref.String(), "@") && strings.Index(ref.String(), "@") < strings.Index(ref.String(), ":") {
@@ -929,8 +930,14 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 			Digest:    hash,
 			MediaType: mediaType,
 		},
-		Handler: handlerForMT(string(mediaType)),
-		JQ:      "crane blob " + ref.String(),
+		Handler:          handlerForMT(string(mediaType)),
+		EscapedMediaType: url.QueryEscape(string(mediaType)),
+		Up: &RepoParent{
+			Parent:    ref.Context().String(),
+			Separator: "@",
+			Child:     ref.Identifier(),
+		},
+		JQ: "crane blob " + ref.String(),
 	}
 
 	// TODO: Can we do this in a streaming way?

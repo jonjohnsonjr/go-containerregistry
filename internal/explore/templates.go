@@ -136,12 +136,12 @@ body {
 <body>
 <div>
 {{ if .Up }}
-<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}<a class="mt" href="{{.Handler}}{{.Reference}}">{{.Up.Child}}</a>{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
+<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}<a class="mt" href="{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ else }}
 <h2>{{.Reference}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ end }}
 {{ if .Descriptor }}
-Docker-Content-Digest: <a class="mt" href="{{.Handler}}{{$.Repo}}@{{.Descriptor.Digest}}&mt={{.Descriptor.MediaType}}&size={{.Descriptor.Size}}">{{.Descriptor.Digest}}<a><br>
+Docker-Content-Digest: <a class="mt" href="{{.Handler}}{{$.Repo}}@{{.Descriptor.Digest}}&mt={{.EscapedMediaType}}&size={{.Descriptor.Size}}">{{.Descriptor.Digest}}<a><br>
 Content-Length: {{.Descriptor.Size}}<br>
 Content-Type: {{.Descriptor.MediaType}}<br>
 {{end}}
@@ -178,13 +178,14 @@ type CosignTag struct {
 }
 
 type HeaderData struct {
-	Repo       string
-	CosignTags []CosignTag
-	JQ         string
-	Reference  string
-	Up         *RepoParent
-	Descriptor *v1.Descriptor
-	Handler    string
+	Repo             string
+	CosignTags       []CosignTag
+	JQ               string
+	Reference        string
+	Up               *RepoParent
+	Descriptor       *v1.Descriptor
+	Handler          string
+	EscapedMediaType string
 }
 
 // Cosign simple signing stuff.
