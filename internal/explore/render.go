@@ -392,6 +392,9 @@ var precedence = []string{
 	"predicateType",
 	"subject",
 	"predicate",
+	"child",
+	"tags",
+	"manifest",
 }
 var ociMap map[string]int
 
