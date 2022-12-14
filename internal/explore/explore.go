@@ -1008,7 +1008,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		b = dsse.Payload
 		data.JQ = data.JQ + " | jq .payload -r | base64 -d | jq ."
 	} else {
-		data.JQ = data.JQ + " | jq . "
+		data.JQ = data.JQ + " | jq ."
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
@@ -1295,6 +1295,7 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *HeaderData) ([]byte, error) {
 	jq, ok := r.URL.Query()["jq"]
 	if !ok {
+		data.JQ += " |  jq ."
 		return b, nil
 	}
 
