@@ -160,9 +160,6 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
 		log.Printf("failed to get transport from cookie: %v", err)
 	} else {
-		if debug {
-			log.Printf("restored bearer transport")
-		}
 		opts = append(opts, remote.WithTransport(t))
 	}
 
@@ -208,9 +205,6 @@ func (h *handler) googleOptions(w http.ResponseWriter, r *http.Request, repo str
 	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
 		log.Printf("failed to get transport from cookie: %v", err)
 	} else {
-		if debug {
-			log.Printf("restored bearer transport")
-		}
 		opts = append(opts, goog.WithTransport(t))
 	}
 
@@ -437,8 +431,14 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 
 	if pr == nil {
 		if cpr, ok := h.pings[reg.String()]; ok {
+			if debug {
+				log.Printf("cached ping: %v", cpr)
+			}
 			pr = cpr
 		} else {
+			if debug {
+				log.Printf("pinging %s", reg.String())
+			}
 			pr, err = transport.Ping(r.Context(), reg, t)
 			if err != nil {
 				return nil, err
@@ -448,6 +448,9 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 	}
 
 	if tok == nil {
+		if debug {
+			log.Printf("getting token %s", reg.String())
+		}
 		t, tok, err = transport.NewBearer(r.Context(), pr, reg, auth, t, scopes)
 		if err != nil {
 			return nil, err
@@ -486,6 +489,9 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 		cookie.Expires = exp
 		http.SetCookie(w, cookie)
 	} else {
+		if debug {
+			log.Printf("restoring bearer %s", reg.String())
+		}
 		t, err = transport.OldBearer(pr, tok, reg, auth, t, scopes)
 		if err != nil {
 			return nil, err
@@ -724,7 +730,10 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	if err != nil {
 		return err
 	}
-	var desc *remote.Descriptor
+	var (
+		desc *remote.Descriptor
+		opts []remote.Option
+	)
 	allowCache := true
 	if isGoogle(ref.Context().Registry.String()) {
 		if _, err := r.Cookie("access_token"); err == nil {
@@ -734,11 +743,24 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	if allowCache {
 		if _, ok := ref.(name.Digest); ok {
 			desc, ok = h.manifests[ref.Identifier()]
+		} else {
+			if ref.Context().Registry.String() == name.DefaultRegistry {
+				// For dockerhub, HEAD tags to avoid rate limiting
+				// since we might have things cached...
+				opts = h.remoteOptions(w, r, ref.Context().Name())
+				opts = append(opts, remote.WithMaxSize(tooBig))
+				d, err := remote.Head(ref, opts...)
+				if err == nil {
+					desc, ok = h.manifests[d.Digest.String()]
+				}
+			}
 		}
 	}
 	if desc == nil {
-		opts := h.remoteOptions(w, r, ref.Context().Name())
-		opts = append(opts, remote.WithMaxSize(tooBig))
+		if opts == nil {
+			opts = h.remoteOptions(w, r, ref.Context().Name())
+			opts = append(opts, remote.WithMaxSize(tooBig))
+		}
 
 		desc, err = remote.Get(ref, opts...)
 		if err != nil {
