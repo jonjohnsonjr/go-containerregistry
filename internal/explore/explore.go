@@ -62,6 +62,12 @@ type handler struct {
 	// Stupid hack because I'm too lazy to refactor.
 	blobs map[*http.Request]*sizeBlob
 
+	// digest -> remote.desc
+	manifests map[string]*remote.Descriptor
+
+	// reg.String() -> ping resp
+	pings map[string]*transport.PingResp
+
 	cache *headerCache
 
 	sync.Mutex
@@ -231,9 +237,11 @@ func New(opts ...Option) http.Handler {
 	}
 
 	h := handler{
-		mux:   http.NewServeMux(),
-		blobs: map[*http.Request]*sizeBlob{},
-		oauth: conf,
+		mux:       http.NewServeMux(),
+		blobs:     map[*http.Request]*sizeBlob{},
+		manifests: map[string]*remote.Descriptor{},
+		pings:     map[string]*transport.PingResp{},
+		oauth:     conf,
 		cache: &headerCache{
 			// 50 MB * 50 = 2.5GB reserved for cache.
 			maxSize:  50 * (1 << 20),
@@ -428,9 +436,14 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 	}
 
 	if pr == nil {
-		pr, err = transport.Ping(r.Context(), reg, t)
-		if err != nil {
-			return nil, err
+		if cpr, ok := h.pings[reg.String()]; ok {
+			pr = cpr
+		} else {
+			pr, err = transport.Ping(r.Context(), reg, t)
+			if err != nil {
+				return nil, err
+			}
+			h.pings[reg.String()] = pr
 		}
 	}
 
@@ -508,7 +521,7 @@ func renderLanding(w http.ResponseWriter) error {
 	return err
 }
 
-func (h *handler) getTags(repo name.Repository, opts ...remote.Option) ([]string, bool) {
+func (h *handler) getTags(repo name.Repository) ([]string, bool) {
 	h.Lock()
 	tags, ok := h.sawTags[repo.String()]
 	h.Unlock()
@@ -711,11 +724,27 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	if err != nil {
 		return err
 	}
-	opts := h.remoteOptions(w, r, ref.Context().Name())
-	opts = append(opts, remote.WithMaxSize(tooBig))
-	desc, err := remote.Get(ref, opts...)
-	if err != nil {
-		return err
+	var desc *remote.Descriptor
+	allowCache := true
+	if isGoogle(ref.Context().Registry.String()) {
+		if _, err := r.Cookie("access_token"); err == nil {
+			allowCache = false
+		}
+	}
+	if allowCache {
+		if _, ok := ref.(name.Digest); ok {
+			desc, ok = h.manifests[ref.Identifier()]
+		}
+	}
+	if desc == nil {
+		opts := h.remoteOptions(w, r, ref.Context().Name())
+		opts = append(opts, remote.WithMaxSize(tooBig))
+
+		desc, err = remote.Get(ref, opts...)
+		if err != nil {
+			return err
+		}
+		h.manifests[desc.Digest.String()] = desc
 	}
 
 	data := HeaderData{
@@ -752,7 +781,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		}
 	}
 	prefix := strings.Replace(desc.Digest.String(), ":", "-", 1)
-	tags, ok := h.getTags(ref.Context(), opts...)
+	tags, ok := h.getTags(ref.Context())
 	if ok {
 		for _, tag := range tags {
 			if tag == prefix {
@@ -1050,6 +1079,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		if debug {
 			log.Printf("it is tar")
 		}
+		// Cache this for layerFS.reset() so we don't have to re-fetch it.
 		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
 
 		fs, err := h.newLayerFS(w, r)
@@ -1159,6 +1189,7 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 		return nil, "", fmt.Errorf("bad ref: %s", path)
 	}
 
+	// The first layerFS.reset() will hit this.
 	if rc, ok := h.blobs[r]; ok {
 		delete(h.blobs, r)
 		return rc, root + ref, err
