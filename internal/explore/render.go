@@ -1243,18 +1243,6 @@ func getAnnotationLink(s string) string {
 	return ""
 }
 
-type RekorBundle struct {
-	SignedEntryTimestamp []byte
-	Payload              RekorPayload
-}
-
-type RekorPayload struct {
-	Body           []byte `json:"body"`
-	IntegratedTime int64  `json:"integratedTime"`
-	LogIndex       int64  `json:"logIndex"`
-	LogID          string `json:"logID"`
-}
-
 func inside(u *url.URL, ann string) bool {
 	for _, jq := range u.Query()["jq"] {
 		if strings.Contains(jq, `.annotations["`+ann+`"]`) {
@@ -1914,7 +1902,6 @@ func asn1debug(cert *x509.Certificate, b []byte) string {
 		// 	cb = out
 		// }
 	} else {
-		log.Printf("not asn1?")
 		return string(b)
 	}
 
