@@ -144,7 +144,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 		// we already have headers, don't hit the tar reader
 		for _, header := range fs.headers {
 			if path.Clean("/"+header.Name) == name {
-				log.Printf("cached Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
+				debugf("cached Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
 				if header.Typeflag == tar.TypeDir {
 					debugf("is a dir")
 					return &layerFile{
@@ -169,14 +169,14 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 			chased, err := fs.chase(name, 0)
 			if err == nil {
 				if chased.Typeflag == tar.TypeDir {
-					log.Printf("chase(%s) -> %s, dir", name, chased.Name)
+					debugf("chase(%s) -> %s, dir", name, chased.Name)
 					return &layerFile{
 						name:   chased.Name,
 						header: chased,
 						fs:     fs,
 					}, nil
 				}
-				log.Printf("chase(%s) -> %s, falling through", name, chased.Name)
+				debugf("chase(%s) -> %s, falling through", name, chased.Name)
 				name = path.Clean("/" + chased.Name)
 			} else {
 				// We didn't find the entry in the tarball, so we're probably trying to list
@@ -200,7 +200,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 	for {
 		header, err := fs.tr.Next()
 		if err == io.EOF {
-			log.Printf("Open(%q): EOF", name)
+			debugf("Open(%q): EOF", name)
 
 			// Don't bother chasing this.
 			if path.Base(name) == "index.html" {
@@ -209,7 +209,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 
 			chased, err := fs.chase(name, 0)
 			if err == nil {
-				log.Printf("chase(%s) -> %s, resetting", name, chased.Name)
+				debugf("chase(%s) -> %s, resetting", name, chased.Name)
 				name = path.Clean("/" + chased.Name)
 				size = 0
 				if err := fs.reset(); err != nil {
@@ -232,7 +232,7 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 		fs.headers = append(fs.headers, header)
 		size += int(unsafe.Sizeof(*header))
 		if path.Clean("/"+header.Name) == name {
-			log.Printf("Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
+			debugf("Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
 
 			return &layerFile{
 				name:   name,
@@ -275,7 +275,7 @@ func (fs *layerFS) chase(original string, gen int) (*tar.Header, error) {
 		log.Printf("chase(%q) aborting at gen=%d", original, gen)
 		return nil, fmt.Errorf("too many symlinks")
 	}
-	log.Printf("chase(%q)", original)
+	debugf("chase(%q)", original)
 	name := path.Clean("/" + original)
 	dir := path.Dir(name)
 	dirs := []string{dir}
@@ -428,7 +428,7 @@ func (f *layerFile) Read(p []byte) (int, error) {
 		if len(p) <= bufferLen {
 			f.buf = bufio.NewReaderSize(f.fs.tr, bufferLen)
 		} else {
-			log.Printf("Read(%q): len(p) = %d", f.name, len(p))
+			debugf("Read(%q): len(p) = %d", f.name, len(p))
 			f.buf = bufio.NewReaderSize(f.fs.tr, len(p))
 		}
 
@@ -552,7 +552,7 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 	// If we don't find anything in here, but there were subdirectories per the tarball
 	// paths, synthesize some directories.
 	if len(fis) == 0 {
-		log.Printf("ReadDir(%q): No matching headers in %d entries, synthesizing directories", f.name, len(f.fs.headers))
+		debugf("ReadDir(%q): No matching headers in %d entries, synthesizing directories", f.name, len(f.fs.headers))
 		dirs := map[string]struct{}{}
 		for _, hdr := range f.fs.headers {
 			name := path.Clean("/" + hdr.Name)
