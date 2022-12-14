@@ -149,8 +149,10 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 			if rt, err := r.Cookie("refresh_token"); err == nil {
 				tok.RefreshToken = rt.Value
 			}
-			ts := h.oauth.TokenSource(r.Context(), tok)
-			auth = goog.NewTokenSourceAuthenticator(ts)
+			if h.oauth != nil {
+				ts := h.oauth.TokenSource(r.Context(), tok)
+				auth = goog.NewTokenSourceAuthenticator(ts)
+			}
 
 		}
 	}
@@ -194,9 +196,10 @@ func (h *handler) googleOptions(w http.ResponseWriter, r *http.Request, repo str
 			if rt, err := r.Cookie("refresh_token"); err == nil {
 				tok.RefreshToken = rt.Value
 			}
-			ts := h.oauth.TokenSource(r.Context(), tok)
-			auth = goog.NewTokenSourceAuthenticator(ts)
-
+			if h.oauth != nil {
+				ts := h.oauth.TokenSource(r.Context(), tok)
+				auth = goog.NewTokenSourceAuthenticator(ts)
+			}
 		}
 	}
 
@@ -220,28 +223,31 @@ func WithRemote(opt []remote.Option) Option {
 }
 
 func New(opts ...Option) http.Handler {
-	conf := &oauth2.Config{
-		ClientID:     os.Getenv("CLIENT_ID"),
-		ClientSecret: os.Getenv("CLIENT_SECRET"),
-		RedirectURL:  "https://explore.ggcr.dev/oauth",
-		Scopes: []string{
-			"https://www.googleapis.com/auth/cloud-platform.read-only",
-		},
-		Endpoint: google.Endpoint,
-	}
-
 	h := handler{
 		mux:       http.NewServeMux(),
 		blobs:     map[*http.Request]*sizeBlob{},
 		manifests: map[string]*remote.Descriptor{},
 		pings:     map[string]*transport.PingResp{},
-		oauth:     conf,
 		cache: &headerCache{
 			// 50 MB * 50 = 2.5GB reserved for cache.
 			maxSize:  50 * (1 << 20),
 			entryCap: 50,
 		},
 		sawTags: map[string][]string{},
+	}
+
+	ClientID := os.Getenv("CLIENT_ID")
+	ClientSecret := os.Getenv("CLIENT_SECRET")
+	if ClientID != "" && ClientSecret != "" {
+		h.oauth = &oauth2.Config{
+			ClientID:     ClientID,
+			ClientSecret: ClientSecret,
+			RedirectURL:  "https://explore.ggcr.dev/oauth",
+			Scopes: []string{
+				"https://www.googleapis.com/auth/cloud-platform.read-only",
+			},
+			Endpoint: google.Endpoint,
+		}
 	}
 
 	for _, opt := range opts {
@@ -278,7 +284,10 @@ func New(opts ...Option) http.Handler {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%v", r.URL)
+	if h.oauth == nil {
+		// Cloud run already logs, don't log extra.
+		log.Printf("%v", r.URL)
+	}
 
 	if r.URL.Path == "/favicon.svg" || r.URL.Path == "/favicon.ico" {
 		w.Header().Set("Cache-Control", "max-age=3600")
@@ -311,6 +320,10 @@ func isGoogle(host string) bool {
 }
 
 func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
+	if h.oauth == nil {
+		return
+	}
+
 	qs := r.URL.Query()
 	code := qs.Get("code")
 	tok, err := h.oauth.Exchange(r.Context(), code)
@@ -363,6 +376,10 @@ func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleOauth(w http.ResponseWriter, r *http.Request, err error) error {
+	if h.oauth == nil {
+		return nil
+	}
+
 	var terr *transport.Error
 	if !errors.As(err, &terr) {
 		return err
@@ -726,10 +743,12 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 
 // Render manifests with links to blobs, manifests, etc.
 func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image string) error {
+	log.Printf("image: %s", image)
 	ref, err := name.ParseReference(image, name.WeakValidation)
 	if err != nil {
 		return err
 	}
+	log.Printf("ref: %s", ref.String())
 	var (
 		desc *remote.Descriptor
 		opts []remote.Option
@@ -769,9 +788,15 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		h.manifests[desc.Digest.String()] = desc
 	}
 
+	jqref, err := url.PathUnescape(ref.String())
+	if err != nil {
+		return err
+	}
+
 	data := HeaderData{
-		Repo:       ref.Context().String(),
-		Reference:  url.QueryEscape(ref.String()),
+		Repo: ref.Context().String(),
+		//Reference:  url.QueryEscape(ref.String()),
+		Reference:  ref.String(),
 		CosignTags: []CosignTag{},
 		Descriptor: &v1.Descriptor{
 			Digest:    desc.Digest,
@@ -780,8 +805,10 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		},
 		Handler:          handlerForMT(string(desc.MediaType)),
 		EscapedMediaType: url.QueryEscape(string(desc.MediaType)),
-		JQ:               "crane manifest " + ref.String(),
+		JQ:               "crane manifest " + jqref,
 	}
+
+	log.Printf("jq: %s", data.JQ)
 
 	if strings.Contains(ref.String(), "@") && strings.Index(ref.String(), "@") < strings.Index(ref.String(), ":") {
 		chunks := strings.SplitN(ref.String(), "@", 2)
@@ -825,9 +852,15 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		}
 	}
 
+	u := *r.URL
 	if _, ok := ref.(name.Digest); ok {
 		// Allow this to be cached for an hour.
 		w.Header().Set("Cache-Control", "max-age=3600, immutable")
+	} else {
+		newImage := image + "@" + desc.Digest.String()
+		qs := u.Query()
+		qs.Set("image", newImage)
+		u.RawQuery = qs.Encode()
 	}
 
 	if err := headerTmpl.Execute(w, TitleData{image}); err != nil {
@@ -836,7 +869,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 
 	output := &jsonOutputter{
 		w:     w,
-		u:     r.URL,
+		u:     &u,
 		fresh: []bool{},
 		repo:  ref.Context().String(),
 		mt:    string(desc.MediaType),
@@ -992,6 +1025,8 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		},
 		JQ: "crane blob " + ref.String(),
 	}
+
+	// TODO: similar to h.jq
 
 	// TODO: Can we do this in a streaming way?
 	b, err := ioutil.ReadAll(io.LimitReader(blob, tooBig))

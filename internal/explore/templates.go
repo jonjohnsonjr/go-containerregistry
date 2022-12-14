@@ -14,7 +14,7 @@
 package explore
 
 import (
-	"html/template"
+	"text/template"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
