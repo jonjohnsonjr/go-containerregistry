@@ -81,6 +81,10 @@ func (i *GzipZinfo) Bytes() ([]byte, error) {
 	return bytes, nil
 }
 
+func (i *GzipZinfo) UncompressedSize() int64 {
+	return int64(i.cZinfo.usize)
+}
+
 // MaxSpanID returns the max span ID.
 func (i *GzipZinfo) MaxSpanID() SpanID {
 	return SpanID(C.get_max_span_id(i.cZinfo))

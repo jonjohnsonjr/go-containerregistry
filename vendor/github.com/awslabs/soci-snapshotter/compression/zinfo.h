@@ -74,6 +74,7 @@ struct gzip_checkpoint
 
 struct gzip_zinfo 
 {
+    int64_t usize;          /* size of the uncompressed archive */
     int32_t have;           /* number of list entries filled in */
     int32_t size;           /* number of list entries allocated */
     struct gzip_checkpoint *list; /* allocated list */

@@ -216,6 +216,7 @@ int generate_zinfo(FILE* in, offset_t span, struct gzip_zinfo** idx)
     int32_t sz = index->size;
     index->size = encode_int32(index->size);
     index->span_size = encode_offset(span);
+    index->usize = totout;
     *idx = index;
     return sz;
 
