@@ -15,11 +15,19 @@
 package cmd
 
 import (
-	"fmt"
+	"bufio"
 	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"syscall"
 
+	"github.com/awslabs/soci-snapshotter/ztoc"
 	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 // NewCmdBlob creates a new cobra.Command for the blob subcommand.
@@ -31,18 +39,90 @@ func NewCmdBlob(options *[]crane.Option) *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src := args[0]
-			layer, err := crane.PullLayer(src, *options...)
+
+			o := crane.GetOptions(*options...)
+
+			digest, err := name.NewDigest(src, o.Name...)
 			if err != nil {
-				return fmt.Errorf("pulling layer %s: %w", src, err)
+				return err
 			}
-			blob, err := layer.Compressed()
+
+			l, err := remote.Layer(digest, o.Remote...)
 			if err != nil {
-				return fmt.Errorf("fetching blob %s: %w", src, err)
+				return err
 			}
-			if _, err := io.Copy(cmd.OutOrStdout(), blob); err != nil {
-				return fmt.Errorf("copying blob %s: %w", src, err)
+			log.Printf("Layer")
+
+			fname := filepath.Join(os.TempDir(), digest.Identifier())
+			if err := syscall.Mkfifo(fname, 0666); err != nil {
+				return err
 			}
-			return nil
+			log.Printf("Mkfifo")
+			defer os.Remove(fname)
+
+			f, err := os.OpenFile(fname, os.O_WRONLY, os.ModeNamedPipe)
+			if err != nil {
+				return err
+			}
+			log.Printf("OpenFile")
+
+			/*
+				b, err := remote.Blob(digest, o.Remote...)
+				if err != nil {
+					return err
+				}
+				_ = b
+			*/
+
+			var g errgroup.Group
+			g.Go(func() error {
+				log.Printf("go() 1")
+				defer f.Close()
+				bw := bufio.NewWriterSize(f, 2<<16)
+				log.Printf("Compressed()")
+				rc, err := l.Compressed()
+				if err != nil {
+					return err
+				}
+				defer rc.Close()
+				s := snooper{bw}
+				log.Printf("Copy()")
+				if _, err := io.Copy(&s, rc); err != nil {
+					return err
+				}
+				log.Printf("Flush()")
+				if err := bw.Flush(); err != nil {
+					return err
+				}
+				log.Printf("returning")
+				return nil
+			})
+
+			g.Go(func() error {
+				log.Printf("go() 2")
+				// return nil
+
+				log.Printf("build")
+				toc, err := ztoc.BuildZtoc(fname, int64(1<<22), "crane")
+				if err != nil {
+					return err
+				}
+				log.Printf("ztoc: %v", toc)
+				return nil
+			})
+
+			return g.Wait()
 		},
 	}
+}
+
+type snooper struct {
+	w io.Writer
+}
+
+func (s *snooper) Write(p []byte) (n int, err error) {
+	log.Printf("about to write len(p) == %d bytes", len(p))
+	n, err = s.w.Write(p)
+	log.Printf("wrote %d, %v", n, err)
+	return
 }

@@ -48,6 +48,9 @@ type options struct {
 	retryBackoff                   Backoff
 	retryPredicate                 retry.Predicate
 	maxSize                        int64
+
+	// Optimization in case we know the size already.
+	size int64
 }
 
 var defaultPlatform = v1.Platform{
@@ -297,6 +300,13 @@ func WithRetryPredicate(predicate retry.Predicate) Option {
 func WithMaxSize(size int64) Option {
 	return func(o *options) error {
 		o.maxSize = size
+		return nil
+	}
+}
+
+func WithSize(size int64) Option {
+	return func(o *options) error {
+		o.size = size
 		return nil
 	}
 }

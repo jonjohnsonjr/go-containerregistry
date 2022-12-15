@@ -47,6 +47,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	// "github.com/awslabs/soci-snapshotter/ztoc"
 )
 
 // We should not buffer blobs greater than 2MB
