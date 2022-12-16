@@ -158,6 +158,7 @@ func Blob(ref name.Digest, options ...Option) (*BlobSeeker, error) {
 
 	var res *http.Response
 	for {
+		logs.Debug.Printf("urlStr: %s", urlStr)
 		req, err := http.NewRequestWithContext(o.context, http.MethodGet, urlStr, nil)
 		if err != nil {
 			return nil, err
@@ -180,6 +181,8 @@ func Blob(ref name.Digest, options ...Option) (*BlobSeeker, error) {
 	}
 	defer res.Body.Close()
 
+	logs.Debug.Printf("got past redir")
+
 	if res.StatusCode >= 400 {
 		return nil, transport.CheckError(res)
 	}
@@ -192,9 +195,11 @@ func Blob(ref name.Digest, options ...Option) (*BlobSeeker, error) {
 }
 
 func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
+	logs.Debug.Printf("ReadAt")
 	// TODO: configurable timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = redact.NewContext(ctx, "omitting binary blobs from logs")
 	req, err := http.NewRequestWithContext(ctx, "GET", b.url, nil)
 	if err != nil {
 		return 0, err

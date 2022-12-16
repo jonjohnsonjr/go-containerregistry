@@ -20,92 +20,194 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 
 	"github.com/awslabs/soci-snapshotter/compression"
 	"github.com/awslabs/soci-snapshotter/ztoc"
+	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
-// NewCmdSoci creates a new cobra.Command for the soci subcommand.
 func NewCmdSoci(options *[]crane.Option) *cobra.Command {
-	var index string
-	var list bool
 	cmd := &cobra.Command{
-		Use:     "soci BLOB",
+		Hidden: true,
+		Use:    "soci",
+		Short:  "soci stuff",
+		Args:   cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, _ []string) {
+			cmd.Usage()
+		},
+	}
+	cmd.AddCommand(NewCmdSociIndex(options), NewCmdSociList(options), NewCmdSociServe(options))
+
+	return cmd
+}
+func NewCmdSociList(options *[]crane.Option) *cobra.Command {
+	return &cobra.Command{
+		Use:     "list BLOB",
+		Short:   "List files in a soci index",
+		Example: "crane soci list index.ztoc",
+		//Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			f, err := os.Open(args[0])
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			toc, err := ztoc.Unmarshal(f)
+			if err != nil {
+				return err
+			}
+			for _, fm := range toc.TOC.Metadata {
+				fmt.Fprintln(cmd.OutOrStdout(), tarList(fm))
+			}
+			return nil
+		},
+	}
+}
+
+func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
+	index := ""
+	cmd := &cobra.Command{
+		Use:     "serve BLOB --index FILE",
 		Short:   "Read a blob from the registry and generate a soci index",
-		Example: "crane soci ubuntu@sha256:4c1d20cdee96111c8acf1858b62655a37ce81ae48648993542b7ac363ac5c0e5 > index.ztoc",
+		Example: "crane soci list index.ztoc",
+		//Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o := crane.GetOptions(*options...)
+			ctx := cmd.Context()
+
+			f, err := os.Open(index)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+
+			toc, err := ztoc.Unmarshal(f)
+			if err != nil {
+				return err
+			}
+
+			digest, err := name.NewDigest(args[0], o.Name...)
+			if err != nil {
+				return err
+			}
+			opts := o.Remote
+			opts = append(opts, remote.WithSize(int64(toc.CompressedArchiveSize)))
+			blob, err := remote.Blob(digest, opts...)
+			if err != nil {
+				return err
+			}
+
+			port := os.Getenv("PORT")
+			if port == "" {
+				port = "8080"
+			}
+
+			srv := &http.Server{
+				Handler: http.FileServer(http.FS(soci.FS(toc, blob))),
+				Addr:    fmt.Sprintf(":%s", port),
+			}
+
+			g, ctx := errgroup.WithContext(ctx)
+			g.Go(func() error {
+				<-ctx.Done()
+				return srv.Shutdown(ctx)
+			})
+			g.Go(func() error {
+				return srv.ListenAndServe()
+			})
+			return g.Wait()
+
+		},
+	}
+	cmd.Flags().StringVarP(&index, "index", "i", "", "TODO")
+	return cmd
+}
+
+func NewCmdSociDigest(options *[]crane.Option) *cobra.Command {
+	return &cobra.Command{
+		Use:     "digest FILE",
+		Short:   "Read a local index file",
+		Example: "crane soci digest index.ztoc > digested.ztoc",
+		//Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o := crane.GetOptions(*options...)
+			f, err := os.Open(args[0])
+			if err != nil {
+				return err
+			}
+			toc, err := ztoc.Unmarshal(f)
+			if err != nil {
+				defer f.Close()
+				return err
+			}
+			index, err := compression.NewGzipZinfo(toc.CompressionInfo.Checkpoints)
+			if err != nil {
+				return err
+			}
+			digest, err := name.NewDigest(args[0], o.Name...)
+			if err != nil {
+				return err
+			}
+			l, err := remote.Layer(digest, o.Remote...)
+			if err != nil {
+				return err
+			}
+			digests, err := ztoc.GetPerSpanDigests(l.Compressed, int64(toc.CompressedArchiveSize), index)
+			if err != nil {
+				defer f.Close()
+				return err
+			}
+			toc.CompressionInfo.SpanDigests = digests
+
+			zr, zdesc, err := ztoc.Marshal(toc)
+			if err != nil {
+				return err
+			}
+
+			if err := json.NewEncoder(cmd.ErrOrStderr()).Encode(zdesc); err != nil {
+				return err
+			}
+
+			_, err = io.Copy(cmd.OutOrStdout(), zr)
+			return err
+
+		},
+	}
+}
+
+// NewCmdSociIndex creates a new cobra.Command for the soci subcommand.
+func NewCmdSociIndex(options *[]crane.Option) *cobra.Command {
+	return &cobra.Command{
+		Use:     "index BLOB",
+		Short:   "Read a blob from the registry and generate a soci index",
+		Example: "crane soci index ubuntu@sha256:4c1d20cdee96111c8acf1858b62655a37ce81ae48648993542b7ac363ac5c0e5 > index.ztoc",
 		//Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o := crane.GetOptions(*options...)
 
-			// TODO: subcommands
-
-			var toc *ztoc.Ztoc
-			if index == "" {
-				digest, err := name.NewDigest(args[0], o.Name...)
-				if err != nil {
-					return err
-				}
-				l, err := remote.Layer(digest, o.Remote...)
-				if err != nil {
-					return err
-				}
-
-				size, err := l.Size()
-				if err != nil {
-					return err
-				}
-				toc, err = ztoc.BuildZtocFromReader(l.Compressed, int64(1<<22), "crane", size)
-				if err != nil {
-					return err
-				}
-			} else {
-				f, err := os.Open(index)
-				if err != nil {
-					return err
-				}
-				toc, err = ztoc.Unmarshal(f)
-				if err != nil {
-					defer f.Close()
-					return err
-				}
-				index, err := compression.NewGzipZinfo(toc.CompressionInfo.Checkpoints)
-				if err != nil {
-					defer f.Close()
-					return err
-				}
-				if !list {
-					digest, err := name.NewDigest(args[0], o.Name...)
-					if err != nil {
-						return err
-					}
-					l, err := remote.Layer(digest, o.Remote...)
-					if err != nil {
-						return err
-					}
-
-					size, err := l.Size()
-					if err != nil {
-						return err
-					}
-					digests, err := ztoc.GetPerSpanDigests(l.Compressed, size, index)
-					if err != nil {
-						defer f.Close()
-						return err
-					}
-					toc.CompressionInfo.SpanDigests = digests
-				}
+			digest, err := name.NewDigest(args[0], o.Name...)
+			if err != nil {
+				return err
+			}
+			l, err := remote.Layer(digest, o.Remote...)
+			if err != nil {
+				return err
 			}
 
-			if list {
-				for _, fm := range toc.TOC.Metadata {
-					fmt.Fprintln(cmd.OutOrStdout(), tarList(fm))
-				}
-				return nil
+			size, err := l.Size()
+			if err != nil {
+				return err
+			}
+			toc, err := ztoc.BuildZtocFromReader(l.Compressed, int64(1<<22), "crane", size)
+			if err != nil {
+				return err
 			}
 
 			zr, zdesc, err := ztoc.Marshal(toc)
@@ -124,9 +226,6 @@ func NewCmdSoci(options *[]crane.Option) *cobra.Command {
 
 		},
 	}
-	cmd.Flags().StringVarP(&index, "index", "i", "", "Already generated index, will modify ztoc.json to add span digests")
-	cmd.Flags().BoolVarP(&list, "list", "t", false, "List files in index")
-	return cmd
 }
 
 // E.g. from ubuntu
@@ -142,7 +241,7 @@ func tarList(fm ztoc.FileMetadata) string {
 	padding := 18 - len(ug)
 	s := fmt.Sprintf("%s %s %*d %s %s", mode, ug, padding, fm.UncompressedSize, ts, fm.Name)
 	if fm.Linkname != "" {
-		if getType(fm.Type) == tar.TypeLink {
+		if soci.TarType(fm.Type) == tar.TypeLink {
 			s += " link to " + fm.Linkname
 		} else {
 			s += " -> " + fm.Linkname
@@ -151,35 +250,13 @@ func tarList(fm ztoc.FileMetadata) string {
 	return s
 }
 
-func tarHeader(fm ztoc.FileMetadata) *tar.Header {
-	return &tar.Header{
-		Typeflag: getType(fm.Type),
-		Name:     fm.Name,
-		Linkname: fm.Linkname,
-
-		Size:  int64(fm.UncompressedSize),
-		Mode:  fm.Mode,
-		Uid:   fm.UID,
-		Gid:   fm.GID,
-		Uname: fm.Uname,
-		Gname: fm.Gname,
-
-		ModTime: fm.ModTime,
-
-		Devmajor: fm.Devmajor,
-		Devminor: fm.Devminor,
-
-		Xattrs: fm.Xattrs,
-	}
-}
-
 func modeStr(fm ztoc.FileMetadata) string {
-	hdr := tarHeader(fm)
+	hdr := soci.TarHeader(&fm)
 	fi := hdr.FileInfo()
 	mm := fi.Mode()
 
 	mode := []byte(fs.FileMode(fm.Mode).String())
-	mode[0] = typeStr(getType(fm.Type))
+	mode[0] = typeStr(soci.TarType(fm.Type))
 
 	if mm&fs.ModeSetuid != 0 {
 		if mm&0100 != 0 {
@@ -223,26 +300,4 @@ func typeStr(t byte) byte {
 	}
 
 	return '?'
-}
-
-// returns tar.Typeflag
-func getType(t string) byte {
-	switch t {
-	case "hardlink":
-		return tar.TypeLink
-	case "symlink":
-		return tar.TypeSymlink
-	case "dir":
-		return tar.TypeDir
-	case "reg":
-		return tar.TypeReg
-	case "char":
-		return tar.TypeChar
-	case "block":
-		return tar.TypeBlock
-	case "fifo":
-		return tar.TypeFifo
-	default:
-		return tar.TypeReg
-	}
 }
