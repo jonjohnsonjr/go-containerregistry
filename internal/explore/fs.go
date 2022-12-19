@@ -698,7 +698,7 @@ func typeStr(t byte) string {
 	return string(t)
 }
 
-// Implements os.FileInfo for empty directory.
+// Implements os.FileInfo for a file that is too large.
 type bigFifo struct {
 	name    string
 	content []byte

@@ -110,7 +110,7 @@ func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 			}
 
 			srv := &http.Server{
-				Handler: http.FileServer(http.FS(soci.FS(toc, blob))),
+				Handler: http.FileServer(http.FS(soci.FS(toc, blob, args[0], 1<<25))),
 				Addr:    fmt.Sprintf(":%s", port),
 			}
 

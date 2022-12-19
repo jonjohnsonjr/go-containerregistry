@@ -16,6 +16,7 @@ package remote
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"math"
@@ -103,6 +104,7 @@ var DefaultTransport http.RoundTripper = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
+	TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper), // Disable HTTP/2
 }
 
 func makeOptions(target authn.Resource, opts ...Option) (*options, error) {

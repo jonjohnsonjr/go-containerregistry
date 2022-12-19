@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -153,13 +154,15 @@ func Blob(ref name.Digest, options ...Option) (*BlobSeeker, error) {
 		}
 	}
 
+	ctx := redact.NewContext(o.context, "omitting binary blobs from logs")
+
 	u := f.url("blobs", h.String())
 	urlStr := u.String()
 
 	var res *http.Response
 	for {
 		logs.Debug.Printf("urlStr: %s", urlStr)
-		req, err := http.NewRequestWithContext(o.context, http.MethodGet, urlStr, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -173,7 +176,12 @@ func Blob(ref name.Digest, options ...Option) (*BlobSeeker, error) {
 
 		if redir := res.Header.Get("Location"); redir != "" && res.StatusCode/100 == 3 {
 			res.Body.Close()
-			urlStr = redir
+
+			u, err := url.Parse(redir)
+			if err != nil {
+				return nil, err
+			}
+			urlStr = req.URL.ResolveReference(u).String()
 			continue
 		}
 

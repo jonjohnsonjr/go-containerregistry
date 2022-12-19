@@ -6,44 +6,32 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/awslabs/soci-snapshotter/compression"
 	"github.com/awslabs/soci-snapshotter/ztoc"
 	"github.com/google/go-containerregistry/pkg/logs"
 )
 
-func FS(toc *ztoc.Ztoc, ra io.ReaderAt) fs.FS {
-	dirs := map[string]struct{}{}
-	for _, fm := range toc.TOC.Metadata {
-		clean := path.Clean("/" + fm.Name)
-		dir := path.Dir(clean)
-		dirs[dir] = struct{}{}
-
-		// if dir != "" && dir != "." {
-		// 	prev := dir
-		// 	// Walk up to the first directory.
-		// 	for next := prev; next != "." && next != prefix && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
-		// 		debugf("ReadDir(%q): dir: %q, prev: %q, next: %q", f.name, dir, prev, next)
-		// 	}
-		// 	dirs[prev] = struct{}{}
-		// }
-	}
-	logs.Debug.Printf("len(dirs) = %d", len(dirs))
-
+func FS(toc *ztoc.Ztoc, ra io.ReaderAt, ref string, maxSize int64) fs.FS {
 	return &sociFS{
-		toc:  toc,
-		ra:   ra,
-		dirs: dirs,
+		toc:     toc,
+		ra:      ra,
+		maxSize: maxSize,
+		ref:     ref,
 	}
 }
 
 type sociFS struct {
-	toc  *ztoc.Ztoc
-	ra   io.ReaderAt
-	dirs map[string]struct{}
+	toc     *ztoc.Ztoc
+	ra      io.ReaderAt
+	ref     string
+	maxSize int64
 }
 
 func (s *sociFS) Open(name string) (fs.File, error) {
@@ -51,6 +39,7 @@ func (s *sociFS) Open(name string) (fs.File, error) {
 
 	chunks := strings.Split(name, " -> ")
 	name = chunks[len(chunks)-1]
+	name = strings.TrimPrefix(name, "/")
 
 	fm, err := s.find(name)
 	if err != nil {
@@ -61,14 +50,26 @@ func (s *sociFS) Open(name string) (fs.File, error) {
 			return nil, fmt.Errorf("nope: %s", name)
 		}
 
-		clean := path.Clean("/" + name)
-		dir := path.Dir(clean)
-
-		if _, ok := s.dirs[dir]; ok {
-			logs.Debug.Printf("Open(%q) dir=%q", name, dir)
+		chased, err := s.chase(name, 0)
+		if err != nil {
+			// Possibly a directory?
 			return &sociFile{s, name, nil, nil}, nil
 		}
-		return nil, err
+
+		if chased.Type == "dir" {
+			return &sociFile{s, chased.Name, chased, nil}, nil
+		}
+
+		name = path.Clean("/" + chased.Name)
+		fm = chased
+	}
+
+	if int64(fm.UncompressedSize) > s.maxSize {
+		logs.Debug.Printf("Open(%q): too big: %d", name, fm.UncompressedSize)
+		crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", s.ref, fm.Name)
+		data := []byte("this file is too big, try: " + crane)
+		fm.UncompressedSize = compression.Offset(len(data))
+		return &sociFile{s, name, fm, bytes.NewReader(data)}, nil
 	}
 
 	extractConfig := ztoc.FileExtractConfig{
@@ -79,6 +80,7 @@ func (s *sociFS) Open(name string) (fs.File, error) {
 		MaxSpanID:             s.toc.CompressionInfo.MaxSpanID,
 	}
 
+	// TODO: Respond with crane command if uncompressed size is too large.
 	data, err := ztoc.ExtractFile(io.NewSectionReader(s.ra, 0, int64(s.toc.CompressedArchiveSize)), &extractConfig)
 	if err != nil {
 		return nil, err
@@ -162,6 +164,48 @@ func (s *sociFS) find(name string) (*ztoc.FileMetadata, error) {
 
 func (s *sociFS) dirEntry(dir string, fm *ztoc.FileMetadata) *sociDirEntry {
 	return &sociDirEntry{s, dir, fm}
+}
+
+func (s *sociFS) chase(original string, gen int) (*ztoc.FileMetadata, error) {
+	if original == "" {
+		return nil, fmt.Errorf("empty string")
+	}
+	if gen > 64 {
+		log.Printf("chase(%q) aborting at gen=%d", original, gen)
+		return nil, fmt.Errorf("too many symlinks")
+	}
+
+	name := path.Clean("/" + original)
+	dir := path.Dir(name)
+	dirs := []string{dir}
+	if dir != "" && dir != "." {
+		prev := dir
+		// Walk up to the first directory.
+		for next := prev; next != "." && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
+			dirs = append(dirs, strings.TrimPrefix(next, "/"))
+		}
+	}
+
+	for _, fm := range s.toc.TOC.Metadata {
+		if fm.Name == original {
+			if fm.Type == "symlink" {
+				return s.chase(fm.Linkname, gen+1)
+			}
+			return &fm, nil
+		}
+		if fm.Type == "symlink" {
+			for _, dir := range dirs {
+				if fm.Name == dir {
+					// todo: re-fetch header.Linkname/<rest>
+					prefix := path.Clean("/" + fm.Name)
+					next := path.Join(fm.Linkname, strings.TrimPrefix(name, prefix))
+					return s.chase(next, gen+1)
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("could not find: %s", original)
 }
 
 type sociFile struct {
@@ -293,8 +337,6 @@ func TarHeader(fm *ztoc.FileMetadata) *tar.Header {
 
 		Devmajor: fm.Devmajor,
 		Devminor: fm.Devminor,
-
-		Xattrs: fm.Xattrs,
 	}
 }
 
