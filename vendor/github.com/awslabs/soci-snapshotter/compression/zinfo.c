@@ -110,6 +110,11 @@ static struct gzip_zinfo *add_checkpoint(struct gzip_zinfo *index, uint8_t bits,
     next->bits = bits;
     next->in = encode_offset(in);
     next->out = encode_offset(out);
+    // fprintf(stderr, "bits: %x\n", bits);
+    // fprintf(stderr, "in: %d\n", in);
+    // fprintf(stderr, "out: %d\n", out);
+    // fprintf(stderr, "left: %d\n", left);
+    // fprintf(stderr, "have: %d\n\n", index->have);
     if (left)
         memcpy(next->window, window + WINSIZE - left, left);
     if (left < WINSIZE)

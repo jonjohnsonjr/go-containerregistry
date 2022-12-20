@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"math/bits"
 	"strconv"
 	"sync"
@@ -277,6 +278,7 @@ type decompressor struct {
 	// Input source.
 	r       Reader
 	roffset int64
+	woffset int64
 
 	// Input bits, in top of b.
 	b  uint32
@@ -364,6 +366,8 @@ func (f *decompressor) Read(b []byte) (int, error) {
 			return 0, f.err
 		}
 		f.step(f)
+		// TODO(jon): This might be slightly inaccurate with timing.
+		f.woffset += int64(len(f.toRead))
 		if f.err != nil && len(f.toRead) == 0 {
 			f.toRead = f.dict.readFlush() // Flush what's left in case of error
 		}
@@ -711,18 +715,24 @@ func (f *decompressor) finishBlock() {
 		}
 		f.err = io.EOF
 	}
-	if f.updates != nil && f.roffset-f.last > f.span {
+	// logs.Debug.Printf("woffset: %d", f.woffset)
+	if f.updates != nil && (f.woffset-f.last > f.span || f.woffset == 0) {
+		logs.Debug.Printf("b: %b", f.b)
+		logs.Debug.Printf("nb: %b", f.nb)
+		logs.Debug.Printf("availRead: %d", f.dict.availRead())
+		logs.Debug.Printf("availWrite: %d", f.dict.availWrite())
+		logs.Debug.Printf("toRead: %d", len(f.toRead))
 		checkpoint := &Checkpoint{
 			Hist: make([]byte, len(f.dict.hist)),
 			In:   f.roffset,
+			Out:  f.woffset + int64(f.dict.availRead()),
 			B:    f.b,
 			NB:   f.nb,
 		}
-		logs.Debug.Printf("f: %v", f)
 		copy(checkpoint.Hist, f.dict.hist)
 
 		f.updates <- checkpoint
-		f.last = f.roffset
+		f.last = checkpoint.Out
 	}
 	f.step = (*decompressor).nextBlock
 }
@@ -904,6 +914,7 @@ func NewReaderWithSpans(r io.Reader, span int64, updates chan<- *Checkpoint) io.
 
 func Continue(r io.Reader, from *Checkpoint, span int64, updates chan<- *Checkpoint) io.ReadCloser {
 	fixedHuffmanDecoderInit()
+	log.Printf("%s", from)
 
 	var f decompressor
 	f.r = makeReader(r)
@@ -915,13 +926,12 @@ func Continue(r io.Reader, from *Checkpoint, span int64, updates chan<- *Checkpo
 	f.b = from.B
 	f.nb = from.NB
 	f.roffset = from.In
+	f.woffset = from.Out
 	f.last = from.In
 
 	f.updates = updates
 
 	f.span = span
-
-	logs.Debug.Printf("f: %v", f)
 
 	return &f
 }

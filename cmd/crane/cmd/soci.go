@@ -32,6 +32,7 @@ import (
 	"github.com/google/go-containerregistry/internal/compress/gzip"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/spf13/cobra"
@@ -48,10 +49,41 @@ func NewCmdSoci(options *[]crane.Option) *cobra.Command {
 			cmd.Usage()
 		},
 	}
-	cmd.AddCommand(NewCmdSociIndex(options), NewCmdSociList(options), NewCmdSociServe(options), NewCmdSociTest(options))
+	cmd.AddCommand(
+		NewCmdSociIndex(options),
+		NewCmdSociList(options),
+		NewCmdSociServe(options),
+		NewCmdSociTest(options),
+		NewCmdSociDiff(options),
+	)
 
 	return cmd
 }
+
+func NewCmdSociDiff(options *[]crane.Option) *cobra.Command {
+	return &cobra.Command{
+		Use:     "diff lhs rhs",
+		Short:   "List files in a soci index",
+		Example: "crane soci diff index.ztoc index2.ztoc",
+		//Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			f, err := os.Open(args[0])
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			toc, err := ztoc.Unmarshal(f)
+			if err != nil {
+				return err
+			}
+			for _, fm := range toc.TOC.Metadata {
+				fmt.Fprintln(cmd.OutOrStdout(), ztocList(fm))
+			}
+			return nil
+		},
+	}
+}
+
 func NewCmdSociList(options *[]crane.Option) *cobra.Command {
 	return &cobra.Command{
 		Use:     "list BLOB",
@@ -267,20 +299,45 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 				}
 
 				opts := o.Remote
-				opts = append(opts, remote.WithSize(index.Size))
+				opts = append(opts, remote.WithSize(index.Csize))
 				blob, err := remote.Blob(digest, opts...)
 				if err != nil {
 					return err
 				}
 
-				from := index.Checkpoints[1]
+				from := index.Checkpoints[0]
 
-				start := from.In
-				if from.NB != 0 {
-					start--
+				discard := int64(0)
+				size := int64(0)
+				for _, tf := range index.TOC {
+					if tf.Name == "usr/sbin/swapoff" {
+						logs.Debug.Printf(tarList(toTar(&tf)))
+						logs.Debug.Printf("uo %d", tf.Offset)
+						offset := tf.Offset
+						for i, c := range index.Checkpoints {
+							if c.Out > offset || i == len(index.Checkpoints)-1 {
+								discard = offset - from.Out
+								size = tf.Size
+								logs.Debug.Printf("discarding for %q: %d - %d = %d, checkpoint %d", tf.Name, tf.Offset, from.Out, discard, i-1)
+								break
+							}
+							from = index.Checkpoints[i]
+						}
+						break
+					}
 				}
+				log.Printf("discarding: %d", discard)
+				// discard = discard - 26704
+				// log.Printf("fixing discard by 26704 bytes: %d", discard)
+				log.Printf("%s", &from)
 
-				rc, err := blob.Reader(cmd.Context(), start, index.Size)
+				// Add 10 for gzip header???
+				start := from.In + 10
+				// if from.NB != 0 {
+				// 	start--
+				// }
+
+				rc, err := blob.Reader(cmd.Context(), start, index.Csize)
 				if err != nil {
 					return err
 				}
@@ -291,7 +348,11 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 					return err
 				}
 
-				if _, err := io.Copy(cmd.OutOrStdout(), r); err != nil {
+				if _, err := io.CopyN(io.Discard, r, discard); err != nil {
+					return err
+				}
+
+				if _, err := io.CopyN(cmd.OutOrStdout(), r, size); err != nil {
 					return err
 				}
 				return nil
@@ -315,7 +376,9 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 				return err
 			}
 
-			checkpoints := []flate.Checkpoint{}
+			checkpoints := []flate.Checkpoint{
+				{In: 0},
+			}
 			var g errgroup.Group
 			g.Go(func() error {
 				for update := range updates {
@@ -337,8 +400,12 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 					return fmt.Errorf("reading tar: %w", err)
 				}
 				f := TOCFile{
-					Header:             header,
-					UncompressedOffset: r.UncompressedCount(),
+					Typeflag: header.Typeflag,
+					Name:     header.Name,
+					Linkname: header.Linkname,
+					Size:     header.Size,
+					Mode:     header.Mode,
+					Offset:   r.UncompressedCount(),
 				}
 				index.TOC = append(index.TOC, f)
 			}
@@ -355,7 +422,8 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 				return fmt.Errorf("copying blob %s: %w", src, err)
 			}
 
-			index.Size = r.CompressedCount()
+			index.Csize = r.CompressedCount()
+			index.Usize = r.UncompressedCount()
 
 			log.Printf("n=%d, cn=%d, un=%d", n, r.CompressedCount(), r.UncompressedCount())
 
@@ -369,12 +437,20 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 }
 
 type TOCFile struct {
-	*tar.Header
-	UncompressedOffset int64
+	// The tar stuff we care about for explore.ggcr.dev.
+	Typeflag byte
+	Name     string
+	Linkname string
+	Size     int64
+	Mode     int64
+
+	// Our uncompressed offset so we can seek ahead.
+	Offset int64
 }
 
 type Index struct {
-	Size        int64
+	Csize       int64
+	Usize       int64
 	TOC         []TOCFile
 	Checkpoints []flate.Checkpoint
 }
@@ -415,6 +491,16 @@ func tarList(header *tar.Header) string {
 		}
 	}
 	return s
+}
+
+func toTar(header *TOCFile) *tar.Header {
+	return &tar.Header{
+		Typeflag: header.Typeflag,
+		Name:     header.Name,
+		Linkname: header.Linkname,
+		Size:     header.Size,
+		Mode:     header.Mode,
+	}
 }
 
 func zmodeStr(fm ztoc.FileMetadata) string {

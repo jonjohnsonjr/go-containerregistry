@@ -12,6 +12,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"log"
 	"time"
 
 	"github.com/google/go-containerregistry/internal/compress/flate"
@@ -317,6 +318,7 @@ func (z *Reader) Read(p []byte) (n int, err error) {
 		digest := le.Uint32(z.buf[:4])
 		size := le.Uint32(z.buf[4:8])
 		if digest != z.digest || size != z.size {
+			log.Printf("digest=%d, z.digest=%d, size=%d, z.size=%d", digest, z.digest, size, z.size)
 			z.err = ErrChecksum
 			return n, z.err
 		}

@@ -236,7 +236,7 @@ func (b *BlobSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadC
 	if err != nil {
 		return nil, err
 	}
-	rangeVal := fmt.Sprintf("bytes=%d-%d", off, end-1)
+	rangeVal := fmt.Sprintf("bytes=%d-%d", off, end+1)
 	req.Header.Set("Range", rangeVal)
 	logs.Debug.Printf("Fetching %s at %s ...\n", rangeVal, b.url)
 	res, err := b.rl.Client.Transport.RoundTrip(req) // NOT DefaultClient; don't want redirects
@@ -261,7 +261,7 @@ type blobReader struct {
 }
 
 func (b *blobReader) Read(p []byte) (n int, err error) {
-	logs.Debug.Printf("Read")
+	// logs.Debug.Printf("Read")
 	return b.body.Read(p)
 }
 
