@@ -2,7 +2,9 @@ package soci
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,25 +15,57 @@ import (
 	"strings"
 	"time"
 
-	"github.com/awslabs/soci-snapshotter/compression"
-	"github.com/awslabs/soci-snapshotter/ztoc"
+	"github.com/google/go-containerregistry/internal/and"
+	"github.com/google/go-containerregistry/internal/compress/gzip"
 	"github.com/google/go-containerregistry/pkg/logs"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
-func FS(toc *ztoc.Ztoc, ra io.ReaderAt, ref string, maxSize int64) fs.FS {
+// More than enough for FileServer to Peek at file contents.
+const bufferLen = 2 << 16
+
+func FS(toc *Index, bs *remote.BlobSeeker, ref string, maxSize int64) fs.FS {
 	return &sociFS{
 		toc:     toc,
-		ra:      ra,
+		bs:      bs,
 		maxSize: maxSize,
 		ref:     ref,
 	}
 }
 
 type sociFS struct {
-	toc     *ztoc.Ztoc
-	ra      io.ReaderAt
+	toc     *Index
+	bs      *remote.BlobSeeker
 	ref     string
 	maxSize int64
+}
+
+func (s *sociFS) err(name string) fs.File {
+	return &sociFile{
+		fs:   s,
+		name: name,
+	}
+}
+
+func (s *sociFS) dir(fm *TOCFile) fs.File {
+	return &sociFile{
+		fs:   s,
+		name: fm.Name,
+		fm:   fm,
+	}
+}
+
+func (s *sociFS) tooBig(fm *TOCFile) fs.File {
+	crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", s.ref, fm.Name)
+	data := []byte("this file is too big, try: " + crane)
+	fm.Size = int64(len(data))
+
+	return &sociFile{
+		fs:   s,
+		name: fm.Name,
+		fm:   fm,
+		buf:  bufio.NewReader(bytes.NewReader(data)),
+	}
 }
 
 func (s *sociFS) Open(name string) (fs.File, error) {
@@ -53,47 +87,30 @@ func (s *sociFS) Open(name string) (fs.File, error) {
 		chased, err := s.chase(name, 0)
 		if err != nil {
 			// Possibly a directory?
-			return &sociFile{s, name, nil, nil}, nil
+			return s.err(name), nil
 		}
 
-		if chased.Type == "dir" {
-			return &sociFile{s, chased.Name, chased, nil}, nil
+		if chased.Typeflag == tar.TypeDir {
+			return s.dir(chased), nil
 		}
 
 		name = path.Clean("/" + chased.Name)
 		fm = chased
 	}
 
-	if int64(fm.UncompressedSize) > s.maxSize {
-		logs.Debug.Printf("Open(%q): too big: %d", name, fm.UncompressedSize)
-		crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", s.ref, fm.Name)
-		data := []byte("this file is too big, try: " + crane)
-		fm.UncompressedSize = compression.Offset(len(data))
-		return &sociFile{s, name, fm, bytes.NewReader(data)}, nil
+	if int64(fm.Size) > s.maxSize {
+		logs.Debug.Printf("Open(%q): too big: %d", name, fm.Size)
+		return s.tooBig(fm), nil
 	}
 
-	extractConfig := ztoc.FileExtractConfig{
-		UncompressedSize:      fm.UncompressedSize,
-		UncompressedOffset:    fm.UncompressedOffset,
-		Checkpoints:           s.toc.CompressionInfo.Checkpoints,
-		CompressedArchiveSize: s.toc.CompressedArchiveSize,
-		MaxSpanID:             s.toc.CompressionInfo.MaxSpanID,
-	}
-
-	// TODO: Respond with crane command if uncompressed size is too large.
-	data, err := ztoc.ExtractFile(io.NewSectionReader(s.ra, 0, int64(s.toc.CompressedArchiveSize)), &extractConfig)
-	if err != nil {
-		return nil, err
-	}
-	logs.Debug.Printf("len(Open(%q)) = %d", name, len(data))
-	return &sociFile{s, name, fm, bytes.NewReader(data)}, nil
+	return &sociFile{fs: s, name: name, fm: fm}, nil
 }
 
 func (s *sociFS) ReadDir(dir string) ([]fs.DirEntry, error) {
 	logs.Debug.Printf("ReadDir(%q)", dir)
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
-	for _, fm := range s.toc.TOC.Metadata {
+	for _, fm := range s.toc.TOC {
 		fm := fm
 		name := path.Clean("/" + fm.Name)
 		fdir := path.Dir(strings.TrimPrefix(name, prefix))
@@ -116,14 +133,14 @@ func (s *sociFS) ReadDir(dir string) ([]fs.DirEntry, error) {
 		link := fm.Linkname
 
 		// For symlinks, assume relative paths.
-		if fm.Type == "symlink" {
+		if fm.Typeflag == tar.TypeSymlink {
 			if !path.IsAbs(fm.Linkname) {
 				link = path.Clean(path.Join(path.Dir(name), link))
 			}
 		}
 
 		// For hardlinks, assume absolute paths. This seems to hold up.
-		if TarType(fm.Type) == tar.TypeLink {
+		if fm.Typeflag == tar.TypeLink {
 			link = path.Clean("/" + link)
 		}
 
@@ -135,22 +152,9 @@ func (s *sociFS) ReadDir(dir string) ([]fs.DirEntry, error) {
 	return de, nil
 }
 
-// Maybe put this back?
-// func (s *sociFS) Stat(name string) (fs.FileInfo, error) {
-// 	logs.Debug.Printf("Stat(%q)", name)
-// 	fm, err := s.find(name)
-// 	if err != nil {
-// 		logs.Debug.Printf("Stat(%q) = %v", name, err)
-// 		return nil, err
-// 	}
-// 	stat := TarHeader(fm).FileInfo()
-// 	logs.Debug.Printf("Stat(%q) = %v", name, stat)
-// 	return stat, nil
-// }
-
-func (s *sociFS) find(name string) (*ztoc.FileMetadata, error) {
+func (s *sociFS) find(name string) (*TOCFile, error) {
 	logs.Debug.Printf("find(%q)", name)
-	for _, fm := range s.toc.TOC.Metadata {
+	for _, fm := range s.toc.TOC {
 		//logs.Debug.Printf("%s", path.Clean("/"+fm.Name))
 		if path.Clean("/"+fm.Name) == name {
 			logs.Debug.Printf("returning %q", fm.Name)
@@ -162,11 +166,11 @@ func (s *sociFS) find(name string) (*ztoc.FileMetadata, error) {
 	return nil, io.EOF
 }
 
-func (s *sociFS) dirEntry(dir string, fm *ztoc.FileMetadata) *sociDirEntry {
+func (s *sociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
 	return &sociDirEntry{s, dir, fm}
 }
 
-func (s *sociFS) chase(original string, gen int) (*ztoc.FileMetadata, error) {
+func (s *sociFS) chase(original string, gen int) (*TOCFile, error) {
 	if original == "" {
 		return nil, fmt.Errorf("empty string")
 	}
@@ -186,14 +190,14 @@ func (s *sociFS) chase(original string, gen int) (*ztoc.FileMetadata, error) {
 		}
 	}
 
-	for _, fm := range s.toc.TOC.Metadata {
+	for _, fm := range s.toc.TOC {
 		if fm.Name == original {
-			if fm.Type == "symlink" {
+			if fm.Typeflag == tar.TypeSymlink {
 				return s.chase(fm.Linkname, gen+1)
 			}
 			return &fm, nil
 		}
-		if fm.Type == "symlink" {
+		if fm.Typeflag == tar.TypeSymlink {
 			for _, dir := range dirs {
 				if fm.Name == dir {
 					// todo: re-fetch header.Linkname/<rest>
@@ -209,10 +213,18 @@ func (s *sociFS) chase(original string, gen int) (*ztoc.FileMetadata, error) {
 }
 
 type sociFile struct {
-	fs   *sociFS
-	name string
-	fm   *ztoc.FileMetadata
-	r    *bytes.Reader
+	fs     *sociFS
+	name   string
+	fm     *TOCFile
+	buf    *bufio.Reader
+	closer func() error
+
+	// TODO: Figure out how to get rid of this nonsense.
+	// The real cursor of the underlying file.
+	cursor int64
+
+	// The cursor FileServer thinks it has after a Peek.
+	peeked int64
 }
 
 func (s *sociFile) Stat() (fs.FileInfo, error) {
@@ -225,11 +237,88 @@ func (s *sociFile) Stat() (fs.FileInfo, error) {
 }
 
 func (s *sociFile) Read(p []byte) (int, error) {
-	return s.r.Read(p)
+	if s.buf == nil {
+		if s.cursor != 0 {
+			return 0, fmt.Errorf("invalid cursor position: %d", s.cursor)
+		}
+
+		rc, err := ExtractFile(context.Background(), s.fs.bs, s.fs.toc, s.fm)
+		if err != nil {
+			return 0, err
+		}
+		s.closer = rc.Close
+
+		if len(p) <= bufferLen {
+			s.buf = bufio.NewReaderSize(rc, bufferLen)
+		} else {
+			s.buf = bufio.NewReaderSize(rc, len(p))
+		}
+
+		b, err := s.buf.Peek(len(p))
+		s.peeked = s.cursor + int64(len(b))
+		if err == io.EOF {
+			return bytes.NewReader(b).Read(p)
+		} else if err != nil {
+			return 0, err
+		}
+		return bytes.NewReader(b).Read(p)
+	}
+	if s.peeked != 0 {
+		if s.peeked == s.fm.Size {
+			return 0, io.EOF
+		}
+		if _, err := s.buf.Discard(int(s.peeked - s.cursor)); err != nil {
+			return 0, err
+		}
+		s.peeked = 0
+	}
+	return s.buf.Read(p)
 }
 
 func (s *sociFile) Seek(offset int64, whence int) (int64, error) {
-	return s.r.Seek(offset, whence)
+	if whence == io.SeekEnd {
+		// Likely just trying to determine filesize.
+		return s.fm.Size, nil
+	}
+	if whence == io.SeekStart {
+		if offset == 0 {
+			s.cursor = 0
+			s.peeked = 0
+			return 0, nil
+		}
+		if offset == s.cursor {
+			// We are seeking to where the cursor is, do nothing.
+			s.peeked = 0
+			return offset, nil
+		}
+		if offset < s.cursor {
+			// Seeking somewhere our cursor has already moved past, we can't respond.
+			// TODO: Reset file somehow?
+			return 0, fmt.Errorf("Open(%q).Seek(%d, %d) [offset < cursor] not implemented", s.name, offset, whence)
+		}
+		if offset > s.cursor {
+			// We want to seek forward.
+			if offset <= s.peeked {
+				// But not past the Peek().
+				n := offset - s.cursor
+				if _, err := s.buf.Discard(int(n)); err != nil {
+					return 0, err
+				}
+				s.cursor = s.cursor + n
+				return s.cursor, nil
+			}
+
+			// We want to go past the Peek().
+			n, err := s.buf.Discard(int(offset - s.cursor))
+			if err != nil {
+				return 0, err
+			}
+			s.cursor = s.cursor + int64(n)
+			s.peeked = 0
+			return s.cursor, nil
+		}
+	}
+	return 0, fmt.Errorf("Open(%q).Seek(%d, %d): not implemented", s.name, offset, whence)
 }
 
 func (s *sociFile) ReadDir(n int) ([]fs.DirEntry, error) {
@@ -237,13 +326,16 @@ func (s *sociFile) ReadDir(n int) ([]fs.DirEntry, error) {
 }
 
 func (s *sociFile) Close() error {
+	if s.closer != nil {
+		return s.closer()
+	}
 	return nil
 }
 
 type sociDirEntry struct {
 	fs  *sociFS
 	dir string
-	fm  *ztoc.FileMetadata
+	fm  *TOCFile
 }
 
 func (s *sociDirEntry) Name() string {
@@ -252,7 +344,7 @@ func (s *sociDirEntry) Name() string {
 }
 
 func (s *sociDirEntry) IsDir() bool {
-	return s.fm.Type == "dir"
+	return s.fm.Typeflag == tar.TypeDir
 }
 
 func (s *sociDirEntry) Type() fs.FileMode {
@@ -265,7 +357,7 @@ func (s *sociDirEntry) Info() (fs.FileInfo, error) {
 
 type linkEntry struct {
 	fs   *sociFS
-	fm   *ztoc.FileMetadata
+	fm   *TOCFile
 	dir  string
 	link string
 }
@@ -320,48 +412,7 @@ func (f dirInfo) Sys() interface{} {
 	return nil
 }
 
-func TarHeader(fm *ztoc.FileMetadata) *tar.Header {
-	return &tar.Header{
-		Typeflag: TarType(fm.Type),
-		Name:     fm.Name,
-		Linkname: fm.Linkname,
-
-		Size:  int64(fm.UncompressedSize),
-		Mode:  fm.Mode,
-		Uid:   fm.UID,
-		Gid:   fm.GID,
-		Uname: fm.Uname,
-		Gname: fm.Gname,
-
-		ModTime: fm.ModTime,
-
-		Devmajor: fm.Devmajor,
-		Devminor: fm.Devminor,
-	}
-}
-
-func TarType(t string) byte {
-	switch t {
-	case "hardlink":
-		return tar.TypeLink
-	case "symlink":
-		return tar.TypeSymlink
-	case "dir":
-		return tar.TypeDir
-	case "reg":
-		return tar.TypeReg
-	case "char":
-		return tar.TypeChar
-	case "block":
-		return tar.TypeBlock
-	case "fifo":
-		return tar.TypeFifo
-	default:
-		return tar.TypeReg
-	}
-}
-
-func isLink(fm *ztoc.FileMetadata) bool {
+func isLink(fm *TOCFile) bool {
 	return fm.Linkname != ""
 }
 
@@ -376,4 +427,49 @@ type symlink struct {
 // handle later when FileServer attempts to open the file.
 func (s symlink) Name() string {
 	return fmt.Sprintf("%s -> %s", s.name, s.link)
+}
+
+func TarHeader(header *TOCFile) *tar.Header {
+	return &tar.Header{
+		Typeflag: header.Typeflag,
+		Name:     header.Name,
+		Linkname: header.Linkname,
+		Size:     header.Size,
+		Mode:     header.Mode,
+	}
+}
+
+// TODO: Make this a better API.
+func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *TOCFile) (io.ReadCloser, error) {
+	if tf.Size == 0 {
+		return io.NopCloser(bytes.NewReader([]byte{})), nil
+	}
+
+	from := index.Checkpoints[0]
+	discard := int64(0)
+	for i, c := range index.Checkpoints {
+		if c.Out > tf.Offset || i == len(index.Checkpoints)-1 {
+			discard = tf.Offset - from.Out
+			break
+		}
+		from = index.Checkpoints[i]
+	}
+	start := from.In + 10
+
+	rc, err := bs.Reader(ctx, start, index.Csize)
+	if err != nil {
+		return nil, err
+	}
+	r, err := gzip.Continue(rc, 1<<22, &from, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := io.CopyN(io.Discard, r, discard); err != nil {
+		return nil, err
+	}
+
+	lr := io.LimitedReader{r, tf.Size}
+
+	return &and.ReadCloser{&lr, rc.Close}, nil
 }

@@ -109,7 +109,7 @@ func NewCmdSociList(options *[]crane.Option) *cobra.Command {
 }
 
 func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
-	index := ""
+	indexFile := ""
 	cmd := &cobra.Command{
 		Use:     "serve BLOB --index FILE",
 		Short:   "Read a blob from the registry and generate a soci index",
@@ -119,14 +119,14 @@ func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 			o := crane.GetOptions(*options...)
 			ctx := cmd.Context()
 
-			f, err := os.Open(index)
+			f, err := os.Open(indexFile)
 			if err != nil {
 				return err
 			}
 			defer f.Close()
 
-			toc, err := ztoc.Unmarshal(f)
-			if err != nil {
+			index := soci.Index{}
+			if err := json.NewDecoder(f).Decode(&index); err != nil {
 				return err
 			}
 
@@ -135,7 +135,7 @@ func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 				return err
 			}
 			opts := o.Remote
-			opts = append(opts, remote.WithSize(int64(toc.CompressedArchiveSize)))
+			opts = append(opts, remote.WithSize(int64(index.Csize)))
 			blob, err := remote.Blob(digest, opts...)
 			if err != nil {
 				return err
@@ -147,7 +147,7 @@ func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 			}
 
 			srv := &http.Server{
-				Handler: http.FileServer(http.FS(soci.FS(toc, blob, args[0], 1<<25))),
+				Handler: http.FileServer(http.FS(soci.FS(&index, blob, args[0], 1<<25))),
 				Addr:    fmt.Sprintf(":%s", port),
 			}
 
@@ -163,7 +163,7 @@ func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 
 		},
 	}
-	cmd.Flags().StringVarP(&index, "index", "i", "", "TODO")
+	cmd.Flags().StringVarP(&indexFile, "index", "i", "", "TODO")
 	return cmd
 }
 
@@ -293,7 +293,7 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 				}
 				defer f.Close()
 
-				index := Index{}
+				index := soci.Index{}
 				if err := json.NewDecoder(f).Decode(&index); err != nil {
 					return err
 				}
@@ -389,7 +389,7 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 				return nil
 			})
 
-			index := Index{TOC: []TOCFile{}}
+			index := soci.Index{TOC: []soci.TOCFile{}}
 
 			tarReader := tar.NewReader(r)
 			for {
@@ -399,15 +399,9 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 				} else if err != nil {
 					return fmt.Errorf("reading tar: %w", err)
 				}
-				f := TOCFile{
-					Typeflag: header.Typeflag,
-					Name:     header.Name,
-					Linkname: header.Linkname,
-					Size:     header.Size,
-					Mode:     header.Mode,
-					Offset:   r.UncompressedCount(),
-				}
-				index.TOC = append(index.TOC, f)
+				f := fromTar(header)
+				f.Offset = r.UncompressedCount()
+				index.TOC = append(index.TOC, *f)
 			}
 			close(updates)
 
@@ -436,25 +430,6 @@ func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
 	return cmd
 }
 
-type TOCFile struct {
-	// The tar stuff we care about for explore.ggcr.dev.
-	Typeflag byte
-	Name     string
-	Linkname string
-	Size     int64
-	Mode     int64
-
-	// Our uncompressed offset so we can seek ahead.
-	Offset int64
-}
-
-type Index struct {
-	Csize       int64
-	Usize       int64
-	TOC         []TOCFile
-	Checkpoints []flate.Checkpoint
-}
-
 // E.g. from ubuntu
 // drwxr-xr-x 0/0               0 2022-11-29 18:07 var/lib/systemd/deb-systemd-helper-enabled/
 // lrwxrwxrwx 0/0               0 2022-11-29 18:04 var/run -> /run
@@ -468,7 +443,7 @@ func ztocList(fm ztoc.FileMetadata) string {
 	padding := 18 - len(ug)
 	s := fmt.Sprintf("%s %s %*d %s %s", mode, ug, padding, fm.UncompressedSize, ts, fm.Name)
 	if fm.Linkname != "" {
-		if soci.TarType(fm.Type) == tar.TypeLink {
+		if tarType(fm.Type) == tar.TypeLink {
 			s += " link to " + fm.Linkname
 		} else {
 			s += " -> " + fm.Linkname
@@ -493,7 +468,7 @@ func tarList(header *tar.Header) string {
 	return s
 }
 
-func toTar(header *TOCFile) *tar.Header {
+func toTar(header *soci.TOCFile) *tar.Header {
 	return &tar.Header{
 		Typeflag: header.Typeflag,
 		Name:     header.Name,
@@ -503,8 +478,18 @@ func toTar(header *TOCFile) *tar.Header {
 	}
 }
 
+func fromTar(header *tar.Header) *soci.TOCFile {
+	return &soci.TOCFile{
+		Typeflag: header.Typeflag,
+		Name:     header.Name,
+		Linkname: header.Linkname,
+		Size:     header.Size,
+		Mode:     header.Mode,
+	}
+}
+
 func zmodeStr(fm ztoc.FileMetadata) string {
-	hdr := soci.TarHeader(&fm)
+	hdr := tarHeader(&fm)
 	return modeStr(hdr)
 }
 func modeStr(hdr *tar.Header) string {
@@ -556,4 +541,45 @@ func typeStr(t byte) byte {
 	}
 
 	return '?'
+}
+
+func tarHeader(fm *ztoc.FileMetadata) *tar.Header {
+	return &tar.Header{
+		Typeflag: tarType(fm.Type),
+		Name:     fm.Name,
+		Linkname: fm.Linkname,
+
+		Size:  int64(fm.UncompressedSize),
+		Mode:  fm.Mode,
+		Uid:   fm.UID,
+		Gid:   fm.GID,
+		Uname: fm.Uname,
+		Gname: fm.Gname,
+
+		ModTime: fm.ModTime,
+
+		Devmajor: fm.Devmajor,
+		Devminor: fm.Devminor,
+	}
+}
+
+func tarType(t string) byte {
+	switch t {
+	case "hardlink":
+		return tar.TypeLink
+	case "symlink":
+		return tar.TypeSymlink
+	case "dir":
+		return tar.TypeDir
+	case "reg":
+		return tar.TypeReg
+	case "char":
+		return tar.TypeChar
+	case "block":
+		return tar.TypeBlock
+	case "fifo":
+		return tar.TypeFifo
+	default:
+		return tar.TypeReg
+	}
 }
