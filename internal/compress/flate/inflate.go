@@ -11,12 +11,83 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
+	"math"
 	"math/bits"
 	"strconv"
 	"sync"
+)
 
-	"github.com/google/go-containerregistry/pkg/logs"
+const (
+	// The largest offset code.
+	offsetCodeCount = 30
+
+	// The special code used to mark the end of a block.
+	endBlockMarker = 256
+
+	// The first length code.
+	lengthCodesStart = 257
+
+	// The number of codegen codes.
+	codegenCodeCount = 19
+	badCode          = 255
+
+	// bufferFlushSize indicates the buffer size
+	// after which bytes are flushed to the writer.
+	// Should preferably be a multiple of 6, since
+	// we accumulate 6 bytes between writes to the buffer.
+	bufferFlushSize = 240
+
+	// bufferSize is the actual output byte buffer size.
+	// It must have additional headroom for a flush
+	// which can contain up to 8 bytes.
+	bufferSize = bufferFlushSize + 8
+)
+
+const (
+	NoCompression      = 0
+	BestSpeed          = 1
+	BestCompression    = 9
+	DefaultCompression = -1
+
+	// HuffmanOnly disables Lempel-Ziv match searching and only performs Huffman
+	// entropy encoding. This mode is useful in compressing data that has
+	// already been compressed with an LZ style algorithm (e.g. Snappy or LZ4)
+	// that lacks an entropy encoder. Compression gains are achieved when
+	// certain bytes in the input stream occur more frequently than others.
+	//
+	// Note that HuffmanOnly produces a compressed output that is
+	// RFC 1951 compliant. That is, any valid DEFLATE decompressor will
+	// continue to be able to decompress this output.
+	HuffmanOnly = -2
+)
+
+const (
+	logWindowSize = 15
+	windowSize    = 1 << logWindowSize
+	windowMask    = windowSize - 1
+
+	// The LZ77 step produces a sequence of literal tokens and <length, offset>
+	// pair tokens. The offset is also known as distance. The underlying wire
+	// format limits the range of lengths and offsets. For example, there are
+	// 256 legitimate lengths: those in the range [3, 258]. This package's
+	// compressor uses a higher minimum match length, enabling optimizations
+	// such as finding matches via 32-bit loads and compares.
+	baseMatchLength = 3       // The smallest match length per the RFC section 3.2.5
+	minMatchLength  = 4       // The smallest match length that the compressor actually emits
+	maxMatchLength  = 258     // The largest match length
+	baseMatchOffset = 1       // The smallest match offset
+	maxMatchOffset  = 1 << 15 // The largest match offset
+
+	// The maximum number of tokens we put into a single flate block, just to
+	// stop things from getting too large.
+	maxFlateBlockTokens = 1 << 14
+	maxStoreBlockSize   = 65535
+	hashBits            = 17 // After 17 performance degrades
+	hashSize            = 1 << hashBits
+	hashMask            = (1 << hashBits) - 1
+	maxHashOffset       = 1 << 24
+
+	skipNever = math.MaxInt32
 )
 
 const (
@@ -163,8 +234,6 @@ func (h *huffmanDecoder) init(lengths []int) bool {
 		nextcode[i] = code
 		code += count[i]
 	}
-	// logs.Debug.Printf("nextcode: %v", nextcode)
-	// logs.Debug.Printf("code: %v", code)
 
 	// Check that the coding is complete (i.e., that we've
 	// assigned all 2-to-the-max possible bit sequences).
@@ -317,7 +386,6 @@ type decompressor struct {
 func (f *decompressor) nextBlock() {
 	for f.nb < 1+2 {
 		if f.err = f.moreBits(); f.err != nil {
-			logs.Debug.Printf("nextBlock() 1")
 			return
 		}
 	}
@@ -328,16 +396,13 @@ func (f *decompressor) nextBlock() {
 	f.nb -= 1 + 2
 	switch typ {
 	case 0:
-		// logs.Debug.Printf("case 0")
 		f.dataBlock()
 	case 1:
-		// logs.Debug.Printf("case 1")
 		// compressed, fixed Huffman tables
 		f.hl = &fixedHuffmanDecoder
 		f.hd = nil
 		f.huffmanBlock()
 	case 2:
-		// logs.Debug.Printf("case 2")
 		// compressed, dynamic Huffman tables
 		if f.err = f.readHuffman(); f.err != nil {
 			break
@@ -346,7 +411,6 @@ func (f *decompressor) nextBlock() {
 		f.hd = &f.h2
 		f.huffmanBlock()
 	default:
-		// logs.Debug.Printf("default")
 		// 3 is reserved.
 		f.err = CorruptInputError(f.roffset)
 	}
@@ -390,19 +454,16 @@ func (f *decompressor) readHuffman() error {
 	// HLIT[5], HDIST[5], HCLEN[4].
 	for f.nb < 5+5+4 {
 		if err := f.moreBits(); err != nil {
-			logs.Debug.Printf("readHuffman 0")
 			return err
 		}
 	}
 	nlit := int(f.b&0x1F) + 257
 	if nlit > maxNumLit {
-		logs.Debug.Printf("readHuffman 1")
 		return CorruptInputError(f.roffset)
 	}
 	f.b >>= 5
 	ndist := int(f.b&0x1F) + 1
 	if ndist > maxNumDist {
-		logs.Debug.Printf("readHuffman 2")
 		return CorruptInputError(f.roffset)
 	}
 	f.b >>= 5
@@ -415,7 +476,6 @@ func (f *decompressor) readHuffman() error {
 	for i := 0; i < nclen; i++ {
 		for f.nb < 3 {
 			if err := f.moreBits(); err != nil {
-				logs.Debug.Printf("readHuffman 3")
 				return err
 			}
 		}
@@ -427,7 +487,6 @@ func (f *decompressor) readHuffman() error {
 		f.codebits[codeOrder[i]] = 0
 	}
 	if !f.h1.init(f.codebits[0:]) {
-		logs.Debug.Printf("readHuffman 4")
 		return CorruptInputError(f.roffset)
 	}
 
@@ -436,7 +495,6 @@ func (f *decompressor) readHuffman() error {
 	for i, n := 0, nlit+ndist; i < n; {
 		x, err := f.huffSym(&f.h1)
 		if err != nil {
-			logs.Debug.Printf("readHuffman 5")
 			return err
 		}
 		if x < 16 {
@@ -456,7 +514,6 @@ func (f *decompressor) readHuffman() error {
 			rep = 3
 			nb = 2
 			if i == 0 {
-				logs.Debug.Printf("readHuffman 6")
 				return CorruptInputError(f.roffset)
 			}
 			b = f.bits[i-1]
@@ -471,7 +528,6 @@ func (f *decompressor) readHuffman() error {
 		}
 		for f.nb < nb {
 			if err := f.moreBits(); err != nil {
-				logs.Debug.Printf("readHuffman 7")
 				return err
 			}
 		}
@@ -479,7 +535,6 @@ func (f *decompressor) readHuffman() error {
 		f.b >>= nb
 		f.nb -= nb
 		if i+rep > n {
-			logs.Debug.Printf("readHuffman 8")
 			return CorruptInputError(f.roffset)
 		}
 		for j := 0; j < rep; j++ {
@@ -489,7 +544,6 @@ func (f *decompressor) readHuffman() error {
 	}
 
 	if !f.h1.init(f.bits[0:nlit]) || !f.h2.init(f.bits[nlit:nlit+ndist]) {
-		logs.Debug.Printf("readHuffman 9")
 		return CorruptInputError(f.roffset)
 	}
 
@@ -715,13 +769,7 @@ func (f *decompressor) finishBlock() {
 		}
 		f.err = io.EOF
 	}
-	// logs.Debug.Printf("woffset: %d", f.woffset)
 	if f.updates != nil && (f.woffset-f.last > f.span || f.woffset == 0) {
-		logs.Debug.Printf("b: %b", f.b)
-		logs.Debug.Printf("nb: %b", f.nb)
-		logs.Debug.Printf("availRead: %d", f.dict.availRead())
-		logs.Debug.Printf("availWrite: %d", f.dict.availWrite())
-		logs.Debug.Printf("toRead: %d", len(f.toRead))
 		checkpoint := &Checkpoint{
 			Hist: make([]byte, len(f.dict.hist)),
 			In:   f.roffset,
@@ -746,10 +794,8 @@ func noEOF(e error) error {
 }
 
 func (f *decompressor) moreBits() error {
-	// logs.Debug.Printf("moreBits")
 	c, err := f.r.ReadByte()
 	if err != nil {
-		logs.Debug.Printf("moreBits: %v", err)
 		return noEOF(err)
 	}
 	f.roffset++
@@ -914,7 +960,6 @@ func NewReaderWithSpans(r io.Reader, span int64, updates chan<- *Checkpoint) io.
 
 func Continue(r io.Reader, from *Checkpoint, span int64, updates chan<- *Checkpoint) io.ReadCloser {
 	fixedHuffmanDecoderInit()
-	log.Printf("%s", from)
 
 	var f decompressor
 	f.r = makeReader(r)
