@@ -125,6 +125,8 @@ type BlobSeeker struct {
 	rl   *remoteLayer
 	size int64
 	url  string
+
+	body io.ReadCloser
 }
 
 // Blob returns a seekable blob.
@@ -226,4 +228,43 @@ func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 		return 0, err
 	}
 	return io.ReadFull(res.Body, p)
+}
+
+func (b *BlobSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error) {
+	ctx = redact.NewContext(ctx, "omitting binary blobs from logs")
+	req, err := http.NewRequestWithContext(ctx, "GET", b.url, nil)
+	if err != nil {
+		return nil, err
+	}
+	rangeVal := fmt.Sprintf("bytes=%d-%d", off, end-1)
+	req.Header.Set("Range", rangeVal)
+	logs.Debug.Printf("Fetching %s at %s ...\n", rangeVal, b.url)
+	res, err := b.rl.Client.Transport.RoundTrip(req) // NOT DefaultClient; don't want redirects
+	if err != nil {
+		logs.Debug.Printf("range read of %s: %v", b.url, err)
+		return nil, err
+	}
+	if res.StatusCode != http.StatusPartialContent {
+		logs.Debug.Printf("range read of %s: %v", b.url, res.Status)
+		return nil, err
+	}
+
+	return &blobReader{
+		bs:   b,
+		body: res.Body,
+	}, nil
+}
+
+type blobReader struct {
+	bs   *BlobSeeker
+	body io.ReadCloser
+}
+
+func (b *blobReader) Read(p []byte) (n int, err error) {
+	logs.Debug.Printf("Read")
+	return b.body.Read(p)
+}
+
+func (b *blobReader) Close() error {
+	return b.body.Close()
 }

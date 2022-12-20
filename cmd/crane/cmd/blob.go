@@ -17,6 +17,9 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"log"
+
+	"github.com/google/go-containerregistry/internal/compress/gzip"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/spf13/cobra"
@@ -39,9 +42,14 @@ func NewCmdBlob(options *[]crane.Option) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("fetching blob %s: %w", src, err)
 			}
-			if _, err := io.Copy(cmd.OutOrStdout(), blob); err != nil {
+			r, err := gzip.NewReader(blob)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(cmd.OutOrStdout(), r); err != nil {
 				return fmt.Errorf("copying blob %s: %w", src, err)
 			}
+			log.Printf("cn=%d, un=%d", r.CompressedCount(), r.UncompressedCount())
 			return nil
 		},
 	}

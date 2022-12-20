@@ -17,14 +17,19 @@ package cmd
 import (
 	"archive/tar"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 
 	"github.com/awslabs/soci-snapshotter/compression"
 	"github.com/awslabs/soci-snapshotter/ztoc"
+	"github.com/google/go-containerregistry/internal/compress/flate"
+	"github.com/google/go-containerregistry/internal/compress/gzip"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -43,7 +48,7 @@ func NewCmdSoci(options *[]crane.Option) *cobra.Command {
 			cmd.Usage()
 		},
 	}
-	cmd.AddCommand(NewCmdSociIndex(options), NewCmdSociList(options), NewCmdSociServe(options))
+	cmd.AddCommand(NewCmdSociIndex(options), NewCmdSociList(options), NewCmdSociServe(options), NewCmdSociTest(options))
 
 	return cmd
 }
@@ -64,7 +69,7 @@ func NewCmdSociList(options *[]crane.Option) *cobra.Command {
 				return err
 			}
 			for _, fm := range toc.TOC.Metadata {
-				fmt.Fprintln(cmd.OutOrStdout(), tarList(fm))
+				fmt.Fprintln(cmd.OutOrStdout(), ztocList(fm))
 			}
 			return nil
 		},
@@ -184,10 +189,11 @@ func NewCmdSociDigest(options *[]crane.Option) *cobra.Command {
 
 // NewCmdSociIndex creates a new cobra.Command for the soci subcommand.
 func NewCmdSociIndex(options *[]crane.Option) *cobra.Command {
-	return &cobra.Command{
+	j := false
+	cmd := &cobra.Command{
 		Use:     "index BLOB",
 		Short:   "Read a blob from the registry and generate a soci index",
-		Example: "crane soci index ubuntu@sha256:4c1d20cdee96111c8acf1858b62655a37ce81ae48648993542b7ac363ac5c0e5 > index.ztoc",
+		Example: "crane soci index ubuntu@sha256:4c1d20cdee96111c8acf1858b62655a37ce81ae48648993542b7ac363ac5c0e5",
 		//Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o := crane.GetOptions(*options...)
@@ -209,6 +215,9 @@ func NewCmdSociIndex(options *[]crane.Option) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if j {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(toc)
+			}
 
 			zr, zdesc, err := ztoc.Marshal(toc)
 			if err != nil {
@@ -222,10 +231,152 @@ func NewCmdSociIndex(options *[]crane.Option) *cobra.Command {
 			_, err = io.Copy(cmd.OutOrStdout(), zr)
 			return err
 
-			//return json.NewEncoder(cmd.OutOrStdout()).Encode(toc)
+		},
+	}
+	cmd.Flags().BoolVar(&j, "json", false, "TODO")
+	return cmd
+}
+
+// NewCmdSociTest creates a new cobra.Command for the soci subcommand.
+func NewCmdSociTest(options *[]crane.Option) *cobra.Command {
+	indexFile := ""
+	cmd := &cobra.Command{
+		Use:     "test BLOB",
+		Short:   "TODO",
+		Example: "crane soci test ubuntu@sha256:4c1d20cdee96111c8acf1858b62655a37ce81ae48648993542b7ac363ac5c0e5 > index.ztoc",
+		//Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o := crane.GetOptions(*options...)
+			src := args[0]
+
+			digest, err := name.NewDigest(src, o.Name...)
+			if err != nil {
+				return err
+			}
+
+			if indexFile != "" {
+				f, err := os.Open(indexFile)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+
+				index := Index{}
+				if err := json.NewDecoder(f).Decode(&index); err != nil {
+					return err
+				}
+
+				opts := o.Remote
+				opts = append(opts, remote.WithSize(index.Size))
+				blob, err := remote.Blob(digest, opts...)
+				if err != nil {
+					return err
+				}
+
+				from := index.Checkpoints[1]
+
+				start := from.In
+				if from.NB != 0 {
+					start--
+				}
+
+				rc, err := blob.Reader(cmd.Context(), start, index.Size)
+				if err != nil {
+					return err
+				}
+				defer rc.Close()
+
+				r, err := gzip.Continue(rc, 1<<22, &from, nil)
+				if err != nil {
+					return err
+				}
+
+				if _, err := io.Copy(cmd.OutOrStdout(), r); err != nil {
+					return err
+				}
+				return nil
+
+			}
+
+			l, err := remote.Layer(digest, o.Remote...)
+			if err != nil {
+				return err
+			}
+
+			rc, err := l.Compressed()
+			if err != nil {
+				return err
+			}
+
+			updates := make(chan *flate.Checkpoint)
+
+			r, err := gzip.NewReaderWithSpans(rc, int64(1<<22), updates)
+			if err != nil {
+				return err
+			}
+
+			checkpoints := []flate.Checkpoint{}
+			var g errgroup.Group
+			g.Go(func() error {
+				for update := range updates {
+					u := update
+					log.Printf("%s", u)
+					checkpoints = append(checkpoints, *u)
+				}
+				return nil
+			})
+
+			index := Index{TOC: []TOCFile{}}
+
+			tarReader := tar.NewReader(r)
+			for {
+				header, err := tarReader.Next()
+				if errors.Is(err, io.EOF) {
+					break
+				} else if err != nil {
+					return fmt.Errorf("reading tar: %w", err)
+				}
+				f := TOCFile{
+					Header:             header,
+					UncompressedOffset: r.UncompressedCount(),
+				}
+				index.TOC = append(index.TOC, f)
+			}
+			close(updates)
+
+			if err := g.Wait(); err != nil {
+				return err
+			}
+
+			index.Checkpoints = checkpoints
+
+			n, err := io.Copy(ioutil.Discard, r)
+			if err != nil {
+				return fmt.Errorf("copying blob %s: %w", src, err)
+			}
+
+			index.Size = r.CompressedCount()
+
+			log.Printf("n=%d, cn=%d, un=%d", n, r.CompressedCount(), r.UncompressedCount())
+
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(index)
+			return nil
 
 		},
 	}
+	cmd.Flags().StringVarP(&indexFile, "index", "i", "", "TODO")
+	return cmd
+}
+
+type TOCFile struct {
+	*tar.Header
+	UncompressedOffset int64
+}
+
+type Index struct {
+	Size        int64
+	TOC         []TOCFile
+	Checkpoints []flate.Checkpoint
 }
 
 // E.g. from ubuntu
@@ -234,10 +385,10 @@ func NewCmdSociIndex(options *[]crane.Option) *cobra.Command {
 // hrwxr-xr-x 0/0               0 2022-09-05 06:33 usr/bin/uncompress link to usr/bin/gunzip
 // drwxrwxrwt 0/0               0 2022-11-29 18:04 run/lock/
 // -rwsr-xr-x 0/0           72072 2022-11-24 04:05 usr/bin/gpasswd
-func tarList(fm ztoc.FileMetadata) string {
+func ztocList(fm ztoc.FileMetadata) string {
 	ts := fm.ModTime.Format("2006-01-02 15:04")
 	ug := fmt.Sprintf("%d/%d", fm.UID, fm.GID)
-	mode := modeStr(fm)
+	mode := zmodeStr(fm)
 	padding := 18 - len(ug)
 	s := fmt.Sprintf("%s %s %*d %s %s", mode, ug, padding, fm.UncompressedSize, ts, fm.Name)
 	if fm.Linkname != "" {
@@ -250,13 +401,32 @@ func tarList(fm ztoc.FileMetadata) string {
 	return s
 }
 
-func modeStr(fm ztoc.FileMetadata) string {
+func tarList(header *tar.Header) string {
+	ts := header.ModTime.Format("2006-01-02 15:04")
+	ug := fmt.Sprintf("%d/%d", header.Uid, header.Gid)
+	mode := modeStr(header)
+	padding := 18 - len(ug)
+	s := fmt.Sprintf("%s %s %*d %s %s", mode, ug, padding, header.Size, ts, header.Name)
+	if header.Linkname != "" {
+		if header.Typeflag == tar.TypeLink {
+			s += " link to " + header.Linkname
+		} else {
+			s += " -> " + header.Linkname
+		}
+	}
+	return s
+}
+
+func zmodeStr(fm ztoc.FileMetadata) string {
 	hdr := soci.TarHeader(&fm)
+	return modeStr(hdr)
+}
+func modeStr(hdr *tar.Header) string {
 	fi := hdr.FileInfo()
 	mm := fi.Mode()
 
-	mode := []byte(fs.FileMode(fm.Mode).String())
-	mode[0] = typeStr(soci.TarType(fm.Type))
+	mode := []byte(fs.FileMode(hdr.Mode).String())
+	mode[0] = typeStr(hdr.Typeflag)
 
 	if mm&fs.ModeSetuid != 0 {
 		if mm&0100 != 0 {
