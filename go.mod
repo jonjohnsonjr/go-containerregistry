@@ -2,10 +2,7 @@ module github.com/google/go-containerregistry
 
 go 1.18
 
-replace github.com/awslabs/soci-snapshotter => ../../awslabs/soci-snapshotter
-
 require (
-	github.com/awslabs/soci-snapshotter v0.0.0-20221214204842-a6759ef18fb5
 	github.com/containerd/stargz-snapshotter/estargz v0.12.0
 	github.com/docker/cli v20.10.17+incompatible
 	github.com/docker/distribution v2.8.1+incompatible
