@@ -28,8 +28,12 @@ import (
 	"time"
 	"unsafe"
 
+	ogzip "compress/gzip"
+
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
+	"github.com/google/go-containerregistry/internal/soci"
+	"github.com/google/go-containerregistry/pkg/logs"
 )
 
 // Lots of debugging that we don't want to compile into the binary.
@@ -44,26 +48,33 @@ func debugf(s string, i ...interface{}) {
 // More than enough for FileServer to Peek at file contents.
 const bufferLen = 2 << 16
 
+type tarReader interface {
+	io.Reader
+	Next() (*tar.Header, error)
+}
+
 // Implements http.FileSystem.
 type layerFS struct {
 	// The HTTP request that originated this filesystem, useful for resetting.
-	req *http.Request
-	w   http.ResponseWriter
-	h   *handler
+	req   *http.Request
+	w     http.ResponseWriter
+	h     *handler
+	index bool
 
 	ref      string
 	digest   string
 	rc       io.ReadCloser
-	tr       *tar.Reader
+	tr       tarReader
 	headers  []*tar.Header
 	complete bool
 }
 
-func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request) (*layerFS, error) {
+func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request, index bool) (*layerFS, error) {
 	fs := &layerFS{
-		req: r,
-		w:   w,
-		h:   h,
+		req:   r,
+		w:     w,
+		h:     h,
+		index: index,
 	}
 
 	if err := fs.reset(); err != nil {
@@ -81,6 +92,7 @@ func (fs *layerFS) reset() error {
 		return err
 	}
 
+	logs.Debug.Printf("blob %T", blob)
 	ok, pr, err := gzip.Peek(blob)
 	var rc io.ReadCloser
 	rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
@@ -88,7 +100,12 @@ func (fs *layerFS) reset() error {
 		log.Printf("gzip.Peek(%q) = %v", ref, err)
 	}
 	if ok {
-		rc, err = gzip.UnzipReadCloser(rc)
+		logs.Debug.Printf("it is gzip!")
+		if fs.index {
+			rc, err = soci.NewIndexer(rc, spanSize)
+		} else {
+			rc, err = ogzip.NewReader(rc)
+		}
 		if err != nil {
 			return err
 		}
@@ -101,7 +118,13 @@ func (fs *layerFS) reset() error {
 	}
 
 	fs.rc = rc
-	fs.tr = tar.NewReader(rc)
+
+	if idx, ok := rc.(*soci.Indexer); ok {
+		logs.Debug.Printf("it is indexer!")
+		fs.tr = idx
+	} else {
+		fs.tr = tar.NewReader(rc)
+	}
 
 	fs.ref = ref
 
@@ -240,17 +263,6 @@ func (fs *layerFS) Open(original string) (http.File, error) {
 				fs:     fs,
 			}, nil
 		}
-	}
-
-	if size != 0 && len(fs.headers) != 0 {
-		// only cache full set of headers
-		fs.h.cache.Put(&headerEntry{
-			key:     fs.digest,
-			headers: fs.headers,
-			size:    size,
-		})
-
-		log.Printf("cached %s: (%d bytes)", fs.digest, size)
 	}
 
 	// FileServer is trying to find index.html, but it doesn't exist in the image.

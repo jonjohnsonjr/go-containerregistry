@@ -243,7 +243,9 @@ func (s *sociFile) Stat() (fs.FileInfo, error) {
 }
 
 func (s *sociFile) Read(p []byte) (int, error) {
+	logs.Debug.Printf("Read(%q): len(p) = %d", s.name, len(p))
 	if s.buf == nil {
+		logs.Debug.Printf("buf is nil")
 		if s.cursor != 0 {
 			return 0, fmt.Errorf("invalid cursor position: %d", s.cursor)
 		}
@@ -269,6 +271,7 @@ func (s *sociFile) Read(p []byte) (int, error) {
 		}
 		return bytes.NewReader(b).Read(p)
 	}
+	logs.Debug.Printf("Read(%q): f.peeked=%d, f.header.size=%d", s.name, s.peeked, s.fm.Size)
 	if s.peeked != 0 {
 		if s.peeked == s.fm.Size {
 			return 0, io.EOF
@@ -282,6 +285,7 @@ func (s *sociFile) Read(p []byte) (int, error) {
 }
 
 func (s *sociFile) Seek(offset int64, whence int) (int64, error) {
+	logs.Debug.Printf("Open(%q).Seek(%d, %d) @ [%d, %d]", s.name, offset, whence, s.cursor, s.peeked)
 	if whence == io.SeekEnd {
 		// Likely just trying to determine filesize.
 		return s.fm.Size, nil
@@ -451,40 +455,56 @@ func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *T
 		return io.NopCloser(bytes.NewReader([]byte{})), nil
 	}
 
+	logs.Debug.Printf("file is at %d", tf.Offset)
+
 	from := index.Checkpoints[0]
 	discard := int64(0)
 	for i, c := range index.Checkpoints {
-		if c.Out > tf.Offset || i == len(index.Checkpoints)-1 {
+		logs.Debug.Printf("%s", c.String())
+		if c.Out > tf.Offset {
 			discard = tf.Offset - from.Out
 			break
+		}
+		if i == len(index.Checkpoints)-1 {
+			discard = tf.Offset - c.Out
 		}
 		from = index.Checkpoints[i]
 	}
 	start := from.In + 10
 	uend := from.Out + tf.Size
 
+	logs.Debug.Printf("start=%d, uend=%d", start, uend)
+
 	end := index.Csize
 	for _, c := range index.Checkpoints {
+		logs.Debug.Printf("%s", c.String())
 		if c.Out > uend {
 			end = c.In + 10
 			break
 		}
 	}
 
+	logs.Debug.Printf("end=%d", end)
+
 	rc, err := bs.Reader(ctx, start, end)
 	if err != nil {
 		return nil, err
 	}
+	logs.Debug.Printf("Calling gzip.Continue")
 	r, err := gzip.Continue(rc, 1<<22, &from, nil)
 	if err != nil {
 		return nil, err
 	}
+
+	logs.Debug.Printf("discarding %d bytes", discard)
 
 	if _, err := io.CopyN(io.Discard, r, discard); err != nil {
 		return nil, err
 	}
 
 	lr := io.LimitedReader{r, tf.Size}
+
+	logs.Debug.Printf("returning limitedreader of size %d", tf.Size)
 
 	return &and.ReadCloser{&lr, rc.Close}, nil
 }

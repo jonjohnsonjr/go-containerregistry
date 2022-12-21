@@ -20,6 +20,8 @@ import (
 	"io"
 	"log"
 
+	ogzip "compress/gzip"
+
 	"github.com/google/go-containerregistry/internal/gzip"
 )
 
@@ -107,7 +109,13 @@ const (
 
 func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 	// Make sure it's more than 512
-	pr := bufio.NewReaderSize(r, 1024)
+	var pr gzip.PeekReader
+	if p, ok := r.(gzip.PeekReader); ok {
+		pr = p
+	} else {
+		// For tar peek.
+		pr = bufio.NewReaderSize(r, 1024)
+	}
 
 	block, err := pr.Peek(512)
 	if err != nil {
@@ -121,4 +129,22 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 	magic := string(block[257:][:6])
 	isTar := magic == magicGNU || magic == magicUSTAR
 	return isTar, pr, nil
+}
+
+func gztarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
+	pr := bufio.NewReaderSize(r, 2048)
+
+	// Should be enough to read first block?
+	zb, err := pr.Peek(1024)
+	if err != nil {
+		return false, pr, err
+	}
+
+	br := bytes.NewReader(zb)
+	zr, err := ogzip.NewReader(br)
+	if err != nil {
+		return false, pr, err
+	}
+	ok, _, err := tarPeek(zr)
+	return ok, pr, err
 }

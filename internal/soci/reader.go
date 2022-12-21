@@ -33,6 +33,8 @@ type Index struct {
 	Usize int64 // Uncompressed
 	Ssize int64 // Span
 
+	size int64 // approximate binary size for caching purposes
+
 	// TODO: Encode as json-lines so we can avoid buffering the entire TOC.
 	//       Allow chunking into separate files with bloom filters per chunk.
 	TOC []TOCFile
@@ -44,19 +46,42 @@ type Index struct {
 	Checkpoints []flate.Checkpoint
 }
 
+func (i *Index) Size() int64 {
+	if i.size != 0 {
+		// TODO: do this while we generate it so we don't have to hit it twice.
+		return i.size
+	}
+
+	i.size += 8 + 8 + 8
+
+	for _, f := range i.TOC {
+		i.size += int64(1 + len(f.Name) + len(f.Linkname) + 8 + 8 + 8)
+	}
+
+	for _, c := range i.Checkpoints {
+		i.size += int64(8 + 8 + 4 + 4 + len(c.Hist))
+	}
+
+	return i.size
+}
+
 type Indexer struct {
-	index   *Index
-	updates chan *flate.Checkpoint
-	g       errgroup.Group
-	in      io.ReadCloser
-	zr      *gzip.Reader
-	tr      *tar.Reader
+	index    *Index
+	updates  chan *flate.Checkpoint
+	g        errgroup.Group
+	in       io.ReadCloser
+	zr       *gzip.Reader
+	tr       *tar.Reader
+	finished bool
 }
 
 func (i *Indexer) Next() (*tar.Header, error) {
 	header, err := i.tr.Next()
 	if errors.Is(err, io.EOF) {
-		close(i.updates)
+		if !i.finished {
+			close(i.updates)
+			i.finished = true
+		}
 		return nil, err
 	} else if err != nil {
 		return nil, err
@@ -69,6 +94,11 @@ func (i *Indexer) Next() (*tar.Header, error) {
 
 func (i *Indexer) Read(p []byte) (int, error) {
 	return i.tr.Read(p)
+}
+
+func (i *Indexer) Close() error {
+	// TODO: racey?
+	return i.in.Close()
 }
 
 func (i *Indexer) Index() (*Index, error) {

@@ -14,7 +14,6 @@
 package explore
 
 import (
-	"archive/tar"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -55,6 +54,7 @@ import (
 const tooBig = 1 << 21
 const respTooBig = 1 << 25
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
+const spanSize = 1 << 22
 
 type handler struct {
 	mux    *http.ServeMux
@@ -83,15 +83,15 @@ type handler struct {
 type headerCache struct {
 	sync.Mutex
 	entryCap int
-	maxSize  int
+	maxSize  int64
 	entries  []*headerEntry
 }
 
 type headerEntry struct {
-	key     string
-	headers []*tar.Header
-	size    int
-	access  time.Time
+	key    string
+	index  *soci.Index
+	size   int64
+	access time.Time
 }
 
 func (c *headerCache) Put(e *headerEntry) {
@@ -349,6 +349,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *handler) root(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderResponse(w, r); err != nil {
 		if err := h.handleOauth(w, r, err); err != nil {
+			log.Printf("renderResponse: %v", err)
 			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 		}
 	}
@@ -412,6 +413,7 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderBlob(w, r); err != nil {
 		if err := h.handleOauth(w, r, err); err != nil {
+			log.Printf("renderBlob: %v", err)
 			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 		}
 	}
@@ -419,7 +421,7 @@ func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) handleOauth(w http.ResponseWriter, r *http.Request, err error) error {
 	if h.oauth == nil {
-		return nil
+		return err
 	}
 
 	var terr *transport.Error
@@ -1103,7 +1105,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 // Render blob, either as just ungzipped bytes, or via http.FileServer.
 func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
-	logs.Debug.Printf("are we even in here")
+	var cacheRef name.Reference
 	if strings.HasPrefix(r.URL.Path, "/json/") {
 		return h.renderBlobJSON(w, r, "")
 	}
@@ -1128,63 +1130,125 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	// TODO: Replace this with TOC cache.
-	if false && h.cache != nil {
+	dig, ref, err := h.getDigest(w, r)
+	if err != nil {
+		return err
+	}
+
+	var index *soci.Index
+	if h.cache != nil {
 		if debug {
 			log.Printf("cache is not nil")
 		}
-		dig, ref, err := h.getDigest(w, r)
-		if err != nil {
-			return err
-		}
 		if entry := h.cache.Get(dig.Identifier()); entry != nil {
 			log.Printf("cache hit: %s", dig.Identifier())
-			fs := &layerFS{
-				req:      r,
-				w:        w,
-				h:        h,
-				ref:      ref,
-				headers:  entry.headers,
-				complete: true,
-			}
-			// Allow this to be cached for an hour.
-			w.Header().Set("Cache-Control", "max-age=3600, immutable")
-
-			http.FileServer(fs).ServeHTTP(w, r)
-			return nil
+			index = entry.index
 		}
 	}
 
 	// TODO: Check always GET and check for AcceptRanges?
-	if h.cacheTransport != nil {
-		dig, ref, err := h.getDigest(w, r)
-		if err != nil {
-			return err
-		}
+	if index == nil && h.cacheTransport != nil {
+		cacheRef = h.cacheRepo.Tag(strings.Replace(dig.Identifier(), ":", "-", 1) + ".soci")
 		logs.Debug.Printf("checking for %s in cache", ref)
 		// TODO: Group by repo?
-		cacheRef := h.cacheRepo.Tag(strings.Replace(dig.Identifier(), ":", "-", 1) + ".soci")
 		img, err := remote.Image(cacheRef, remote.WithTransport(h.cacheTransport))
 		if err != nil {
 			logs.Debug.Printf("cache pull: %v", err)
 		} else {
-			index, err := soci.FromImage(img)
+			index, err = soci.FromImage(img)
 			if err != nil {
 				logs.Debug.Printf("FromImage: %v", err)
-			} else {
-				opts := h.remoteOptions(w, r, dig.Context().Name())
-				opts = append(opts, remote.WithSize(index.Csize))
-
-				blob, err := remote.Blob(dig, opts...)
-				if err != nil {
-					logs.Debug.Printf("remote.Blob: %v", err)
-				} else {
-					prefix := strings.TrimPrefix(ref, "/")
-					fs := soci.FS(index, blob, prefix, dig.String(), respTooBig)
-					http.FileServer(http.FS(fs)).ServeHTTP(w, r)
-					return nil
-				}
+			} else if h.cache != nil {
+				logs.Debug.Printf("size = %d", index.Size())
+				h.cache.Put(&headerEntry{
+					key:   dig.Identifier(),
+					index: index,
+					size:  index.Size(),
+				})
 			}
+		}
+	}
+
+	shouldIndex := true
+	if index != nil {
+		shouldIndex = false
+		opts := h.remoteOptions(w, r, dig.Context().Name())
+		opts = append(opts, remote.WithSize(index.Csize))
+
+		cachedUrl := ""
+		canRange := true
+		cookie, err := r.Cookie("redirect")
+		if err == nil {
+			b, err := base64.URLEncoding.DecodeString(cookie.Value)
+			if err != nil {
+				return err
+			}
+			var v RedirectCookie
+			if err := json.Unmarshal(b, &v); err != nil {
+				return err
+			}
+			if v.Digest == dig.Identifier() {
+				cachedUrl = v.Url
+				canRange = !v.Body
+			} else {
+				// Clear so we reset it.
+				cookie = nil
+			}
+		} else {
+			logs.Debug.Printf("cookie err: %v", err)
+		}
+
+		blob, err := remote.Blob(dig, cachedUrl, opts...)
+		if err != nil {
+			logs.Debug.Printf("remote.Blob: %v", err)
+		} else {
+			if cookie == nil {
+				v := &RedirectCookie{
+					Digest: dig.Identifier(),
+					Url:    blob.Url,
+					Body:   blob.Body != nil,
+				}
+				b, err := json.Marshal(v)
+				if err != nil {
+					return err
+				}
+				cv := base64.URLEncoding.EncodeToString(b)
+				cookie := &http.Cookie{
+					Name:     "redirect",
+					Value:    cv,
+					Expires:  time.Now().Add(time.Minute * 10),
+					Secure:   true,
+					HttpOnly: true,
+					SameSite: http.SameSiteLaxMode,
+				}
+				http.SetCookie(w, cookie)
+			}
+
+			if blob.Body != nil {
+				logs.Debug.Printf("blob.Body != nil")
+				// The blob has a body, which means range requests don't work.
+				// Serve the old path but reuse the remote.Blob body.
+				h.blobs[r] = &sizeBlob{blob.Body, index.Csize}
+				fs, err := h.newLayerFS(w, r, false)
+				if err != nil {
+					return err
+				}
+				defer fs.Close()
+
+				// Allow this to be cached for an hour.
+				w.Header().Set("Cache-Control", "max-age=3600, immutable")
+				http.FileServer(fs).ServeHTTP(w, r)
+			} else if canRange {
+				logs.Debug.Printf("soci serve")
+				// We never saw a non-nil Body, we can do the range.
+				prefix := strings.TrimPrefix(ref, "/")
+				fs := soci.FS(index, blob, prefix, dig.String(), respTooBig)
+				http.FileServer(http.FS(fs)).ServeHTTP(w, r)
+				return nil
+			}
+
+			// Otherwise we fall through to the old path.
+			logs.Debug.Printf("falling through")
 		}
 	}
 
@@ -1195,22 +1259,38 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 	size := blob.size
 	var rc io.ReadCloser = blob
-	ok, pr, err := gzip.Peek(blob)
+
+	ok, pr, err := gztarPeek(blob)
 	if err != nil {
 		log.Printf("render(%q): %v", ref, err)
 	}
 
-	rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
 	if ok {
 		if debug {
-			log.Printf("it is gzip")
+			// TODO: Clean this up.
+			// We are letting this fall through later so that in reset() we start indexing.
+			log.Printf("it is targz")
 		}
-		rc, err = gzip.UnzipReadCloser(rc)
+	} else {
+		log.Printf("Peeking gzip")
+		ok, pr, err = gzip.Peek(pr)
 		if err != nil {
-			return err
+			log.Printf("render(%q): %v", ref, err)
 		}
+
+		rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
+		if ok {
+			if debug {
+				log.Printf("it is gzip")
+			}
+			rc, err = gzip.UnzipReadCloser(rc)
+			if err != nil {
+				return err
+			}
+		}
+		log.Printf("Peeking tar")
+		ok, pr, err = tarPeek(rc)
 	}
-	ok, pr, err = tarPeek(rc)
 	if ok {
 		if debug {
 			log.Printf("it is tar")
@@ -1218,7 +1298,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		// Cache this for layerFS.reset() so we don't have to re-fetch it.
 		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
 
-		fs, err := h.newLayerFS(w, r)
+		fs, err := h.newLayerFS(w, r, shouldIndex)
 		if err != nil {
 			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
 			return err
@@ -1229,6 +1309,44 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
 		http.FileServer(fs).ServeHTTP(w, r)
+
+		// TODO: Make it so we can do this incrementally.
+		if shouldIndex && cacheRef != nil {
+			logs.Debug.Printf("writing cacheRef %s", cacheRef)
+			if indexer, ok := fs.tr.(*soci.Indexer); ok {
+				logs.Debug.Printf("got indexer")
+				for {
+					// Make sure we hit the end.
+					_, err := indexer.Next()
+					if errors.Is(err, io.EOF) {
+						break
+					} else if err != nil {
+						return err
+					}
+				}
+
+				index, err := indexer.Index()
+				if err != nil {
+					return err
+				}
+				if h.cache != nil {
+					logs.Debug.Printf("size = %d", index.Size())
+					h.cache.Put(&headerEntry{
+						key:   dig.Identifier(),
+						index: index,
+						size:  index.Size(),
+					})
+				}
+
+				img, err := soci.ToImage(index)
+				if err != nil {
+					return err
+				}
+				if err := remote.Write(cacheRef, img, remote.WithTransport(h.cacheTransport)); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	}
 
@@ -1461,4 +1579,10 @@ func splitFsURL(p string) (string, string, error) {
 type DSSE struct {
 	PayloadType string `json:"payloadType"`
 	Payload     []byte `json:"payload"`
+}
+
+type RedirectCookie struct {
+	Digest string
+	Url    string
+	Body   bool
 }

@@ -124,13 +124,14 @@ func Layer(ref name.Digest, options ...Option) (v1.Layer, error) {
 type BlobSeeker struct {
 	rl   *remoteLayer
 	size int64
-	url  string
 
-	body io.ReadCloser
+	Body io.ReadCloser
+
+	Url string
 }
 
 // Blob returns a seekable blob.
-func Blob(ref name.Digest, options ...Option) (*BlobSeeker, error) {
+func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, error) {
 	o, err := makeOptions(ref.Context(), options...)
 	if err != nil {
 		return nil, err
@@ -156,52 +157,69 @@ func Blob(ref name.Digest, options ...Option) (*BlobSeeker, error) {
 		}
 	}
 
-	ctx := redact.NewContext(o.context, "omitting binary blobs from logs")
-
-	u := f.url("blobs", h.String())
-	urlStr := u.String()
-
+	urlStr := cachedUrl
 	var res *http.Response
-	for {
-		logs.Debug.Printf("urlStr: %s", urlStr)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Range", "bytes=0-1")
+	if cachedUrl == "" {
+		ctx := redact.NewContext(o.context, "omitting binary blobs from logs")
 
-		tr := f.Client.Transport
-		res, err = tr.RoundTrip(req)
-		if err != nil {
-			return nil, err
-		}
+		u := f.url("blobs", h.String())
+		urlStr = u.String()
 
-		if redir := res.Header.Get("Location"); redir != "" && res.StatusCode/100 == 3 {
-			res.Body.Close()
-
-			u, err := url.Parse(redir)
+		for {
+			logs.Debug.Printf("urlStr: %s", urlStr)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 			if err != nil {
 				return nil, err
 			}
-			urlStr = req.URL.ResolveReference(u).String()
-			continue
+			req.Header.Set("Range", "bytes=0-1")
+
+			tr := f.Client.Transport
+			res, err = tr.RoundTrip(req)
+			if err != nil {
+				return nil, err
+			}
+
+			if redir := res.Header.Get("Location"); redir != "" && res.StatusCode/100 == 3 {
+				res.Body.Close()
+
+				u, err := url.Parse(redir)
+				if err != nil {
+					return nil, err
+				}
+				urlStr = req.URL.ResolveReference(u).String()
+				continue
+			}
+
+			break
+		}
+		if res.StatusCode == 200 {
+			logs.Debug.Printf("does not look like it supports range requests")
+		} else {
+			defer res.Body.Close()
 		}
 
-		break
+		logs.Debug.Printf("got past redir")
+
+		if res.StatusCode >= 400 {
+			return nil, transport.CheckError(res)
+		}
+	} else {
+		logs.Debug.Printf("using cached url: %s", cachedUrl)
 	}
-	defer res.Body.Close()
 
-	logs.Debug.Printf("got past redir")
+	logs.Debug.Printf("setting urlStr: %s", urlStr)
 
-	if res.StatusCode >= 400 {
-		return nil, transport.CheckError(res)
-	}
-
-	return &BlobSeeker{
+	bs := &BlobSeeker{
 		rl:   rl,
 		size: o.size,
-		url:  urlStr,
-	}, nil
+		Url:  urlStr,
+	}
+
+	if res != nil && res.StatusCode == 200 {
+		bs.Body = res.Body
+	}
+
+	return bs, nil
 }
 
 func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
@@ -210,21 +228,21 @@ func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	ctx = redact.NewContext(ctx, "omitting binary blobs from logs")
-	req, err := http.NewRequestWithContext(ctx, "GET", b.url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", b.Url, nil)
 	if err != nil {
 		return 0, err
 	}
 	rangeVal := fmt.Sprintf("bytes=%d-%d", off, off+int64(len(p))-1)
 	req.Header.Set("Range", rangeVal)
-	logs.Debug.Printf("Fetching %s (%d at %d) of %s ...\n", rangeVal, len(p), off, b.url)
+	logs.Debug.Printf("Fetching %s (%d at %d) of %s ...\n", rangeVal, len(p), off, b.Url)
 	res, err := b.rl.Client.Transport.RoundTrip(req) // NOT DefaultClient; don't want redirects
 	if err != nil {
-		logs.Debug.Printf("range read of %s: %v", b.url, err)
+		logs.Debug.Printf("range read of %s: %v", b.Url, err)
 		return 0, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusPartialContent {
-		logs.Debug.Printf("range read of %s: %v", b.url, res.Status)
+		logs.Debug.Printf("range read of %s: %v", b.Url, res.Status)
 		return 0, err
 	}
 	return io.ReadFull(res.Body, p)
@@ -232,20 +250,20 @@ func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 
 func (b *BlobSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error) {
 	ctx = redact.NewContext(ctx, "omitting binary blobs from logs")
-	req, err := http.NewRequestWithContext(ctx, "GET", b.url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", b.Url, nil)
 	if err != nil {
 		return nil, err
 	}
 	rangeVal := fmt.Sprintf("bytes=%d-%d", off, end+1)
 	req.Header.Set("Range", rangeVal)
-	logs.Debug.Printf("Fetching %s at %s ...\n", rangeVal, b.url)
+	logs.Debug.Printf("Fetching %s at %s ...\n", rangeVal, b.Url)
 	res, err := b.rl.Client.Transport.RoundTrip(req) // NOT DefaultClient; don't want redirects
 	if err != nil {
-		logs.Debug.Printf("range read of %s: %v", b.url, err)
+		logs.Debug.Printf("range read of %s: %v", b.Url, err)
 		return nil, err
 	}
 	if res.StatusCode != http.StatusPartialContent {
-		logs.Debug.Printf("range read of %s: %v", b.url, res.Status)
+		logs.Debug.Printf("range read of %s: %v", b.Url, res.Status)
 		return nil, err
 	}
 
@@ -261,7 +279,7 @@ type blobReader struct {
 }
 
 func (b *blobReader) Read(p []byte) (n int, err error) {
-	// logs.Debug.Printf("Read")
+	// logs.Debug.Printf("Read of %d", len(p))
 	return b.body.Read(p)
 }
 

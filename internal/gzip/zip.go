@@ -132,7 +132,8 @@ func Peek(r io.Reader) (bool, PeekReader, error) {
 	if p, ok := r.(PeekReader); ok {
 		pr = p
 	} else {
-		pr = bufio.NewReader(r)
+		// For tar peek.
+		pr = bufio.NewReaderSize(r, 1024)
 	}
 	header, err := pr.Peek(2)
 	if err != nil {
