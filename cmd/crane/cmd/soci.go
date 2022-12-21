@@ -21,14 +21,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"net/http"
 	"os"
 
-	"github.com/google/go-containerregistry/internal/compress/flate"
 	"github.com/google/go-containerregistry/internal/compress/gzip"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/spf13/cobra"
@@ -81,6 +80,7 @@ func NewCmdSociList(options *[]crane.Option) *cobra.Command {
 
 func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 	indexFile := ""
+	tag := ""
 	cmd := &cobra.Command{
 		Use:     "serve BLOB --index FILE",
 		Short:   "Read a blob from the registry and generate a soci index",
@@ -90,15 +90,27 @@ func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 			o := crane.GetOptions(*options...)
 			ctx := cmd.Context()
 
-			f, err := os.Open(indexFile)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
+			var index *soci.Index
+			if indexFile != "" {
+				f, err := os.Open(indexFile)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
 
-			index := soci.Index{}
-			if err := json.NewDecoder(f).Decode(&index); err != nil {
-				return err
+				if err := json.NewDecoder(f).Decode(index); err != nil {
+					return err
+				}
+			} else if tag != "" {
+				img, err := crane.Pull(tag, *options...)
+				if err != nil {
+					return err
+				}
+				idx, err := soci.FromImage(img)
+				if err != nil {
+					return err
+				}
+				index = idx
 			}
 
 			digest, err := name.NewDigest(args[0], o.Name...)
@@ -118,7 +130,7 @@ func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 			}
 
 			srv := &http.Server{
-				Handler: http.FileServer(http.FS(soci.FS(&index, blob, args[0], 1<<25))),
+				Handler: http.FileServer(http.FS(soci.FS(index, blob, args[0], 1<<25))),
 				Addr:    fmt.Sprintf(":%s", port),
 			}
 
@@ -135,12 +147,13 @@ func NewCmdSociServe(options *[]crane.Option) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&indexFile, "index", "i", "", "TODO")
+	cmd.Flags().StringVarP(&tag, "tag", "t", "", "Tag to cache the index")
 	return cmd
 }
 
 // NewCmdSociIndex creates a new cobra.Command for the soci subcommand.
 func NewCmdSociIndex(options *[]crane.Option) *cobra.Command {
-	j := false
+	newTag := ""
 	cmd := &cobra.Command{
 		Use:     "index BLOB",
 		Short:   "Read a blob from the registry and generate a soci index",
@@ -164,59 +177,43 @@ func NewCmdSociIndex(options *[]crane.Option) *cobra.Command {
 				return err
 			}
 
-			updates := make(chan *flate.Checkpoint)
-
-			r, err := gzip.NewReaderWithSpans(rc, int64(1<<22), updates)
+			indexer, err := soci.NewIndexer(rc, int64(1<<22))
 			if err != nil {
 				return err
 			}
 
-			checkpoints := []flate.Checkpoint{
-				{In: 0},
-			}
-			var g errgroup.Group
-			g.Go(func() error {
-				for update := range updates {
-					u := update
-					checkpoints = append(checkpoints, *u)
-				}
-				return nil
-			})
-
-			index := soci.Index{TOC: []soci.TOCFile{}}
-
-			tarReader := tar.NewReader(r)
 			for {
-				header, err := tarReader.Next()
+				header, err := indexer.Next()
 				if errors.Is(err, io.EOF) {
 					break
 				} else if err != nil {
-					return fmt.Errorf("reading tar: %w", err)
+					return err
 				}
-				f := fromTar(header)
-				f.Offset = r.UncompressedCount()
-				index.TOC = append(index.TOC, *f)
+				logs.Debug.Println(tarList(header))
 			}
-			close(updates)
 
-			if err := g.Wait(); err != nil {
+			index, err := indexer.Index()
+			if err != nil {
 				return err
 			}
 
-			index.Checkpoints = checkpoints
+			if newTag != "" {
+				img, err := soci.ToImage(index)
+				if err != nil {
+					return err
+				}
 
-			if _, err := io.Copy(ioutil.Discard, r); err != nil {
-				return fmt.Errorf("discarding blob %s: %w", src, err)
+				if err := crane.Push(img, newTag, *options...); err != nil {
+					return err
+				}
+			} else {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(index)
 			}
 
-			index.Csize = r.CompressedCount()
-			index.Usize = r.UncompressedCount()
-
-			return json.NewEncoder(cmd.OutOrStdout()).Encode(index)
-
+			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&j, "json", false, "TODO")
+	cmd.Flags().StringVarP(&newTag, "tag", "t", "", "Tag to cache the index")
 	return cmd
 }
 
@@ -331,16 +328,6 @@ func tarList(header *tar.Header) string {
 
 func toTar(header *soci.TOCFile) *tar.Header {
 	return &tar.Header{
-		Typeflag: header.Typeflag,
-		Name:     header.Name,
-		Linkname: header.Linkname,
-		Size:     header.Size,
-		Mode:     header.Mode,
-	}
-}
-
-func fromTar(header *tar.Header) *soci.TOCFile {
-	return &soci.TOCFile{
 		Typeflag: header.Typeflag,
 		Name:     header.Name,
 		Linkname: header.Linkname,

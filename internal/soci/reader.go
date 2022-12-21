@@ -1,6 +1,19 @@
 package soci
 
-import "github.com/google/go-containerregistry/internal/compress/flate"
+import (
+	"archive/tar"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+
+	"github.com/google/go-containerregistry/internal/compress/flate"
+	"github.com/google/go-containerregistry/internal/compress/gzip"
+	"github.com/google/go-containerregistry/pkg/crane"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"golang.org/x/sync/errgroup"
+)
 
 type TOCFile struct {
 	// The tar stuff we care about for explore.ggcr.dev.
@@ -15,9 +28,145 @@ type TOCFile struct {
 }
 
 type Index struct {
-	Csize int64
-	Usize int64
-	TOC   []TOCFile
-	// TODO: Avoid depending on flate somehow.
+	// TODO: Encode these as annotations?
+	Csize int64 // Compressed
+	Usize int64 // Uncompressed
+	Ssize int64 // Span
+
+	// TODO: Encode as json-lines so we can avoid buffering the entire TOC.
+	//       Allow chunking into separate files with bloom filters per chunk.
+	TOC []TOCFile
+
+	// TODO:
+	// Avoid depending on flate somehow.
+	// Write each checkpoint as a separate file in a separate layer so
+	// we can concurrently write TOC and Checkpoints and fetch them separately.
 	Checkpoints []flate.Checkpoint
+}
+
+type Indexer struct {
+	index   *Index
+	updates chan *flate.Checkpoint
+	g       errgroup.Group
+	in      io.ReadCloser
+	zr      *gzip.Reader
+	tr      *tar.Reader
+}
+
+func (i *Indexer) Next() (*tar.Header, error) {
+	header, err := i.tr.Next()
+	if errors.Is(err, io.EOF) {
+		close(i.updates)
+		return nil, err
+	} else if err != nil {
+		return nil, err
+	}
+	f := fromTar(header)
+	f.Offset = i.zr.UncompressedCount()
+	i.index.TOC = append(i.index.TOC, *f)
+	return header, err
+}
+
+func (i *Indexer) Read(p []byte) (int, error) {
+	return i.tr.Read(p)
+}
+
+func (i *Indexer) Index() (*Index, error) {
+	if err := i.g.Wait(); err != nil {
+		return nil, err
+	}
+
+	if _, err := io.Copy(io.Discard, i.zr); err != nil {
+		return nil, err
+	}
+
+	i.index.Csize = i.zr.CompressedCount()
+	i.index.Usize = i.zr.UncompressedCount()
+
+	return i.index, nil
+}
+
+func (i *Indexer) processUpdates() error {
+	for update := range i.updates {
+		u := update
+		i.index.Checkpoints = append(i.index.Checkpoints, *u)
+	}
+	return nil
+}
+
+// TODO: Make it so we can resume this.
+func NewIndexer(rc io.ReadCloser, span int64) (*Indexer, error) {
+	index := &Index{
+		TOC: []TOCFile{},
+		Checkpoints: []flate.Checkpoint{
+			{In: 0},
+		},
+	}
+
+	updates := make(chan *flate.Checkpoint)
+
+	zr, err := gzip.NewReaderWithSpans(rc, span, updates)
+	if err != nil {
+		return nil, err
+	}
+
+	i := &Indexer{
+		updates: updates,
+		index:   index,
+		in:      rc,
+		zr:      zr,
+		tr:      tar.NewReader(zr),
+	}
+	i.g.Go(i.processUpdates)
+
+	return i, nil
+}
+
+func fromTar(header *tar.Header) *TOCFile {
+	return &TOCFile{
+		Typeflag: header.Typeflag,
+		Name:     header.Name,
+		Linkname: header.Linkname,
+		Size:     header.Size,
+		Mode:     header.Mode,
+	}
+}
+
+// TODO: Streaming layers.
+func ToImage(index *Index) (v1.Image, error) {
+	b, err := json.Marshal(index)
+	if err != nil {
+		return nil, err
+	}
+	return crane.Image(map[string][]byte{
+		"index.json": b,
+	})
+}
+
+// TODO: This shouldn't be this hard lol.
+func FromImage(img v1.Image) (*Index, error) {
+	index := Index{}
+	rc := mutate.Extract(img)
+	defer rc.Close()
+	tr := tar.NewReader(rc)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+		if hdr.Name == "index.json" {
+			b, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(b, &index); err != nil {
+				return nil, err
+			}
+			return &index, nil
+		}
+	}
+
+	return nil, fmt.Errorf("could not find index.json")
 }

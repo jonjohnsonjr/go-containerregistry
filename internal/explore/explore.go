@@ -36,6 +36,7 @@ import (
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
+	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/internal/verify"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/logs"
@@ -74,6 +75,9 @@ type handler struct {
 	sawTags map[string][]string
 
 	oauth *oauth2.Config
+
+	cacheRepo      name.Repository
+	cacheTransport http.RoundTripper
 }
 
 type headerCache struct {
@@ -222,6 +226,36 @@ func WithRemote(opt []remote.Option) Option {
 	}
 }
 
+func (h *handler) setupCacheRepo(cacheRepo string) error {
+	repo, err := name.NewRepository(cacheRepo)
+	if err != nil {
+		return err
+	}
+
+	scopes := []string{repo.Scope(transport.PushScope)}
+
+	auth := authn.Anonymous
+	if isGoogle(repo.RegistryStr()) {
+		auth, err = goog.Keychain.Resolve(repo)
+		if err != nil {
+			return err
+		}
+	}
+	t := remote.DefaultTransport
+	t = transport.NewRetry(t)
+	t = transport.NewUserAgent(t, ua)
+	if logs.Enabled(logs.Trace) {
+		t = transport.NewTracer(t)
+	}
+	t, err = transport.New(repo.Registry, auth, t, scopes)
+	if err != nil {
+		return err
+	}
+	h.cacheTransport = t
+	h.cacheRepo = repo
+	return nil
+}
+
 func New(opts ...Option) http.Handler {
 	h := handler{
 		mux:       http.NewServeMux(),
@@ -238,6 +272,7 @@ func New(opts ...Option) http.Handler {
 
 	ClientID := os.Getenv("CLIENT_ID")
 	ClientSecret := os.Getenv("CLIENT_SECRET")
+
 	if ClientID != "" && ClientSecret != "" {
 		h.oauth = &oauth2.Config{
 			ClientID:     ClientID,
@@ -247,6 +282,13 @@ func New(opts ...Option) http.Handler {
 				"https://www.googleapis.com/auth/cloud-platform.read-only",
 			},
 			Endpoint: google.Endpoint,
+		}
+	}
+
+	if cr := os.Getenv("CACHE_REPO"); cr != "" {
+		logs.Debug.Printf("CACHE_REPO=%q", cr)
+		if err := h.setupCacheRepo(cr); err != nil {
+			logs.Debug.Printf("setupCacheRepo(): %v", err)
 		}
 	}
 
@@ -1061,6 +1103,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 // Render blob, either as just ungzipped bytes, or via http.FileServer.
 func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
+	logs.Debug.Printf("are we even in here")
 	if strings.HasPrefix(r.URL.Path, "/json/") {
 		return h.renderBlobJSON(w, r, "")
 	}
@@ -1085,7 +1128,8 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	if h.cache != nil {
+	// TODO: Replace this with TOC cache.
+	if false && h.cache != nil {
 		if debug {
 			log.Printf("cache is not nil")
 		}
@@ -1108,6 +1152,39 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 			http.FileServer(fs).ServeHTTP(w, r)
 			return nil
+		}
+	}
+
+	// TODO: Check always GET and check for AcceptRanges?
+	if h.cacheTransport != nil {
+		dig, ref, err := h.getDigest(w, r)
+		if err != nil {
+			return err
+		}
+		logs.Debug.Printf("checking for %s in cache", ref)
+		// TODO: Group by repo?
+		cacheRef := h.cacheRepo.Tag(strings.Replace(dig.Identifier(), ":", "-", 1) + ".soci")
+		img, err := remote.Image(cacheRef, remote.WithTransport(h.cacheTransport))
+		if err != nil {
+			logs.Debug.Printf("cache pull: %v", err)
+		} else {
+			index, err := soci.FromImage(img)
+			if err != nil {
+				logs.Debug.Printf("FromImage: %v", err)
+			} else {
+				opts := h.remoteOptions(w, r, dig.Context().Name())
+				opts = append(opts, remote.WithSize(index.Csize))
+
+				blob, err := remote.Blob(dig, opts...)
+				if err != nil {
+					logs.Debug.Printf("remote.Blob: %v", err)
+				} else {
+					prefix := strings.TrimPrefix(ref, "/")
+					fs := soci.FS(index, blob, prefix, dig.String(), respTooBig)
+					http.FileServer(http.FS(fs)).ServeHTTP(w, r)
+					return nil
+				}
+			}
 		}
 	}
 

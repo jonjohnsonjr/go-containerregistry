@@ -24,11 +24,12 @@ import (
 // More than enough for FileServer to Peek at file contents.
 const bufferLen = 2 << 16
 
-func FS(toc *Index, bs *remote.BlobSeeker, ref string, maxSize int64) fs.FS {
+func FS(toc *Index, bs *remote.BlobSeeker, prefix string, ref string, maxSize int64) fs.FS {
 	return &sociFS{
 		toc:     toc,
 		bs:      bs,
 		maxSize: maxSize,
+		prefix:  prefix,
 		ref:     ref,
 	}
 }
@@ -36,6 +37,7 @@ func FS(toc *Index, bs *remote.BlobSeeker, ref string, maxSize int64) fs.FS {
 type sociFS struct {
 	toc     *Index
 	bs      *remote.BlobSeeker
+	prefix  string
 	ref     string
 	maxSize int64
 }
@@ -68,12 +70,14 @@ func (s *sociFS) tooBig(fm *TOCFile) fs.File {
 	}
 }
 
-func (s *sociFS) Open(name string) (fs.File, error) {
-	logs.Debug.Printf("Open(%q)", name)
+func (s *sociFS) Open(original string) (fs.File, error) {
+	logs.Debug.Printf("Open(%q)", original)
+	name := strings.TrimPrefix(original, s.prefix)
 
 	chunks := strings.Split(name, " -> ")
 	name = chunks[len(chunks)-1]
 	name = strings.TrimPrefix(name, "/")
+	logs.Debug.Printf("Opening(%q)", name)
 
 	fm, err := s.find(name)
 	if err != nil {
@@ -106,7 +110,9 @@ func (s *sociFS) Open(name string) (fs.File, error) {
 	return &sociFile{fs: s, name: name, fm: fm}, nil
 }
 
-func (s *sociFS) ReadDir(dir string) ([]fs.DirEntry, error) {
+func (s *sociFS) ReadDir(original string) ([]fs.DirEntry, error) {
+	logs.Debug.Printf("ReadDir(%q)", original)
+	dir := strings.TrimPrefix(original, s.prefix)
 	logs.Debug.Printf("ReadDir(%q)", dir)
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
@@ -124,7 +130,6 @@ func (s *sociFS) ReadDir(dir string) ([]fs.DirEntry, error) {
 		}
 
 		if !isLink(&fm) {
-			logs.Debug.Printf("add %q", name)
 			de = append(de, s.dirEntry(dir, &fm))
 			continue
 		}
@@ -154,9 +159,10 @@ func (s *sociFS) ReadDir(dir string) ([]fs.DirEntry, error) {
 
 func (s *sociFS) find(name string) (*TOCFile, error) {
 	logs.Debug.Printf("find(%q)", name)
+	needle := path.Clean("/" + name)
 	for _, fm := range s.toc.TOC {
 		//logs.Debug.Printf("%s", path.Clean("/"+fm.Name))
-		if path.Clean("/"+fm.Name) == name {
+		if path.Clean("/"+fm.Name) == needle {
 			logs.Debug.Printf("returning %q", fm.Name)
 			return &fm, nil
 		}
@@ -455,8 +461,17 @@ func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *T
 		from = index.Checkpoints[i]
 	}
 	start := from.In + 10
+	uend := from.Out + tf.Size
 
-	rc, err := bs.Reader(ctx, start, index.Csize)
+	end := index.Csize
+	for _, c := range index.Checkpoints {
+		if c.Out > uend {
+			end = c.In + 10
+			break
+		}
+	}
+
+	rc, err := bs.Reader(ctx, start, end)
 	if err != nil {
 		return nil, err
 	}

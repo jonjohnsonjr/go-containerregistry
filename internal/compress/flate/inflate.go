@@ -928,15 +928,14 @@ func NewReaderDict(r io.Reader, dict []byte) io.ReadCloser {
 }
 
 type Checkpoint struct {
+	// TODO: separate these from the rest
 	In  int64
 	Out int64
 
 	// bits?
-	B  uint32
-	NB uint
-
-	// dict
-	Hist []byte
+	B    uint32
+	NB   uint
+	Hist []byte // dict
 }
 
 func (c *Checkpoint) String() string {
