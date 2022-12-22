@@ -131,6 +131,7 @@ func NewIndexer(rc io.ReadCloser, span int64) (*Indexer, error) {
 		Checkpoints: []flate.Checkpoint{
 			{In: 0},
 		},
+		Ssize: span,
 	}
 
 	updates := make(chan *flate.Checkpoint)
@@ -187,11 +188,7 @@ func FromImage(img v1.Image) (*Index, error) {
 			return nil, err
 		}
 		if hdr.Name == "index.json" {
-			b, err := io.ReadAll(tr)
-			if err != nil {
-				return nil, err
-			}
-			if err := json.Unmarshal(b, &index); err != nil {
+			if err := json.NewDecoder(tr).Decode(&index); err != nil {
 				return nil, err
 			}
 			return &index, nil
