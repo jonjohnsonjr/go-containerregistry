@@ -17,11 +17,11 @@ import (
 
 type TOCFile struct {
 	// The tar stuff we care about for explore.ggcr.dev.
-	Typeflag byte
-	Name     string
-	Linkname string
-	Size     int64
-	Mode     int64
+	Typeflag byte   `json:"typeflag,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Linkname string `json:"linkname,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+	Mode     int64  `json:"mode,omitempty"`
 
 	// Our uncompressed offset so we can seek ahead.
 	Offset int64
