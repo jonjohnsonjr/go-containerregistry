@@ -584,6 +584,7 @@ func (h *handler) renderResponse(w http.ResponseWriter, r *http.Request) error {
 }
 
 func renderLanding(w http.ResponseWriter) error {
+	w.Header().Set("Cache-Control", "max-age=60")
 	_, err := io.Copy(w, strings.NewReader(landingPage))
 	return err
 }

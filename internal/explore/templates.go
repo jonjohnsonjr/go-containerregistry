@@ -39,7 +39,7 @@ const (
 <html>
 <body>
 <head>
-<title>explore.ggcr.dev</title>
+<title>Registry Explorer</title>
 <link rel="icon" href="/favicon.svg">
 <style>
 .mt:hover {
@@ -52,12 +52,12 @@ const (
 }
 </style>
 </head>
-<h2>explore.<a class="mt" href="https://github.com/google/go-containerregistry">ggcr</a>.dev</h2>
+<h2>Registry Explorer</h2>
 <p>
 This janky tool allows you to <em>explore</em> the contents of a registry interactively.
 </p>
 <p>
-You can even drill down into layers to explore the filesystem.
+You can even drill down into layers to explore an image's filesystem.
 </p>
 <p>
 Enter a <strong>public</strong> image, e.g. <tt>"ubuntu:latest"</tt>:
@@ -74,6 +74,12 @@ Enter a <strong>public</strong> repository, e.g. <tt>"ubuntu"</tt>:
 <input type="text" name="repo" value="ubuntu"/>
 <input type="submit" />
 </form>
+<hr>
+<h3>FAQ</h3>
+<h4>How does this work?</h4>
+<p>
+This service lives on <a href="https://cloud.run">Cloud Run</a> and uses <a href="https://github.com/google/go-containerregistry">google/go-containerregistry</a> (AKA <em>ggcr</em>) for registry interactions.
+</p>
 </body>
 </html>
 `
@@ -82,7 +88,7 @@ Enter a <strong>public</strong> repository, e.g. <tt>"ubuntu"</tt>:
 <html>
 <body>
 <head>
-<title>explore.ggcr.dev</title>
+<title>Registry Explorer</title>
 <link rel="icon" href="/favicon.svg">
 <style>
 .mt:hover {
