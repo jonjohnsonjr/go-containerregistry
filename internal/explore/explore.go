@@ -1146,8 +1146,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
+	ignore := h.cacheRepo == dig.Context()
 	// TODO: Check always GET and check for AcceptRanges?
-	if index == nil && h.cacheTransport != nil {
+	if index == nil && h.cacheTransport != nil && !ignore {
 		cacheRef = h.cacheRepo.Tag(strings.Replace(dig.Identifier(), ":", "-", 1) + ".soci")
 		logs.Debug.Printf("checking for %s in cache", ref)
 		// TODO: Group by repo?
@@ -1169,7 +1170,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	shouldIndex := true
+	shouldIndex := !ignore
 	if index != nil {
 		shouldIndex = false
 		opts := h.remoteOptions(w, r, dig.Context().Name())
