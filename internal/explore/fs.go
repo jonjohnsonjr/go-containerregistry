@@ -297,7 +297,7 @@ func (fs *layerFS) chase(original string, gen int) (*tar.Header, error) {
 		prev := dir
 		// Walk up to the first directory.
 		for next := prev; next != "." && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
-			debugf("ReadDir(%q): dir: %q, prev: %q, next: %q", name, dir, prev, next)
+			debugf("chase(%q): dir: %q, prev: %q, next: %q", name, dir, prev, next)
 			dirs = append(dirs, strings.TrimPrefix(next, "/"))
 		}
 	}

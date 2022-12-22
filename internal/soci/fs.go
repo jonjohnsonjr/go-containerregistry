@@ -121,6 +121,10 @@ func (s *sociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		name := path.Clean("/" + fm.Name)
 		fdir := path.Dir(strings.TrimPrefix(name, prefix))
 
+		if name == "/" {
+			continue
+		}
+
 		if !strings.HasPrefix(name, prefix) {
 			continue
 		}
@@ -161,7 +165,6 @@ func (s *sociFS) find(name string) (*TOCFile, error) {
 	logs.Debug.Printf("find(%q)", name)
 	needle := path.Clean("/" + name)
 	for _, fm := range s.toc.TOC {
-		//logs.Debug.Printf("%s", path.Clean("/"+fm.Name))
 		if path.Clean("/"+fm.Name) == needle {
 			logs.Debug.Printf("returning %q (%d bytes)", fm.Name, fm.Size)
 			return &fm, nil
@@ -363,7 +366,8 @@ type sociDirEntry struct {
 }
 
 func (s *sociDirEntry) Name() string {
-	trimmed := strings.TrimPrefix(s.fm.Name, s.dir+"/")
+	trimmed := strings.TrimPrefix(s.fm.Name, "./")
+	trimmed = strings.TrimPrefix(trimmed, s.dir+"/")
 	return path.Clean(trimmed)
 }
 
