@@ -54,7 +54,7 @@ const (
 </head>
 <h2>Registry Explorer</h2>
 <p>
-This janky tool allows you to <em>explore</em> the contents of a registry interactively.
+This beautiful tool allows you to <em>explore</em> the contents of a registry interactively.
 </p>
 <p>
 You can even drill down into layers to explore an image's filesystem.
@@ -74,6 +74,16 @@ Enter a <strong>public</strong> repository, e.g. <tt>"ubuntu"</tt>:
 <input type="text" name="repo" value="ubuntu"/>
 <input type="submit" />
 </form>
+<p>
+<h4>Intersting examples</h4>
+<ul>
+  <li><a href="/?image=gcr.io/distroless/static">gcr.io/distroless/static:latest</a></li>
+  <li><a href="/?repo=ghcr.io/homebrew/core/crane">ghcr.io/homebrew/core/crane</a></li>
+  <li><a href="/?repo=registry.k8s.io">registry.k8s.io</a></li>
+  <li><a href="/?image=registry.k8s.io/bom/bom:sha256-499bdf4cc0498bbfb2395f8bbaf3b7e9e407cca605aecc46b2ef1b390a0bc4c4.sig">registry.k8s.io/bom/bom:sha256-499bdf4cc0498bbfb2395f8bbaf3b7e9e407cca605aecc46b2ef1b390a0bc4c4.sig</a></li>
+  <li><a href="/?image=cgr.dev/chainguard/ko:sha256-435f610505cd96eba44dcb13987509ee1ad80030ad970bb4583880259dc21b7e.sbom">cgr.dev/chainguard/ko:sha256-435f610505cd96eba44dcb13987509ee1ad80030ad970bb4583880259dc21b7e.sbom</a></li>
+<ul>
+</p>
 <hr>
 <h3>FAQ</h3>
 <h4>How does this work?</h4>
