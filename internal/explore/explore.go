@@ -642,7 +642,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 			Reference: repo,
 		}
 		if ref.RepositoryStr() != "" {
-			data.JQ = "gcrane ls --json " + repo + " | jq ."
+			data.JQ = gcrane + " ls --json " + repo + " | jq ."
 		}
 		if strings.Contains(repo, "/") {
 			base := path.Base(repo)
@@ -682,7 +682,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		data := HeaderData{
 			Repo:      repo,
 			Reference: repo,
-			JQ:        "crane catalog " + repo,
+			JQ:        crane + " catalog " + repo,
 		}
 		if err := bodyTmpl.Execute(w, data); err != nil {
 			return err
@@ -729,7 +729,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 	data := HeaderData{
 		Repo:      repo,
 		Reference: repo,
-		JQ:        "crane ls " + repo,
+		JQ:        crane + " ls " + repo,
 	}
 	if strings.Contains(repo, "/") {
 		base := path.Base(repo)
@@ -847,7 +847,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		},
 		Handler:          handlerForMT(string(desc.MediaType)),
 		EscapedMediaType: url.QueryEscape(string(desc.MediaType)),
-		JQ:               "crane manifest " + jqref,
+		JQ:               crane + " manifest " + jqref,
 	}
 
 	if strings.Contains(ref.String(), "@") && strings.Index(ref.String(), "@") < strings.Index(ref.String(), ":") {
@@ -1067,7 +1067,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 			Separator: "@",
 			Child:     ref.Identifier(),
 		},
-		JQ: "crane blob " + ref.String(),
+		JQ: crane + " blob " + ref.String(),
 	}
 
 	// TODO: similar to h.jq
@@ -1534,7 +1534,7 @@ func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *Hea
 		exp string
 	)
 
-	exps := []string{"crane manifest " + data.Reference}
+	exps := []string{crane + " manifest " + data.Reference}
 
 	for _, j := range jq {
 		if debug {

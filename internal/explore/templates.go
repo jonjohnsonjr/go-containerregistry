@@ -31,6 +31,9 @@ func init() {
 	oauthTmpl = template.Must(template.New("oauthTemplate").Parse(oauthTemplate))
 }
 
+const gcrane = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/gcrane/README.md">gcrane</a>`
+const crane = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/crane/README.md">crane</a>`
+
 const (
 	landingPage = `
 <html>
