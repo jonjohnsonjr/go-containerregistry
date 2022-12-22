@@ -1233,6 +1233,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				if err != nil {
 					return err
 				}
+				fs.blobRef = dig.String()
 				defer fs.Close()
 
 				// Allow this to be cached for an hour.
@@ -1303,6 +1304,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
 			return err
 		}
+		fs.blobRef = dig.String()
 		defer fs.Close()
 
 		// Allow this to be cached for an hour.

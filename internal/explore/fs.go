@@ -67,6 +67,8 @@ type layerFS struct {
 	tr       tarReader
 	headers  []*tar.Header
 	complete bool
+
+	blobRef string
 }
 
 func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request, index bool) (*layerFS, error) {
@@ -412,7 +414,9 @@ func (f *layerFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *layerFile) tooBig() []byte {
-	return []byte("this file is too big for cloud run to serve, I'll fix it later, sorry")
+	crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", f.fs.blobRef, f.name)
+	data := []byte("this file is too big, use crane to download it:\n\n" + crane)
+	return data
 }
 
 func (f *layerFile) Read(p []byte) (int, error) {

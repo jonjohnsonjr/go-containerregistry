@@ -59,7 +59,7 @@ func (s *sociFS) dir(fm *TOCFile) fs.File {
 
 func (s *sociFS) tooBig(fm *TOCFile) fs.File {
 	crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", s.ref, fm.Name)
-	data := []byte("this file is too big, try: " + crane)
+	data := []byte("this file is too big, use crane to download it:\n\n" + crane)
 	fm.Size = int64(len(data))
 
 	return &sociFile{
@@ -71,17 +71,17 @@ func (s *sociFS) tooBig(fm *TOCFile) fs.File {
 }
 
 func (s *sociFS) Open(original string) (fs.File, error) {
-	logs.Debug.Printf("Open(%q)", original)
+	logs.Debug.Printf("soci.Open(%q)", original)
 	name := strings.TrimPrefix(original, s.prefix)
 
 	chunks := strings.Split(name, " -> ")
 	name = chunks[len(chunks)-1]
 	name = strings.TrimPrefix(name, "/")
-	logs.Debug.Printf("Opening(%q)", name)
+	logs.Debug.Printf("soci.Opening(%q)", name)
 
 	fm, err := s.find(name)
 	if err != nil {
-		logs.Debug.Printf("Open(%q) = %v", name, err)
+		logs.Debug.Printf("soci.Open(%q) = %v", name, err)
 
 		base := path.Base(name)
 		if base == "index.html" || base == "favicon.ico" {
@@ -103,7 +103,7 @@ func (s *sociFS) Open(original string) (fs.File, error) {
 	}
 
 	if int64(fm.Size) > s.maxSize {
-		logs.Debug.Printf("Open(%q): too big: %d", name, fm.Size)
+		logs.Debug.Printf("soci.Open(%q): too big: %d", name, fm.Size)
 		return s.tooBig(fm), nil
 	}
 
@@ -111,9 +111,9 @@ func (s *sociFS) Open(original string) (fs.File, error) {
 }
 
 func (s *sociFS) ReadDir(original string) ([]fs.DirEntry, error) {
-	logs.Debug.Printf("ReadDir(%q)", original)
+	logs.Debug.Printf("soci.ReadDir(%q)", original)
 	dir := strings.TrimPrefix(original, s.prefix)
-	logs.Debug.Printf("ReadDir(%q)", dir)
+	logs.Debug.Printf("soci.ReadDir(%q)", dir)
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
 	for _, fm := range s.toc.TOC {
@@ -163,7 +163,7 @@ func (s *sociFS) find(name string) (*TOCFile, error) {
 	for _, fm := range s.toc.TOC {
 		//logs.Debug.Printf("%s", path.Clean("/"+fm.Name))
 		if path.Clean("/"+fm.Name) == needle {
-			logs.Debug.Printf("returning %q", fm.Name)
+			logs.Debug.Printf("returning %q (%d bytes)", fm.Name, fm.Size)
 			return &fm, nil
 		}
 	}
@@ -243,7 +243,7 @@ func (s *sociFile) Stat() (fs.FileInfo, error) {
 }
 
 func (s *sociFile) Read(p []byte) (int, error) {
-	logs.Debug.Printf("Read(%q): len(p) = %d", s.name, len(p))
+	logs.Debug.Printf("soci.Read(%q): len(p) = %d", s.name, len(p))
 	if s.buf == nil {
 		logs.Debug.Printf("buf is nil")
 		if s.cursor != 0 {
@@ -271,21 +271,35 @@ func (s *sociFile) Read(p []byte) (int, error) {
 		}
 		return bytes.NewReader(b).Read(p)
 	}
-	logs.Debug.Printf("Read(%q): f.peeked=%d, f.header.size=%d", s.name, s.peeked, s.fm.Size)
+	logs.Debug.Printf("soci.Read(%q): f.peeked=%d, f.header.size=%d", s.name, s.peeked, s.fm.Size)
 	if s.peeked != 0 {
 		if s.peeked == s.fm.Size {
 			return 0, io.EOF
 		}
+		newCursor := s.peeked
 		if _, err := s.buf.Discard(int(s.peeked - s.cursor)); err != nil {
 			return 0, err
 		}
 		s.peeked = 0
+		s.cursor = newCursor
+	} else if s.cursor == 0 {
+		// Peek for the first read so that we can do tooBig.
+		if len(p) < bufferLen {
+			b, err := s.buf.Peek(len(p))
+			s.peeked = s.cursor + int64(len(b))
+			if err == io.EOF {
+				return bytes.NewReader(b).Read(p)
+			} else if err != nil {
+				return 0, err
+			}
+			return bytes.NewReader(b).Read(p)
+		}
 	}
 	return s.buf.Read(p)
 }
 
 func (s *sociFile) Seek(offset int64, whence int) (int64, error) {
-	logs.Debug.Printf("Open(%q).Seek(%d, %d) @ [%d, %d]", s.name, offset, whence, s.cursor, s.peeked)
+	logs.Debug.Printf("soci.Open(%q).Seek(%d, %d) @ [%d, %d]", s.name, offset, whence, s.cursor, s.peeked)
 	if whence == io.SeekEnd {
 		// Likely just trying to determine filesize.
 		return s.fm.Size, nil
