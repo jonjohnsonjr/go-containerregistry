@@ -157,6 +157,33 @@ func (s *sociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		le := linkEntry{s, &fm, dir, link}
 		de = append(de, &le)
 	}
+
+	// TODO: Do this earlier
+	if len(de) == 0 {
+		logs.Debug.Printf("ReadDir(%q): No matching headers, synthesizing directories", original)
+		dirs := map[string]struct{}{}
+		for _, fm := range s.toc.TOC {
+			name := path.Clean("/" + fm.Name)
+
+			if !strings.HasPrefix(name, prefix) {
+				continue
+			}
+
+			dir := path.Dir(strings.TrimPrefix(name, prefix))
+			if dir != "" && dir != "." {
+				prev := dir
+				// Walk up to the first directory.
+				for next := prev; next != "." && next != prefix && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
+					logs.Debug.Printf("ReadDir(%q): dir: %q, prev: %q, next: %q", original, dir, prev, next)
+				}
+				dirs[prev] = struct{}{}
+			}
+		}
+		for dir := range dirs {
+			logs.Debug.Printf("ReadDir(%q): dir: %q", original, dir)
+			de = append(de, s.dirEntry(dir, nil))
+		}
+	}
 	logs.Debug.Printf("len(ReadDir(%q)) = %d", dir, len(de))
 	return de, nil
 }
@@ -366,20 +393,32 @@ type sociDirEntry struct {
 }
 
 func (s *sociDirEntry) Name() string {
+	if s.fm == nil {
+		return s.dir
+	}
 	trimmed := strings.TrimPrefix(s.fm.Name, "./")
 	trimmed = strings.TrimPrefix(trimmed, s.dir+"/")
 	return path.Clean(trimmed)
 }
 
 func (s *sociDirEntry) IsDir() bool {
+	if s.fm == nil {
+		return true
+	}
 	return s.fm.Typeflag == tar.TypeDir
 }
 
 func (s *sociDirEntry) Type() fs.FileMode {
+	if s.fm == nil {
+		return (&dirInfo{s.dir}).Mode()
+	}
 	return TarHeader(s.fm).FileInfo().Mode()
 }
 
 func (s *sociDirEntry) Info() (fs.FileInfo, error) {
+	if s.fm == nil {
+		return &dirInfo{s.dir}, nil
+	}
 	return TarHeader(s.fm).FileInfo(), nil
 }
 
