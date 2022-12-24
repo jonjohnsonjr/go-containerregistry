@@ -226,6 +226,7 @@ func WithRemote(opt []remote.Option) Option {
 	}
 }
 
+// TODO: We can drop ~60ms by skipping the auth handshake.
 func (h *handler) setupCacheRepo(cacheRepo string) error {
 	repo, err := name.NewRepository(cacheRepo)
 	if err != nil {
