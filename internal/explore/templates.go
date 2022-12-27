@@ -136,8 +136,13 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 }
 
 .mt {
-  color: inherit;
+	color: inherit;
 	text-decoration: inherit;
+}
+
+.crane {
+	height: 1em;
+	width: 1em;
 }
 
 body {
@@ -145,7 +150,7 @@ body {
 }
 
 .indent {
-  margin-left: 2em;
+	margin-left: 2em;
 }
 </style>
 </head>
@@ -155,9 +160,9 @@ body {
 <body>
 <div>
 {{ if .Up }}
-<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}<a class="mt" href="{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
+<h2><a href="/"><img class="crane" src="/favicon.svg"/><a> <a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}<a class="mt" href="{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ else }}
-<h2>{{.Reference}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
+<h2><a href="/"><img class="crane" src="/favicon.svg"/><a> {{.Reference}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ end }}
 {{ if .Descriptor }}
 Docker-Content-Digest: <a class="mt" href="{{.Handler}}{{$.Repo}}@{{.Descriptor.Digest}}&mt={{.EscapedMediaType}}&size={{.Descriptor.Size}}">{{.Descriptor.Digest}}<a><br>
