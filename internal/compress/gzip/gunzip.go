@@ -285,7 +285,7 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 		if z.from != nil {
 			z.decompressor = flate.Continue(z.r, z.from, z.span, z.updates)
 		} else {
-			z.decompressor = flate.NewReaderWithSpans(z.r, z.span, z.updates)
+			z.decompressor = flate.NewReaderWithSpans(z.r, z.span, z.CompressedCount(), z.updates)
 		}
 	} else {
 		z.decompressor.(flate.Resetter).Reset(z.r, nil)

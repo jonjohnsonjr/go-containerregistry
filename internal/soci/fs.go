@@ -528,12 +528,7 @@ func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *T
 		}
 		from = index.Checkpoints[i]
 	}
-	start := from.In + 10
-
-	if start == 10 {
-		logs.Debug.Printf("just using 0 for start")
-		start = 0
-	}
+	start := from.In
 	uend := tf.Offset + tf.Size
 
 	logs.Debug.Printf("start=%d, uend=%d", start, uend)
@@ -542,7 +537,7 @@ func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *T
 	for _, c := range index.Checkpoints {
 		logs.Debug.Printf("%s", c.String())
 		if c.Out > uend {
-			end = c.In + 10
+			end = c.In
 			break
 		}
 	}
@@ -554,19 +549,10 @@ func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *T
 		return nil, err
 	}
 
-	var r io.Reader
-	if start == 0 {
-		logs.Debug.Printf("Calling gzip.NewReader")
-		r, err = gzip.NewReader(rc)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		logs.Debug.Printf("Calling gzip.Continue")
-		r, err = gzip.Continue(rc, 1<<22, &from, nil)
-		if err != nil {
-			return nil, err
-		}
+	logs.Debug.Printf("Calling gzip.Continue")
+	r, err := gzip.Continue(rc, 1<<22, &from, nil)
+	if err != nil {
+		return nil, err
 	}
 
 	logs.Debug.Printf("discarding %d bytes", discard)

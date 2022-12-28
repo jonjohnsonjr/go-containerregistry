@@ -952,7 +952,7 @@ func (c *Checkpoint) String() string {
 }
 
 // NewReaderWithSpans is a hack.
-func NewReaderWithSpans(r io.Reader, span int64, updates chan<- *Checkpoint) io.ReadCloser {
+func NewReaderWithSpans(r io.Reader, span int64, start int64, updates chan<- *Checkpoint) io.ReadCloser {
 	fixedHuffmanDecoderInit()
 
 	var f decompressor
@@ -961,6 +961,8 @@ func NewReaderWithSpans(r io.Reader, span int64, updates chan<- *Checkpoint) io.
 	f.codebits = new([numCodes]int)
 	f.step = (*decompressor).nextBlock
 	f.dict.init(maxMatchOffset, nil)
+	f.roffset = start
+	f.last = start
 	f.span = span
 	f.updates = updates
 	return &f

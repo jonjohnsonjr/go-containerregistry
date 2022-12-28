@@ -127,11 +127,9 @@ func (i *Indexer) processUpdates() error {
 // TODO: Make it so we can resume this.
 func NewIndexer(rc io.ReadCloser, span int64) (*Indexer, error) {
 	index := &Index{
-		TOC: []TOCFile{},
-		Checkpoints: []flate.Checkpoint{
-			{In: 0},
-		},
-		Ssize: span,
+		TOC:         []TOCFile{},
+		Checkpoints: []flate.Checkpoint{},
+		Ssize:       span,
 	}
 
 	updates := make(chan *flate.Checkpoint)
@@ -140,6 +138,7 @@ func NewIndexer(rc io.ReadCloser, span int64) (*Indexer, error) {
 	if err != nil {
 		return nil, err
 	}
+	index.Checkpoints = append(index.Checkpoints, flate.Checkpoint{In: zr.CompressedCount()})
 
 	i := &Indexer{
 		updates: updates,
