@@ -282,6 +282,7 @@ func (s *sociFile) Read(p []byte) (int, error) {
 
 		rc, err := ExtractFile(context.Background(), s.fs.bs, s.fs.toc, s.fm)
 		if err != nil {
+			logs.Debug.Printf("ExtractFile: %v", err)
 			return 0, err
 		}
 		s.closer = rc.Close
@@ -533,7 +534,7 @@ func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *T
 		logs.Debug.Printf("just using 0 for start")
 		start = 0
 	}
-	uend := from.Out + tf.Size
+	uend := tf.Offset + tf.Size
 
 	logs.Debug.Printf("start=%d, uend=%d", start, uend)
 

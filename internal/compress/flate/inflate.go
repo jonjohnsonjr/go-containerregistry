@@ -434,6 +434,7 @@ func (f *decompressor) Read(b []byte) (int, error) {
 		f.woffset += int64(len(f.toRead))
 		if f.err != nil && len(f.toRead) == 0 {
 			f.toRead = f.dict.readFlush() // Flush what's left in case of error
+			f.woffset += int64(len(f.toRead))
 		}
 	}
 }
@@ -771,11 +772,14 @@ func (f *decompressor) finishBlock() {
 	}
 	if f.updates != nil && (f.woffset-f.last > f.span || f.woffset == 0) {
 		checkpoint := &Checkpoint{
-			Hist: make([]byte, len(f.dict.hist)),
-			In:   f.roffset,
-			Out:  f.woffset + int64(f.dict.availRead()),
-			B:    f.b,
-			NB:   f.nb,
+			Hist:  make([]byte, len(f.dict.hist)),
+			In:    f.roffset,
+			Out:   f.woffset,
+			B:     f.b,
+			NB:    f.nb,
+			WrPos: f.dict.wrPos,
+			RdPos: f.dict.rdPos,
+			Full:  f.dict.full,
 		}
 		copy(checkpoint.Hist, f.dict.hist)
 
@@ -936,6 +940,11 @@ type Checkpoint struct {
 	B    uint32
 	NB   uint
 	Hist []byte // dict
+
+	// Trying random stuff...
+	WrPos int
+	RdPos int
+	Full  bool
 }
 
 func (c *Checkpoint) String() string {
@@ -966,15 +975,20 @@ func Continue(r io.Reader, from *Checkpoint, span int64, updates chan<- *Checkpo
 	f.codebits = new([numCodes]int)
 	f.step = (*decompressor).nextBlock
 
-	f.dict.init(maxMatchOffset, from.Hist)
+	f.dict = dictDecoder{}
+	f.dict.hist = make([]byte, maxMatchOffset)
+	copy(f.dict.hist, from.Hist)
+	f.dict.wrPos = from.WrPos
+	f.dict.rdPos = from.RdPos
+	f.dict.full = from.Full
+
 	f.b = from.B
 	f.nb = from.NB
 	f.roffset = from.In
 	f.woffset = from.Out
+
 	f.last = from.In
-
 	f.updates = updates
-
 	f.span = span
 
 	return &f
