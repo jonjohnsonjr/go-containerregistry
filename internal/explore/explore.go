@@ -1116,7 +1116,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	var index *soci.Index
 	if h.cache != nil {
-		index, err = h.cache.Get(dig.Identifier())
+		index, err = h.cache.Get(r.Context(), dig.Identifier())
 		if err != nil {
 			logs.Debug.Printf("cache.Get(%q) = %v", dig.Identifier(), err)
 		} else {
@@ -1290,7 +1290,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				}
 				if h.cache != nil {
 					logs.Debug.Printf("size = %d", index.Size())
-					if err := h.cache.Put(dig.Identifier(), index); err != nil {
+					if err := h.cache.Put(r.Context(), dig.Identifier(), index); err != nil {
 						logs.Debug.Printf("cache.Put: %v", err)
 					}
 				}

@@ -18,12 +18,12 @@ import (
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/klauspost/compress/zstd"
 )
 
-// TODO: ctx for each
 type Cache interface {
-	Get(string) (*soci.Index, error)
-	Put(string, *soci.Index) error
+	Get(context.Context, string) (*soci.Index, error)
+	Put(context.Context, string, *soci.Index) error
 }
 
 type ociCache struct {
@@ -35,7 +35,7 @@ func (o *ociCache) ref(key string) name.Reference {
 	return o.repo.Tag(strings.Replace(key, ":", "-", 1) + ".soci")
 }
 
-func (o *ociCache) Get(key string) (*soci.Index, error) {
+func (o *ociCache) Get(ctx context.Context, key string) (*soci.Index, error) {
 	img, err := remote.Image(o.ref(key), remote.WithTransport(o.transport))
 	if err != nil {
 		logs.Debug.Printf("cache pull: %v", err)
@@ -44,7 +44,7 @@ func (o *ociCache) Get(key string) (*soci.Index, error) {
 	return soci.FromImage(img)
 }
 
-func (o *ociCache) Put(key string, index *soci.Index) error {
+func (o *ociCache) Put(ctx context.Context, key string, index *soci.Index) error {
 	img, err := soci.ToImage(index)
 	if err != nil {
 		return err
@@ -59,37 +59,51 @@ type gcsCache struct {
 }
 
 func (g *gcsCache) path(key string) string {
-	return path.Join("soci", strings.Replace(key, ":", "-", 1), "index.json")
+	return path.Join("soci", strings.Replace(key, ":", "-", 1), "index.json.zstd")
 }
 
 func (g *gcsCache) object(key string) *storage.ObjectHandle {
 	return g.bucket.Object(g.path(key))
 }
 
-func (g *gcsCache) Get(key string) (*soci.Index, error) {
+func (g *gcsCache) Get(ctx context.Context, key string) (*soci.Index, error) {
 	start := time.Now()
 	defer func() {
 		log.Printf("bucket.Get(%q) (%s)", key, time.Since(start))
 	}()
-	rc, err := g.object(key).NewReader(context.TODO())
+	rc, err := g.object(key).NewReader(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
+
+	dec, err := zstd.NewReader(rc)
+	if err != nil {
+		return nil, err
+	}
+	defer dec.Close()
 	index := &soci.Index{}
-	if err := json.NewDecoder(rc).Decode(index); err != nil {
+	if err := json.NewDecoder(dec).Decode(index); err != nil {
 		return nil, err
 	}
 	return index, nil
 }
 
-func (g *gcsCache) Put(key string, index *soci.Index) error {
+func (g *gcsCache) Put(ctx context.Context, key string, index *soci.Index) error {
 	start := time.Now()
 	defer func() {
 		log.Printf("bucket.Put(%q) (%s)", key, time.Since(start))
 	}()
-	w := g.object(key).NewWriter(context.TODO())
-	if err := json.NewEncoder(w).Encode(index); err != nil {
+	w := g.object(key).NewWriter(ctx)
+	enc, err := zstd.NewWriter(w)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(enc).Encode(index); err != nil {
+		enc.Close()
+		return err
+	}
+	if err := w.Close(); err != nil {
 		return err
 	}
 	return w.Close()
@@ -103,7 +117,7 @@ func (d *dirCache) file(key string) string {
 	return filepath.Join(d.dir, strings.Replace(key, ":", "-", 1))
 }
 
-func (d *dirCache) Get(key string) (*soci.Index, error) {
+func (d *dirCache) Get(ctx context.Context, key string) (*soci.Index, error) {
 	f, err := os.Open(d.file(key))
 	if err != nil {
 		return nil, err
@@ -116,7 +130,7 @@ func (d *dirCache) Get(key string) (*soci.Index, error) {
 	return index, nil
 }
 
-func (d *dirCache) Put(key string, index *soci.Index) error {
+func (d *dirCache) Put(ctx context.Context, key string, index *soci.Index) error {
 	f, err := os.OpenFile(d.file(key), os.O_RDWR|os.O_CREATE, 0755)
 	if err != nil {
 		return err
@@ -139,7 +153,7 @@ type headerEntry struct {
 	access time.Time
 }
 
-func (m *memCache) Get(key string) (*soci.Index, error) {
+func (m *memCache) Get(ctx context.Context, key string) (*soci.Index, error) {
 	m.Lock()
 	defer m.Unlock()
 
@@ -152,7 +166,7 @@ func (m *memCache) Get(key string) (*soci.Index, error) {
 	return nil, io.EOF
 }
 
-func (m *memCache) Put(key string, index *soci.Index) error {
+func (m *memCache) Put(ctx context.Context, key string, index *soci.Index) error {
 	m.Lock()
 	defer m.Unlock()
 	if index.Size() > m.maxSize {
@@ -186,15 +200,15 @@ type multiCache struct {
 	caches []Cache
 }
 
-func (m *multiCache) Get(key string) (*soci.Index, error) {
+func (m *multiCache) Get(ctx context.Context, key string) (*soci.Index, error) {
 	for i, c := range m.caches {
-		index, err := c.Get(key)
+		index, err := c.Get(ctx, key)
 		if err == nil {
 			// Backfill previous misses (usually in mem).
 			for j := i - 1; j >= 0; j-- {
 				cache := m.caches[j]
 				logs.Debug.Printf("filling %q in %T", key, cache)
-				if err := cache.Put(key, index); err != nil {
+				if err := cache.Put(ctx, key, index); err != nil {
 					logs.Debug.Printf("filling %q in %T = %v", key, cache, err)
 				}
 			}
@@ -207,10 +221,10 @@ func (m *multiCache) Get(key string) (*soci.Index, error) {
 }
 
 // TODO: concurrent?
-func (m *multiCache) Put(key string, index *soci.Index) error {
+func (m *multiCache) Put(ctx context.Context, key string, index *soci.Index) error {
 	errs := []error{}
 	for _, c := range m.caches {
-		err := c.Put(key, index)
+		err := c.Put(ctx, key, index)
 		if err != nil {
 			errs = append(errs, err)
 		}

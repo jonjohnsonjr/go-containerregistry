@@ -948,7 +948,7 @@ type Checkpoint struct {
 }
 
 func (c *Checkpoint) String() string {
-	return fmt.Sprintf("In=%d, Out=%d, B=%x, NB=%x, len(Hist) == %d", c.In, c.Out, c.B, c.NB, len(c.Hist))
+	return fmt.Sprintf("In=%d, Out=%d, B=%x, NB=%x", c.In, c.Out, c.B, c.NB)
 }
 
 // NewReaderWithSpans is a hack.
