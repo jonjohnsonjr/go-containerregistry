@@ -49,7 +49,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 // We should not buffer blobs greater than 2MB
@@ -175,7 +174,7 @@ func WithRemote(opt []remote.Option) Option {
 }
 
 // TODO: We can drop ~60ms by skipping the auth handshake.
-func setupCacheRepo(cacheRepo string) (Cache, error) {
+func buildOciCache(cacheRepo string) (Cache, error) {
 	repo, err := name.NewRepository(cacheRepo)
 	if err != nil {
 		return nil, err
@@ -203,7 +202,7 @@ func setupCacheRepo(cacheRepo string) (Cache, error) {
 	return &ociCache{repo, t}, nil
 }
 
-func setupCacheBucket(bucket string) (Cache, error) {
+func buildGcsCache(bucket string) (Cache, error) {
 	client, err := storage.NewClient(context.Background())
 	if err != nil {
 		return nil, err
@@ -213,30 +212,7 @@ func setupCacheBucket(bucket string) (Cache, error) {
 	return &gcsCache{client, bkt}, nil
 }
 
-func New(opts ...Option) http.Handler {
-	h := handler{
-		mux:       http.NewServeMux(),
-		blobs:     map[*http.Request]*sizeBlob{},
-		manifests: map[string]*remote.Descriptor{},
-		pings:     map[string]*transport.PingResp{},
-		sawTags:   map[string][]string{},
-	}
-
-	ClientID := os.Getenv("CLIENT_ID")
-	ClientSecret := os.Getenv("CLIENT_SECRET")
-
-	if ClientID != "" && ClientSecret != "" {
-		h.oauth = &oauth2.Config{
-			ClientID:     ClientID,
-			ClientSecret: ClientSecret,
-			RedirectURL:  "https://explore.ggcr.dev/oauth",
-			Scopes: []string{
-				"https://www.googleapis.com/auth/cloud-platform.read-only",
-			},
-			Endpoint: google.Endpoint,
-		}
-	}
-
+func buildCache() Cache {
 	mc := &memCache{
 		// 50 MB * 50 = 2.5GB reserved for cache.
 		maxSize:  50 * (1 << 20),
@@ -250,21 +226,33 @@ func New(opts ...Option) http.Handler {
 		caches = append(caches, cache)
 	} else if cb := os.Getenv("CACHE_BUCKET"); cb != "" {
 		logs.Debug.Printf("CACHE_BUCKET=%q", cb)
-		if cache, err := setupCacheBucket(cb); err != nil {
-			logs.Debug.Printf("setupCacheBucket(): %v", err)
+		if cache, err := buildGcsCache(cb); err != nil {
+			logs.Debug.Printf("buildGcsCache(): %v", err)
 		} else {
 			caches = append(caches, cache)
 		}
 	} else if cr := os.Getenv("CACHE_REPO"); cr != "" {
 		logs.Debug.Printf("CACHE_REPO=%q", cr)
-		if cache, err := setupCacheRepo(cr); err != nil {
-			logs.Debug.Printf("setupCacheRepo(): %v", err)
+		if cache, err := buildOciCache(cr); err != nil {
+			logs.Debug.Printf("buildOciCache(): %v", err)
 		} else {
 			caches = append(caches, cache)
 		}
 	}
 
-	h.cache = &multiCache{caches}
+	return &multiCache{caches}
+}
+
+func New(opts ...Option) http.Handler {
+	h := handler{
+		mux:       http.NewServeMux(),
+		blobs:     map[*http.Request]*sizeBlob{},
+		manifests: map[string]*remote.Descriptor{},
+		pings:     map[string]*transport.PingResp{},
+		sawTags:   map[string][]string{},
+		cache:     buildCache(),
+		oauth:     buildOauth(),
+	}
 
 	for _, opt := range opts {
 		opt(&h)
@@ -327,7 +315,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // Like http.Handler, but with error handling.
 func (h *handler) root(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderResponse(w, r); err != nil {
-		if err := h.handleOauth(w, r, err); err != nil {
+		if err := h.maybeOauthErr(w, r, err); err != nil {
 			log.Printf("renderResponse: %v", err)
 			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 		}
@@ -341,88 +329,14 @@ func isGoogle(host string) bool {
 	return true
 }
 
-func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
-	if h.oauth == nil {
-		return
-	}
-
-	qs := r.URL.Query()
-	code := qs.Get("code")
-	tok, err := h.oauth.Exchange(r.Context(), code)
-	if err != nil {
-		log.Printf("Exchange: %v", err)
-		return
-	}
-	if debug {
-		log.Printf("tok = %v", tok)
-	}
-
-	state := qs.Get("state")
-	u, err := url.ParseRequestURI(state)
-	if err != nil {
-		log.Printf("ParseRequestURI: %v", err)
-		return
-	}
-	if tok.AccessToken != "" {
-		cookie := &http.Cookie{
-			Name:     "access_token",
-			Value:    tok.AccessToken,
-			Expires:  tok.Expiry,
-			Secure:   true,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		}
-		http.SetCookie(w, cookie)
-	}
-	if tok.RefreshToken != "" {
-		cookie := &http.Cookie{
-			Name:     "refresh_token",
-			Value:    tok.RefreshToken,
-			Secure:   true,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		}
-		http.SetCookie(w, cookie)
-	}
-
-	http.Redirect(w, r, u.String(), http.StatusFound)
-}
-
 // Like http.Handler, but with error handling.
 func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderBlob(w, r); err != nil {
-		if err := h.handleOauth(w, r, err); err != nil {
+		if err := h.maybeOauthErr(w, r, err); err != nil {
 			log.Printf("renderBlob: %v", err)
 			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 		}
 	}
-}
-
-func (h *handler) handleOauth(w http.ResponseWriter, r *http.Request, err error) error {
-	if h.oauth == nil {
-		return err
-	}
-
-	var terr *transport.Error
-	if !errors.As(err, &terr) {
-		return err
-	}
-	if !isGoogle(terr.Request.URL.Host) {
-		return err
-	}
-	if terr.StatusCode != http.StatusForbidden && terr.StatusCode != http.StatusUnauthorized {
-		return err
-	}
-
-	data := OauthData{
-		Error:    html.EscapeString(err.Error()),
-		Redirect: h.oauth.AuthCodeURL(r.URL.String()),
-	}
-
-	if err := oauthTmpl.Execute(w, data); err != nil {
-		return fmt.Errorf("failed to render oauth page: %w", err)
-	}
-	return nil
 }
 
 type CookieValue struct {
@@ -573,29 +487,6 @@ func (h *handler) getTags(repo name.Repository) ([]string, bool) {
 	tags, ok := h.sawTags[repo.String()]
 	h.Unlock()
 	return tags, ok
-
-	// TODO: This is too slow to do by default :/
-	// if ok {
-	// 	return tags, ok
-	// }
-
-	// tags, err := remote.List(repo, opts...)
-	// h.Lock()
-	// defer h.Unlock()
-	// if err != nil {
-	// 	if oldTags, ok := h.sawTags[repo.String()]; ok {
-	// 		return oldTags, true
-	// 	}
-
-	// 	// Listing tags failed, so we won't keep doing it
-	// 	// unless explicitly requested.
-	// 	log.Printf("getTags(%q): %v", repo, err)
-	// 	h.sawTags[repo.String()] = []string{}
-
-	// 	return nil, false
-	// }
-	// h.sawTags[repo.String()] = tags
-	// return tags, true
 }
 
 // Render repo with tags linking to images.
@@ -607,100 +498,9 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 	}
 
 	if ref.RegistryStr() == "registry.k8s.io" || (isGoogle(ref.RegistryStr()) && ref.RepositoryStr() != "") {
-		tags, err := goog.List(ref, h.googleOptions(w, r, repo)...)
-		if err != nil {
-			return err
-		}
-		h.Lock()
-		h.sawTags[ref.String()] = tags.Tags
-		h.Unlock()
-		if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
-			return err
-		}
-		data := HeaderData{
-			Repo:      repo,
-			Reference: repo,
-		}
-		if ref.RepositoryStr() != "" {
-			data.JQ = gcrane + " ls --json " + repo + " | jq ."
-		}
-		if strings.Contains(repo, "/") {
-			base := path.Base(repo)
-			dir := path.Dir(strings.TrimRight(repo, "/"))
-			if base != "." && dir != "." {
-				data.Up = &RepoParent{
-					Parent:    dir,
-					Child:     base,
-					Separator: "/",
-				}
-			}
-		}
-		if err := bodyTmpl.Execute(w, data); err != nil {
-			return err
-		}
-
-		output := &jsonOutputter{
-			w:     w,
-			u:     r.URL,
-			fresh: []bool{},
-			repo:  repo,
-		}
-		b, err := json.Marshal(tags)
-		if err != nil {
-			return err
-		}
-		if err := renderJSON(output, b); err != nil {
-			return err
-		}
-
-		fmt.Fprintf(w, footer)
-		return nil
+		return h.renderGoogleRepo(w, r, repo)
 	} else if ref.RepositoryStr() == "" {
-		if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
-			return err
-		}
-		data := HeaderData{
-			Repo:      repo,
-			Reference: repo,
-			JQ:        crane + " catalog " + repo,
-		}
-		if err := bodyTmpl.Execute(w, data); err != nil {
-			return err
-		}
-
-		output := &jsonOutputter{
-			w:     w,
-			u:     r.URL,
-			fresh: []bool{},
-			repo:  repo,
-		}
-		var v *remote.Catalogs
-		if qs.Get("n") != "" {
-			v, err = remote.CatalogPage(ref.Registry, qs.Get("next"), h.remoteOptions(w, r, repo)...)
-			if err != nil {
-				return err
-			}
-		} else {
-			repos, err := remote.Catalog(r.Context(), ref.Registry, h.remoteOptions(w, r, repo)...)
-			if err != nil {
-				return err
-			}
-
-			v = &remote.Catalogs{
-				Repos: repos,
-			}
-		}
-
-		b, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		if err := renderJSON(output, b); err != nil {
-			return err
-		}
-
-		fmt.Fprintf(w, footer)
-		return nil
+		return h.renderCatalog(w, r, repo)
 	}
 
 	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
@@ -753,6 +553,114 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 			Name: ref.RepositoryStr(),
 		}
 	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if err := renderJSON(output, b); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, footer)
+	return nil
+}
+
+func (h *handler) renderGoogleRepo(w http.ResponseWriter, r *http.Request, repo string) error {
+	ref, err := name.NewRepository(repo)
+	if err != nil {
+		return err
+	}
+	tags, err := goog.List(ref, h.googleOptions(w, r, repo)...)
+	if err != nil {
+		return err
+	}
+	h.Lock()
+	h.sawTags[ref.String()] = tags.Tags
+	h.Unlock()
+	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
+		return err
+	}
+	data := HeaderData{
+		Repo:      repo,
+		Reference: repo,
+	}
+	if ref.RepositoryStr() != "" {
+		data.JQ = gcrane + " ls --json " + repo + " | jq ."
+	}
+	if strings.Contains(repo, "/") {
+		base := path.Base(repo)
+		dir := path.Dir(strings.TrimRight(repo, "/"))
+		if base != "." && dir != "." {
+			data.Up = &RepoParent{
+				Parent:    dir,
+				Child:     base,
+				Separator: "/",
+			}
+		}
+	}
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
+
+	output := &jsonOutputter{
+		w:     w,
+		u:     r.URL,
+		fresh: []bool{},
+		repo:  repo,
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return err
+	}
+	if err := renderJSON(output, b); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, footer)
+	return nil
+}
+
+func (h *handler) renderCatalog(w http.ResponseWriter, r *http.Request, repo string) error {
+	qs := r.URL.Query()
+	ref, err := name.NewRepository(repo)
+	if err != nil {
+		return err
+	}
+	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
+		return err
+	}
+	data := HeaderData{
+		Repo:      repo,
+		Reference: repo,
+		JQ:        crane + " catalog " + repo,
+	}
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
+
+	output := &jsonOutputter{
+		w:     w,
+		u:     r.URL,
+		fresh: []bool{},
+		repo:  repo,
+	}
+	var v *remote.Catalogs
+	if qs.Get("n") != "" {
+		v, err = remote.CatalogPage(ref.Registry, qs.Get("next"), h.remoteOptions(w, r, repo)...)
+		if err != nil {
+			return err
+		}
+	} else {
+		repos, err := remote.Catalog(r.Context(), ref.Registry, h.remoteOptions(w, r, repo)...)
+		if err != nil {
+			return err
+		}
+
+		v = &remote.Catalogs{
+			Repos: repos,
+		}
+	}
+
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err

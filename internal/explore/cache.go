@@ -66,6 +66,7 @@ func (g *gcsCache) object(key string) *storage.ObjectHandle {
 	return g.bucket.Object(g.path(key))
 }
 
+// TODO: Use lifecycle with bumping timestamps to evict old data.
 func (g *gcsCache) Get(ctx context.Context, key string) (*soci.Index, error) {
 	start := time.Now()
 	defer func() {
