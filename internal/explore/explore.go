@@ -15,6 +15,7 @@ package explore
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,8 @@ import (
 	"sync"
 	"time"
 
+	"cloud.google.com/go/storage"
+
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/soci"
@@ -47,7 +50,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	// "github.com/awslabs/soci-snapshotter/ztoc"
 )
 
 // We should not buffer blobs greater than 2MB
@@ -69,66 +71,12 @@ type handler struct {
 	// reg.String() -> ping resp
 	pings map[string]*transport.PingResp
 
-	cache *headerCache
+	cache Cache
 
 	sync.Mutex
 	sawTags map[string][]string
 
 	oauth *oauth2.Config
-
-	cacheRepo      name.Repository
-	cacheTransport http.RoundTripper
-}
-
-type headerCache struct {
-	sync.Mutex
-	entryCap int
-	maxSize  int64
-	entries  []*headerEntry
-}
-
-type headerEntry struct {
-	key    string
-	index  *soci.Index
-	size   int64
-	access time.Time
-}
-
-func (c *headerCache) Put(e *headerEntry) {
-	c.Lock()
-	defer c.Unlock()
-	if e.size > c.maxSize {
-		return
-	}
-
-	e.access = time.Now()
-
-	if len(c.entries) >= c.entryCap {
-		min, idx := e.access, -1
-		for i, e := range c.entries {
-			if e.access.Before(min) {
-				min = e.access
-				idx = i
-			}
-		}
-		c.entries[idx] = e
-		return
-	}
-
-	c.entries = append(c.entries, e)
-}
-
-func (c *headerCache) Get(key string) *headerEntry {
-	c.Lock()
-	defer c.Unlock()
-
-	for _, e := range c.entries {
-		if e.key == key {
-			e.access = time.Now()
-			return e
-		}
-	}
-	return nil
 }
 
 func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo string) []remote.Option {
@@ -227,10 +175,10 @@ func WithRemote(opt []remote.Option) Option {
 }
 
 // TODO: We can drop ~60ms by skipping the auth handshake.
-func (h *handler) setupCacheRepo(cacheRepo string) error {
+func setupCacheRepo(cacheRepo string) (Cache, error) {
 	repo, err := name.NewRepository(cacheRepo)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	scopes := []string{repo.Scope(transport.PushScope)}
@@ -239,7 +187,7 @@ func (h *handler) setupCacheRepo(cacheRepo string) error {
 	if isGoogle(repo.RegistryStr()) {
 		auth, err = goog.Keychain.Resolve(repo)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	t := remote.DefaultTransport
@@ -250,11 +198,19 @@ func (h *handler) setupCacheRepo(cacheRepo string) error {
 	}
 	t, err = transport.New(repo.Registry, auth, t, scopes)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	h.cacheTransport = t
-	h.cacheRepo = repo
-	return nil
+	return &ociCache{repo, t}, nil
+}
+
+func setupCacheBucket(bucket string) (Cache, error) {
+	client, err := storage.NewClient(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	bkt := client.Bucket(bucket)
+
+	return &gcsCache{client, bkt}, nil
 }
 
 func New(opts ...Option) http.Handler {
@@ -263,12 +219,7 @@ func New(opts ...Option) http.Handler {
 		blobs:     map[*http.Request]*sizeBlob{},
 		manifests: map[string]*remote.Descriptor{},
 		pings:     map[string]*transport.PingResp{},
-		cache: &headerCache{
-			// 50 MB * 50 = 2.5GB reserved for cache.
-			maxSize:  50 * (1 << 20),
-			entryCap: 50,
-		},
-		sawTags: map[string][]string{},
+		sawTags:   map[string][]string{},
 	}
 
 	ClientID := os.Getenv("CLIENT_ID")
@@ -286,12 +237,34 @@ func New(opts ...Option) http.Handler {
 		}
 	}
 
-	if cr := os.Getenv("CACHE_REPO"); cr != "" {
+	mc := &memCache{
+		// 50 MB * 50 = 2.5GB reserved for cache.
+		maxSize:  50 * (1 << 20),
+		entryCap: 50,
+	}
+	caches := []Cache{mc}
+
+	if cd := os.Getenv("CACHE_DIR"); cd != "" {
+		logs.Debug.Printf("CACHE_DIR=%q", cd)
+		cache := &dirCache{cd}
+		caches = append(caches, cache)
+	} else if cb := os.Getenv("CACHE_BUCKET"); cb != "" {
+		logs.Debug.Printf("CACHE_BUCKET=%q", cb)
+		if cache, err := setupCacheBucket(cb); err != nil {
+			logs.Debug.Printf("setupCacheBucket(): %v", err)
+		} else {
+			caches = append(caches, cache)
+		}
+	} else if cr := os.Getenv("CACHE_REPO"); cr != "" {
 		logs.Debug.Printf("CACHE_REPO=%q", cr)
-		if err := h.setupCacheRepo(cr); err != nil {
+		if cache, err := setupCacheRepo(cr); err != nil {
 			logs.Debug.Printf("setupCacheRepo(): %v", err)
+		} else {
+			caches = append(caches, cache)
 		}
 	}
+
+	h.cache = &multiCache{caches}
 
 	for _, opt := range opts {
 		opt(&h)
@@ -1112,7 +1085,6 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 // Render blob, either as just ungzipped bytes, or via http.FileServer.
 func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
-	var cacheRef name.Reference
 	if strings.HasPrefix(r.URL.Path, "/json/") {
 		return h.renderBlobJSON(w, r, "")
 	}
@@ -1144,38 +1116,16 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	var index *soci.Index
 	if h.cache != nil {
-		if debug {
-			log.Printf("cache is not nil")
-		}
-		if entry := h.cache.Get(dig.Identifier()); entry != nil {
+		index, err = h.cache.Get(dig.Identifier())
+		if err != nil {
+			logs.Debug.Printf("cache.Get(%q) = %v", dig.Identifier(), err)
+		} else {
 			log.Printf("cache hit: %s", dig.Identifier())
-			index = entry.index
 		}
 	}
 
-	ignore := h.cacheRepo == dig.Context()
-	// TODO: Check always GET and check for AcceptRanges?
-	if index == nil && h.cacheTransport != nil && !ignore {
-		cacheRef = h.cacheRepo.Tag(strings.Replace(dig.Identifier(), ":", "-", 1) + ".soci")
-		logs.Debug.Printf("checking for %s in cache", ref)
-		// TODO: Group by repo?
-		img, err := remote.Image(cacheRef, remote.WithTransport(h.cacheTransport))
-		if err != nil {
-			logs.Debug.Printf("cache pull: %v", err)
-		} else {
-			index, err = soci.FromImage(img)
-			if err != nil {
-				logs.Debug.Printf("FromImage: %v", err)
-			} else if h.cache != nil {
-				logs.Debug.Printf("size = %d", index.Size())
-				h.cache.Put(&headerEntry{
-					key:   dig.Identifier(),
-					index: index,
-					size:  index.Size(),
-				})
-			}
-		}
-	}
+	// TODO: have some criteria?
+	ignore := false
 
 	shouldIndex := !ignore
 	if index != nil {
@@ -1321,8 +1271,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		http.FileServer(fs).ServeHTTP(w, r)
 
 		// TODO: Make it so we can do this incrementally.
-		if shouldIndex && cacheRef != nil {
-			logs.Debug.Printf("writing cacheRef %s", cacheRef)
+		if shouldIndex {
 			if indexer, ok := fs.tr.(*soci.Indexer); ok {
 				logs.Debug.Printf("got indexer")
 				for {
@@ -1341,19 +1290,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				}
 				if h.cache != nil {
 					logs.Debug.Printf("size = %d", index.Size())
-					h.cache.Put(&headerEntry{
-						key:   dig.Identifier(),
-						index: index,
-						size:  index.Size(),
-					})
-				}
-
-				img, err := soci.ToImage(index)
-				if err != nil {
-					return err
-				}
-				if err := remote.Write(cacheRef, img, remote.WithTransport(h.cacheTransport)); err != nil {
-					return err
+					if err := h.cache.Put(dig.Identifier(), index); err != nil {
+						logs.Debug.Printf("cache.Put: %v", err)
+					}
 				}
 			}
 		}
