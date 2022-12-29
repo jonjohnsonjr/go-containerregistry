@@ -122,9 +122,6 @@ func (s *sociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		fm := fm
 		name := path.Clean("/" + fm.Name)
 
-		if name == "/" {
-			continue
-		}
 		if !strings.HasPrefix(name, prefix) {
 			continue
 		}
