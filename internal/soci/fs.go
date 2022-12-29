@@ -85,7 +85,7 @@ func (s *sociFS) Open(original string) (fs.File, error) {
 
 		base := path.Base(name)
 		if base == "index.html" || base == "favicon.ico" {
-			return nil, fmt.Errorf("nope: %s", name)
+			return nil, fs.ErrNotExist
 		}
 
 		chased, err := s.chase(name, 0)
@@ -113,22 +113,23 @@ func (s *sociFS) Open(original string) (fs.File, error) {
 func (s *sociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	logs.Debug.Printf("soci.ReadDir(%q)", original)
 	dir := strings.TrimPrefix(original, s.prefix)
-	logs.Debug.Printf("soci.ReadDir(%q)", dir)
+	if dir != original {
+		logs.Debug.Printf("soci.ReadDir(%q)", dir)
+	}
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
 	for _, fm := range s.toc.TOC {
 		fm := fm
 		name := path.Clean("/" + fm.Name)
-		fdir := path.Dir(strings.TrimPrefix(name, prefix))
 
 		if name == "/" {
 			continue
 		}
-
 		if !strings.HasPrefix(name, prefix) {
 			continue
 		}
 
+		fdir := path.Dir(strings.TrimPrefix(name, prefix))
 		if !(fdir == "/" || (fdir == "." && prefix == "/")) {
 			continue
 		}
@@ -199,7 +200,7 @@ func (s *sociFS) find(name string) (*TOCFile, error) {
 	}
 
 	// TODO: Better error
-	return nil, io.EOF
+	return nil, fs.ErrNotExist
 }
 
 func (s *sociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
