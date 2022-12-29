@@ -328,8 +328,13 @@ func New(opts ...Option) http.Handler {
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.oauth == nil {
-		// Cloud run already logs, don't log extra.
+		// Cloud run already logs this stuff, don't log extra.
 		log.Printf("%v", r.URL)
+
+		start := time.Now()
+		defer func() {
+			log.Printf("%v (%s)", r.URL, time.Since(start))
+		}()
 	}
 
 	if r.URL.Path == "/favicon.svg" || r.URL.Path == "/favicon.ico" {
