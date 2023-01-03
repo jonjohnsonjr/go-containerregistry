@@ -137,7 +137,9 @@ func gztarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 	// Should be enough to read first block?
 	zb, err := pr.Peek(1024)
 	if err != nil {
-		return false, pr, err
+		if err != io.EOF {
+			return false, pr, err
+		}
 	}
 
 	br := bytes.NewReader(zb)

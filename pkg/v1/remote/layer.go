@@ -128,21 +128,32 @@ type BlobSeeker struct {
 	Body io.ReadCloser
 
 	Url string
+
+	ref       name.Digest
+	cachedUrl string
+	options   []Option
 }
 
-// Blob returns a seekable blob.
-func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, error) {
-	o, err := makeOptions(ref.Context(), options...)
-	if err != nil {
-		return nil, err
+func LazyBlob(ref name.Digest, cachedUrl string, options ...Option) *BlobSeeker {
+	return &BlobSeeker{
+		ref:       ref,
+		cachedUrl: cachedUrl,
+		options:   options,
 	}
-	f, err := makeFetcher(ref, o)
+}
+
+func (bs *BlobSeeker) init() error {
+	o, err := makeOptions(bs.ref.Context(), bs.options...)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	h, err := v1.NewHash(ref.Identifier())
+	f, err := makeFetcher(bs.ref, o)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	h, err := v1.NewHash(bs.ref.Identifier())
+	if err != nil {
+		return err
 	}
 	rl := &remoteLayer{
 		fetcher: *f,
@@ -153,13 +164,13 @@ func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, er
 		logs.Debug.Printf("should never call this")
 		o.size, err = rl.Size()
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	urlStr := cachedUrl
+	urlStr := bs.cachedUrl
 	var res *http.Response
-	if cachedUrl == "" {
+	if bs.cachedUrl == "" {
 		ctx := redact.NewContext(o.context, "omitting binary blobs from logs")
 
 		u := f.url("blobs", h.String())
@@ -169,14 +180,14 @@ func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, er
 			logs.Debug.Printf("urlStr: %s", urlStr)
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			req.Header.Set("Range", "bytes=0-1")
 
 			tr := f.Client.Transport
 			res, err = tr.RoundTrip(req)
 			if err != nil {
-				return nil, err
+				return err
 			}
 
 			if redir := res.Header.Get("Location"); redir != "" && res.StatusCode/100 == 3 {
@@ -184,7 +195,7 @@ func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, er
 
 				u, err := url.Parse(redir)
 				if err != nil {
-					return nil, err
+					return err
 				}
 				urlStr = req.URL.ResolveReference(u).String()
 				continue
@@ -201,28 +212,36 @@ func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, er
 		logs.Debug.Printf("got past redir")
 
 		if res.StatusCode >= 400 {
-			return nil, transport.CheckError(res)
+			return transport.CheckError(res)
 		}
 	} else {
-		logs.Debug.Printf("using cached url: %s", cachedUrl)
+		logs.Debug.Printf("using cached url: %s", bs.cachedUrl)
 	}
 
 	logs.Debug.Printf("setting urlStr: %s", urlStr)
 
-	bs := &BlobSeeker{
-		rl:   rl,
-		size: o.size,
-		Url:  urlStr,
-	}
+	bs.rl = rl
+	bs.size = o.size
+	bs.Url = urlStr
 
 	if res != nil && res.StatusCode == 200 {
 		bs.Body = res.Body
 	}
+	return nil
+}
 
-	return bs, nil
+// Blob returns a seekable blob.
+func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, error) {
+	bs := LazyBlob(ref, cachedUrl, options...)
+	return bs, bs.init()
 }
 
 func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
+	if b.rl == nil {
+		if err := b.init(); err != nil {
+			return 0, err
+		}
+	}
 	logs.Debug.Printf("ReadAt")
 	// TODO: configurable timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -249,6 +268,11 @@ func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 func (b *BlobSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error) {
+	if b.rl == nil {
+		if err := b.init(); err != nil {
+			return nil, err
+		}
+	}
 	ctx = redact.NewContext(ctx, "omitting binary blobs from logs")
 	req, err := http.NewRequestWithContext(ctx, "GET", b.Url, nil)
 	if err != nil {

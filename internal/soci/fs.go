@@ -24,8 +24,150 @@ import (
 // More than enough for FileServer to Peek at file contents.
 const bufferLen = 2 << 16
 
-func FS(toc *Index, bs *remote.BlobSeeker, prefix string, ref string, maxSize int64) fs.FS {
-	return &sociFS{
+type multifs struct {
+	fss    []*SociFS
+	prefix string
+}
+
+func MultiFS(fss []*SociFS, prefix string) fs.FS {
+	return &multifs{
+		fss:    fss,
+		prefix: prefix,
+	}
+}
+
+func (s *multifs) err(name string) fs.File {
+	return &multiFile{
+		fs:   s,
+		name: name,
+	}
+}
+
+func (s *multifs) chase(original string) (*TOCFile, *SociFS, error) {
+	if original == "" {
+		return nil, nil, fmt.Errorf("empty string")
+	}
+	for _, sfs := range s.fss {
+		chased, err := sfs.chase(original, 0)
+		if err == fs.ErrNotExist {
+			continue
+		}
+		return chased, sfs, err
+	}
+
+	return nil, nil, fs.ErrNotExist
+}
+
+func (s *multifs) find(name string) (*TOCFile, *SociFS, error) {
+	logs.Debug.Printf("find(%q)", name)
+	needle := path.Clean("/" + name)
+	for _, sfs := range s.fss {
+		for _, fm := range sfs.toc.TOC {
+			if path.Clean("/"+fm.Name) == needle {
+				logs.Debug.Printf("returning %q (%d bytes)", fm.Name, fm.Size)
+				return &fm, sfs, nil
+			}
+		}
+	}
+
+	return nil, nil, fs.ErrNotExist
+}
+
+func (s *multifs) Open(original string) (fs.File, error) {
+	logs.Debug.Printf("multifs.Open(%q)", original)
+	name := strings.TrimPrefix(original, s.prefix)
+
+	chunks := strings.Split(name, " -> ")
+	name = chunks[len(chunks)-1]
+	name = strings.TrimPrefix(name, "/")
+	logs.Debug.Printf("multifs.Opening(%q)", name)
+
+	fm, sfs, err := s.find(name)
+	if err != nil {
+		logs.Debug.Printf("multifs.Open(%q) = %v", name, err)
+
+		base := path.Base(name)
+		if base == "index.html" || base == "favicon.ico" {
+			return nil, fs.ErrNotExist
+		}
+
+		chased, sfs, err := s.chase(name)
+		if err != nil {
+			if sfs == nil {
+				// Possibly a directory?
+				return s.err(name), nil
+			}
+			return sfs.err(name), nil
+		}
+
+		if chased.Typeflag == tar.TypeDir {
+			return sfs.dir(chased), nil
+		}
+
+		name = path.Clean("/" + chased.Name)
+		fm = chased
+	}
+
+	if int64(fm.Size) > sfs.maxSize {
+		logs.Debug.Printf("multifs.Open(%q): too big: %d", name, fm.Size)
+		return sfs.tooBig(fm), nil
+	}
+
+	if fm.Typeflag == tar.TypeDir {
+		// Return a multifs dir file so we search everything
+		return s.err(name), nil
+	}
+
+	return &sociFile{fs: sfs, name: name, fm: fm}, nil
+}
+
+type multiFile struct {
+	fs   *multifs
+	name string
+}
+
+func (s *multiFile) Stat() (fs.FileInfo, error) {
+	logs.Debug.Printf("multifs.Stat(%q)", s.name)
+	// We don't have an entry, so we need to synthesize one.
+	return &dirInfo{s.name}, nil
+}
+
+func (s *multiFile) Read(p []byte) (int, error) {
+	logs.Debug.Printf("multifs.Read(%q)", s.name)
+	return 0, fmt.Errorf("should not be called")
+}
+
+func (s *multiFile) Seek(offset int64, whence int) (int64, error) {
+	logs.Debug.Printf("multifs.Seek(%q)", s.name)
+	return 0, fmt.Errorf("should not be called")
+}
+
+func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	logs.Debug.Printf("multifs.ReadDir(%q)", s.name)
+	have := map[string]struct{}{}
+	de := []fs.DirEntry{}
+	for _, sfs := range s.fs.fss {
+		des, err := sfs.ReadDir(s.name)
+		if err != nil {
+			return nil, err
+		}
+		for _, got := range des {
+			name := got.Name()
+			if _, ok := have[name]; !ok {
+				de = append(de, got)
+				have[name] = struct{}{}
+			}
+		}
+	}
+	return de, nil
+}
+
+func (s *multiFile) Close() error {
+	return nil
+}
+
+func FS(toc *Index, bs *remote.BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
+	return &SociFS{
 		toc:     toc,
 		bs:      bs,
 		maxSize: maxSize,
@@ -34,7 +176,7 @@ func FS(toc *Index, bs *remote.BlobSeeker, prefix string, ref string, maxSize in
 	}
 }
 
-type sociFS struct {
+type SociFS struct {
 	toc     *Index
 	bs      *remote.BlobSeeker
 	prefix  string
@@ -42,14 +184,14 @@ type sociFS struct {
 	maxSize int64
 }
 
-func (s *sociFS) err(name string) fs.File {
+func (s *SociFS) err(name string) fs.File {
 	return &sociFile{
 		fs:   s,
 		name: name,
 	}
 }
 
-func (s *sociFS) dir(fm *TOCFile) fs.File {
+func (s *SociFS) dir(fm *TOCFile) fs.File {
 	return &sociFile{
 		fs:   s,
 		name: fm.Name,
@@ -57,7 +199,7 @@ func (s *sociFS) dir(fm *TOCFile) fs.File {
 	}
 }
 
-func (s *sociFS) tooBig(fm *TOCFile) fs.File {
+func (s *SociFS) tooBig(fm *TOCFile) fs.File {
 	crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", s.ref, fm.Name)
 	data := []byte("this file is too big, use crane to download it:\n\n" + crane)
 	fm.Size = int64(len(data))
@@ -70,7 +212,7 @@ func (s *sociFS) tooBig(fm *TOCFile) fs.File {
 	}
 }
 
-func (s *sociFS) Open(original string) (fs.File, error) {
+func (s *SociFS) Open(original string) (fs.File, error) {
 	logs.Debug.Printf("soci.Open(%q)", original)
 	name := strings.TrimPrefix(original, s.prefix)
 
@@ -110,7 +252,7 @@ func (s *sociFS) Open(original string) (fs.File, error) {
 	return &sociFile{fs: s, name: name, fm: fm}, nil
 }
 
-func (s *sociFS) ReadDir(original string) ([]fs.DirEntry, error) {
+func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	logs.Debug.Printf("soci.ReadDir(%q)", original)
 	dir := strings.TrimPrefix(original, s.prefix)
 	if dir != original {
@@ -186,7 +328,7 @@ func (s *sociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	return de, nil
 }
 
-func (s *sociFS) find(name string) (*TOCFile, error) {
+func (s *SociFS) find(name string) (*TOCFile, error) {
 	logs.Debug.Printf("find(%q)", name)
 	needle := path.Clean("/" + name)
 	for _, fm := range s.toc.TOC {
@@ -200,11 +342,11 @@ func (s *sociFS) find(name string) (*TOCFile, error) {
 	return nil, fs.ErrNotExist
 }
 
-func (s *sociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
+func (s *SociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
 	return &sociDirEntry{s, dir, fm}
 }
 
-func (s *sociFS) chase(original string, gen int) (*TOCFile, error) {
+func (s *SociFS) chase(original string, gen int) (*TOCFile, error) {
 	if original == "" {
 		return nil, fmt.Errorf("empty string")
 	}
@@ -243,11 +385,11 @@ func (s *sociFS) chase(original string, gen int) (*TOCFile, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("could not find: %s", original)
+	return nil, fs.ErrNotExist
 }
 
 type sociFile struct {
-	fs     *sociFS
+	fs     *SociFS
 	name   string
 	fm     *TOCFile
 	buf    *bufio.Reader
@@ -386,7 +528,7 @@ func (s *sociFile) Close() error {
 }
 
 type sociDirEntry struct {
-	fs  *sociFS
+	fs  *SociFS
 	dir string
 	fm  *TOCFile
 }
@@ -422,7 +564,7 @@ func (s *sociDirEntry) Info() (fs.FileInfo, error) {
 }
 
 type linkEntry struct {
-	fs   *sociFS
+	fs   *SociFS
 	fm   *TOCFile
 	dir  string
 	link string

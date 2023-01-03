@@ -90,7 +90,7 @@ He explained how [`awslabs/soci-snapshotter`](https://github.com/awslabs/soci-sn
 In zlib examples, there is a [`zran.c`](https://github.com/madler/zlib/blob/04f42ceca40f73e2978b50e93806c2a18c1281fc/examples/zran.c) file that has been sitting there since 2005.
 It demonstrates how to implement random access with gzip streaming!
 
-This has been repackaged as [`gztool`](https://github.com/circulosmeos/gztool) to make it easier to use, but `soci-snapshotter` uses the same technique.
+This has been repackaged as [`gztool`](https://github.com/circulosmeos/gztool) ([blog post](https://circulosmeos.wordpress.com/2019/08/11/continuous-tailing-of-a-gzip-file-efficiently/)) to make it easier to use, but `soci-snapshotter` uses the same technique.
 A hand-wavey explanation of how it works:
 
 In order to seek to a given point in a gzip stream, you usually have to decompress and discard everything up to that point (in order to know how to decompress the next sequence of bytes).

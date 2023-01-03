@@ -114,6 +114,12 @@ func (w *jsonOutputter) Blob(ref, text string) {
 	w.key = false
 }
 
+func (w *jsonOutputter) Layers(ref, text string) {
+	w.tabf()
+	w.Printf(`"<a class="mt" href="/layers/%s/">%s</a>"`, ref, html.EscapeString(text))
+	w.key = true
+}
+
 func (w *jsonOutputter) LinkImage(ref, text string) {
 	w.tabf()
 	w.Printf(`"<a href="/?image=%s">%s</a>"`, url.PathEscape(ref), html.EscapeString(text))
@@ -454,7 +460,12 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		}
 
 		v := rawMap[k]
-		w.Key(k)
+		if k == "layers" {
+			image := w.u.Query().Get("image")
+			w.Layers(image, "layers")
+		} else {
+			w.Key(k)
+		}
 		if strings.Contains(k, ".") {
 			w.jpush(fmt.Sprintf("[%q]", k))
 		} else {

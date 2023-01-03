@@ -49,6 +49,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/errgroup"
 )
 
 // We should not buffer blobs greater than 2MB
@@ -260,6 +261,7 @@ func New(opts ...Option) http.Handler {
 
 	h.mux.HandleFunc("/", h.root)
 	h.mux.HandleFunc("/fs/", h.fsHandler)
+	h.mux.HandleFunc("/layers/", h.layersHandler)
 
 	// Janky workaround for downloading via the "urls" field.
 	h.mux.HandleFunc("/http/", h.fsHandler)
@@ -1109,6 +1111,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				logs.Debug.Printf("soci serve")
 				// We never saw a non-nil Body, we can do the range.
 				prefix := strings.TrimPrefix(ref, "/")
+				logs.Debug.Printf("prefix = %s", prefix)
 				fs := soci.FS(index, blob, prefix, dig.String(), respTooBig)
 				http.FileServer(http.FS(fs)).ServeHTTP(w, r)
 				return nil
@@ -1233,6 +1236,196 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	http.ServeContent(w, r, "", time.Time{}, seek)
 
 	return nil
+}
+func (h *handler) layersHandler(w http.ResponseWriter, r *http.Request) {
+	if err := h.renderLayers(w, r); err != nil {
+		if err := h.maybeOauthErr(w, r, err); err != nil {
+			log.Printf("renderLayers: %v", err)
+			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
+		}
+	}
+}
+
+// Flatten layers of an image and serve as a filesystem.
+func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
+	logs.Debug.Printf("renderLayers")
+	dig, ref, err := h.getDigest(w, r)
+	if err != nil {
+		return err
+	}
+
+	var (
+		desc *remote.Descriptor
+		opts []remote.Option
+	)
+	allowCache := true
+	if isGoogle(dig.Context().Registry.String()) {
+		if _, err := r.Cookie("access_token"); err == nil {
+			allowCache = false
+		}
+	}
+	if allowCache {
+		desc, _ = h.manifests[dig.Identifier()]
+	}
+
+	var img v1.Image
+	if desc == nil {
+		if opts == nil {
+			opts = h.remoteOptions(w, r, dig.Context().Name())
+			opts = append(opts, remote.WithMaxSize(tooBig))
+		}
+
+		desc, err = remote.Get(dig, opts...)
+		if err != nil {
+			return err
+		}
+		h.manifests[desc.Digest.String()] = desc
+
+		img, err = desc.Image()
+		if err != nil {
+			return err
+		}
+	}
+
+	m, err := v1.ParseManifest(bytes.NewReader(desc.Manifest))
+	if err != nil {
+		return err
+	}
+
+	fss := make([]*soci.SociFS, len(m.Layers))
+	var g errgroup.Group
+	for i, layer := range m.Layers {
+		i := i
+		digest := layer.Digest
+		layerDig := dig.Context().Digest(layer.Digest.String())
+
+		var (
+			index *soci.Index
+			err   error
+		)
+		if h.cache != nil {
+			index, err = h.cache.Get(r.Context(), digest.String())
+			if err != nil {
+				logs.Debug.Printf("cache.Get(%q) = %v", digest.String(), err)
+			} else {
+				log.Printf("cache hit: %s", digest.String())
+			}
+		}
+		if index == nil && img == nil {
+			if opts == nil {
+				opts = h.remoteOptions(w, r, dig.Context().Name())
+				opts = append(opts, remote.WithMaxSize(tooBig))
+			}
+
+			desc, err = remote.Get(dig, opts...)
+			if err != nil {
+				return err
+			}
+			h.manifests[desc.Digest.String()] = desc
+
+			img, err = desc.Image()
+			if err != nil {
+				return err
+			}
+		}
+		g.Go(func() error {
+			if index == nil {
+				index, err = h.createIndex(w, r, img, ref, layerDig, digest)
+				if err != nil {
+					return fmt.Errorf("createIndex: %w", err)
+				}
+			}
+
+			fs, err := h.createFs(w, r, ref, layerDig, digest, index)
+			if err != nil {
+				return err
+			}
+			fss[i] = fs
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	prefix := strings.TrimPrefix(ref, "/")
+	mfs := soci.MultiFS(fss, prefix)
+
+	// Allow this to be cached for an hour.
+	w.Header().Set("Cache-Control", "max-age=3600, immutable")
+
+	http.FileServer(http.FS(mfs)).ServeHTTP(w, r)
+
+	return nil
+}
+
+func (h *handler) createIndex(w http.ResponseWriter, r *http.Request, img v1.Image, ref string, dig name.Digest, digest v1.Hash) (*soci.Index, error) {
+	l, err := img.LayerByDigest(digest)
+	if err != nil {
+		return nil, err
+	}
+	rc, err := l.Compressed()
+	if err != nil {
+		return nil, err
+	}
+
+	ok, pr, err := gztarPeek(rc)
+	if err != nil {
+		log.Printf("render(%q): %v", dig, err)
+		return nil, fmt.Errorf("peek: %w", err)
+	}
+	if !ok {
+		index := &soci.Index{TOC: []soci.TOCFile{}}
+		if h.cache != nil {
+			logs.Debug.Printf("size = %d", index.Size())
+			if err := h.cache.Put(r.Context(), digest.String(), index); err != nil {
+				logs.Debug.Printf("cache.Put: %v", err)
+			}
+		}
+		return index, nil
+	}
+
+	blob := &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}
+
+	indexer, err := soci.NewIndexer(blob, spanSize)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		// Make sure we hit the end.
+		_, err := indexer.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+	}
+
+	index, err := indexer.Index()
+	if err != nil {
+		return nil, fmt.Errorf("Index() = %w", err)
+	}
+	if h.cache != nil {
+		logs.Debug.Printf("size = %d", index.Size())
+		if err := h.cache.Put(r.Context(), digest.String(), index); err != nil {
+			logs.Debug.Printf("cache.Put: %v", err)
+		}
+	}
+
+	return index, nil
+}
+
+func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, digest v1.Hash, index *soci.Index) (*soci.SociFS, error) {
+	opts := h.remoteOptions(w, r, dig.Context().Name())
+	opts = append(opts, remote.WithSize(index.Csize))
+
+	blob := remote.LazyBlob(dig, "", opts...)
+
+	// We never saw a non-nil Body, we can do the range.
+	prefix := strings.TrimPrefix(ref, "/")
+	fs := soci.FS(index, blob, prefix, dig.String(), respTooBig)
+	return fs, nil
 }
 
 // parse ref out of r
@@ -1424,7 +1617,7 @@ func getBlobQuery(r *http.Request) (string, bool) {
 }
 
 func splitFsURL(p string) (string, string, error) {
-	for _, prefix := range []string{"/fs/", "/https/", "/http/", "/gzip/", "/raw/", "/blob/", "/json/"} {
+	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/gzip/", "/raw/", "/blob/", "/json/"} {
 		if strings.HasPrefix(p, prefix) {
 			return strings.TrimPrefix(p, prefix), prefix, nil
 		}
