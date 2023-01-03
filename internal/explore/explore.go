@@ -1202,7 +1202,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				if h.cache != nil {
 					logs.Debug.Printf("size = %d", index.Size())
 					if err := h.cache.Put(r.Context(), dig.Identifier(), index); err != nil {
-						logs.Debug.Printf("cache.Put: %v", err)
+						log.Printf("cache.Put: %v", err)
 					}
 				}
 			}
@@ -1377,7 +1377,7 @@ func (h *handler) createIndex(w http.ResponseWriter, r *http.Request, img v1.Ima
 		if h.cache != nil {
 			logs.Debug.Printf("size = %d", index.Size())
 			if err := h.cache.Put(r.Context(), digest.String(), index); err != nil {
-				logs.Debug.Printf("cache.Put: %v", err)
+				log.Printf("cache.Put: %v", err)
 			}
 		}
 		return index, nil
@@ -1406,7 +1406,7 @@ func (h *handler) createIndex(w http.ResponseWriter, r *http.Request, img v1.Ima
 	if h.cache != nil {
 		logs.Debug.Printf("size = %d", index.Size())
 		if err := h.cache.Put(r.Context(), digest.String(), index); err != nil {
-			logs.Debug.Printf("cache.Put: %v", err)
+			log.Printf("cache.Put: %v", err)
 		}
 	}
 
