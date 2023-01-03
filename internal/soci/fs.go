@@ -154,11 +154,12 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		for _, got := range des {
 			name := got.Name()
 			if _, ok := have[name]; !ok {
-				de = append(de, got)
 				have[name] = struct{}{}
+				de = append(de, got)
 			}
 		}
 	}
+	logs.Debug.Printf("len(multifs.ReadDir(%q)) = %d", s.name, len(de))
 	return de, nil
 }
 
@@ -706,4 +707,28 @@ func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *T
 	logs.Debug.Printf("returning limitedreader of size %d", tf.Size)
 
 	return &and.ReadCloser{&lr, rc.Close}, nil
+}
+
+func strikethrough(s string) string {
+	var b strings.Builder
+	b.Grow(2 * len(s))
+	b.WriteRune('\u0336')
+	for _, c := range s {
+		b.WriteRune(c)
+		b.WriteRune('\u0336')
+	}
+
+	return b.String()
+}
+
+func unstrikethrough(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) / 2)
+	for _, c := range s {
+		if c != '\u0336' {
+			b.WriteRune(c)
+		}
+	}
+
+	return b.String()
 }

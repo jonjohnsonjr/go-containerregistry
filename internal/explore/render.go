@@ -116,7 +116,7 @@ func (w *jsonOutputter) Blob(ref, text string) {
 
 func (w *jsonOutputter) Layers(ref, text string) {
 	w.tabf()
-	w.Printf(`"<a class="mt" href="/layers/%s/">%s</a>"`, ref, html.EscapeString(text))
+	w.Printf(`"<a class="mt" href="/layers/%s/">%s</a>":`, ref, html.EscapeString(text))
 	w.key = true
 }
 

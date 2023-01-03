@@ -98,13 +98,16 @@ func (g *gcsCache) Put(ctx context.Context, key string, index *soci.Index) error
 	w := g.object(key).NewWriter(ctx)
 	enc, err := zstd.NewWriter(w)
 	if err != nil {
+		logs.Debug.Printf("zstd.NewWriter() = %v", err)
 		return err
 	}
 	if err := json.NewEncoder(enc).Encode(index); err != nil {
+		logs.Debug.Printf("Encode() = %v", err)
 		enc.Close()
 		return err
 	}
-	if err := w.Close(); err != nil {
+	if err := enc.Close(); err != nil {
+		logs.Debug.Printf("enc.Close() = %v", err)
 		return err
 	}
 	return w.Close()
@@ -215,6 +218,8 @@ func (m *multiCache) Get(ctx context.Context, key string) (*soci.Index, error) {
 			}
 
 			return index, err
+		} else {
+			logs.Debug.Printf("multi[%T].Get(%q) = %v", c, key, err)
 		}
 	}
 

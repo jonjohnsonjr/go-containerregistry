@@ -1030,7 +1030,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			logs.Debug.Printf("cache.Get(%q) = %v", dig.Identifier(), err)
 		} else {
-			log.Printf("cache hit: %s", dig.Identifier())
+			logs.Debug.Printf("cache hit: %s", dig.Identifier())
 		}
 	}
 
@@ -1268,13 +1268,14 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 		desc, _ = h.manifests[dig.Identifier()]
 	}
 
+	// TODO: We could maybe skip this ping.
+	if opts == nil {
+		opts = h.remoteOptions(w, r, dig.Context().Name())
+		opts = append(opts, remote.WithMaxSize(tooBig))
+	}
+
 	var img v1.Image
 	if desc == nil {
-		if opts == nil {
-			opts = h.remoteOptions(w, r, dig.Context().Name())
-			opts = append(opts, remote.WithMaxSize(tooBig))
-		}
-
 		desc, err = remote.Get(dig, opts...)
 		if err != nil {
 			return err
@@ -1308,15 +1309,10 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 			if err != nil {
 				logs.Debug.Printf("cache.Get(%q) = %v", digest.String(), err)
 			} else {
-				log.Printf("cache hit: %s", digest.String())
+				logs.Debug.Printf("cache hit: %s", digest.String())
 			}
 		}
 		if index == nil && img == nil {
-			if opts == nil {
-				opts = h.remoteOptions(w, r, dig.Context().Name())
-				opts = append(opts, remote.WithMaxSize(tooBig))
-			}
-
 			desc, err = remote.Get(dig, opts...)
 			if err != nil {
 				return err
@@ -1336,11 +1332,12 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 				}
 			}
 
-			fs, err := h.createFs(w, r, ref, layerDig, digest, index)
+			fs, err := h.createFs(w, r, ref, layerDig, digest, index, opts)
 			if err != nil {
 				return err
 			}
-			fss[i] = fs
+			// NOTE: reverses order
+			fss[(len(m.Layers)-1)-i] = fs
 			return nil
 		})
 	}
@@ -1416,8 +1413,10 @@ func (h *handler) createIndex(w http.ResponseWriter, r *http.Request, img v1.Ima
 	return index, nil
 }
 
-func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, digest v1.Hash, index *soci.Index) (*soci.SociFS, error) {
-	opts := h.remoteOptions(w, r, dig.Context().Name())
+func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, digest v1.Hash, index *soci.Index, opts []remote.Option) (*soci.SociFS, error) {
+	if opts == nil {
+		opts = h.remoteOptions(w, r, dig.Context().Name())
+	}
 	opts = append(opts, remote.WithSize(index.Csize))
 
 	blob := remote.LazyBlob(dig, "", opts...)
