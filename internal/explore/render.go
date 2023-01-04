@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -112,6 +113,17 @@ func (w *jsonOutputter) Blob(ref, text string) {
 	w.Printf(`"<a href="/?blob=%s">%s</a>"`, url.PathEscape(ref), html.EscapeString(text))
 	w.unfresh()
 	w.key = false
+}
+
+func (w *jsonOutputter) History(text string) {
+	u := *w.u
+	qs := u.Query()
+	qs.Set("render", "history")
+	u.RawQuery = qs.Encode()
+
+	w.tabf()
+	w.Printf(`"<a class="mt" href="%s">%s</a>":`, u.String(), html.EscapeString(text))
+	w.key = true
 }
 
 func (w *jsonOutputter) Layers(ref, text string) {
@@ -463,6 +475,8 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		if k == "layers" {
 			image := w.u.Query().Get("image")
 			w.Layers(image, "layers")
+		} else if k == "history" {
+			w.History("history")
 		} else {
 			w.Key(k)
 		}
@@ -508,11 +522,10 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					}
 				}
 			}
-			if w.pt == "application/vnd.in-toto+json" {
-				if name, ok := o["name"]; ok {
-					if ns, ok := name.(string); ok {
-						w.name = ns // cleared by EndMap
-					}
+			if name, ok := o["name"]; ok {
+				// Set this for DSSE digest.name
+				if ns, ok := name.(string); ok {
+					w.name = ns // cleared by EndMap
 				}
 			}
 		case "sha256":
@@ -622,11 +635,18 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 				if href, ok := js.(string); ok {
 					if pt, ok := o["payloadType"]; ok {
 						if s, ok := pt.(string); ok {
-							u := w.addQuery("payloadType", s)
-							w.BlueDoc(u.String(), href)
+							if s == "application/json" || strings.HasSuffix(s, "+json") {
+								u := *w.u
+								qs := u.Query()
+								qs.Add("jq", strings.Join(w.jq, ""))
+								qs.Add("jq", "base64 -d")
+								qs.Add("jq", "jq")
+								u.RawQuery = qs.Encode()
+								w.BlueDoc(u.String(), href)
 
-							// Don't fall through to renderRaw.
-							continue
+								// Don't fall through to renderRaw.
+								continue
+							}
 						}
 					}
 				}
@@ -937,6 +957,22 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 						w.unfresh()
 						w.key = false
 						// Don't fall through to renderRaw.
+						continue
+					}
+				}
+			}
+		case "created_by":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					logs.Debug.Printf("created_by: k=%q, v=%q", k, s)
+					if w.jth(-2) == ".history" {
+						u := *w.u
+						qs := u.Query()
+						qs.Add("jq", strings.Join(w.jq, ""))
+						qs.Set("render", "created_by")
+						u.RawQuery = qs.Encode()
+						w.BlueDoc(u.String(), s)
+
 						continue
 					}
 				}

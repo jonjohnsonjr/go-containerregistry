@@ -29,6 +29,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +58,12 @@ const tooBig = 1 << 21
 const respTooBig = 1 << 25
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
 const spanSize = 1 << 22
+
+var whitespaceRegex = regexp.MustCompile(`(     )(?:    )*`)
+
+func whitespaceRepl(in []byte) []byte {
+	return bytes.Replace(in, []byte("     "), []byte(" \\\n    "), 1)
+}
 
 type handler struct {
 	mux    *http.ServeMux
@@ -963,36 +970,91 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		JQ: crane + " blob " + ref.String(),
 	}
 
-	// TODO: similar to h.jq
-
 	// TODO: Can we do this in a streaming way?
-	b, err := ioutil.ReadAll(io.LimitReader(blob, tooBig))
+	input, err := ioutil.ReadAll(io.LimitReader(blob, tooBig))
 	if err != nil {
 		return err
 	}
 
-	if pt := r.URL.Query().Get("payloadType"); pt != "" {
-		dsse := DSSE{}
-		if err := json.Unmarshal(b, &dsse); err != nil {
-			return err
-		}
-		// TODO: Make this work with normal machinery.
-		b = dsse.Payload
-		data.JQ = data.JQ + " | jq .payload -r | base64 -d | jq ."
-	} else {
-		data.JQ = data.JQ + " | jq ."
+	// Mutates data for bodyTmpl.
+	b, err := h.jq(output, input, r, &data)
+	if err != nil {
+		return err
+	}
+
+	if r.URL.Query().Get("render") == "history" {
+		data.JQ = strings.TrimSuffix(data.JQ, " | jq .")
+		data.JQ += " | jq '.history[] | .created_by'"
+
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
 		return err
 	}
 
-	if err := renderJSON(output, b); err != nil {
-		return err
+	if r.URL.Query().Get("render") == "raw" {
+		fmt.Fprintf(w, "<pre>")
+		if _, err := w.Write(b); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "</pre>")
+	} else if r.URL.Query().Get("render") == "history" {
+		fmt.Fprintf(w, "<pre>")
+		if err := renderDockerfile(w, b); err != nil {
+			return nil
+		}
+		fmt.Fprintf(w, "</pre>")
+	} else if r.URL.Query().Get("render") == "created_by" {
+		fmt.Fprintf(w, "<pre>")
+		if err := renderCreatedBy(w, b); err != nil {
+			return nil
+		}
+		fmt.Fprintf(w, "</pre>")
+	} else {
+		if err := renderJSON(output, b); err != nil {
+			return err
+		}
 	}
 
 	fmt.Fprintf(w, footer)
 
+	return nil
+}
+
+func renderDockerfile(w io.Writer, b []byte) error {
+	cf, err := v1.ParseConfigFile(bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+
+	var sb strings.Builder
+
+	for _, hist := range cf.History {
+		if err := renderCreatedBy(&sb, []byte(hist.CreatedBy)); err != nil {
+			return err
+		}
+		if _, err := sb.Write([]byte("\n\n")); err != nil {
+			return err
+		}
+	}
+	if _, err := w.Write([]byte(sb.String())); err != nil {
+		return err
+	}
+	return nil
+}
+
+func renderCreatedBy(w io.Writer, b []byte) error {
+	// Heuristically try to format this correctly.
+	b = bytes.TrimPrefix(b, []byte("/bin/sh -c #(nop)"))
+	if bytes.HasPrefix(b, []byte("/bin/sh -c")) {
+		b = bytes.Replace(b, []byte("/bin/sh -c"), []byte("RUN"), 1)
+	}
+	b = bytes.ReplaceAll(b, []byte(" \t"), []byte(" \\\n\t"))
+	b = whitespaceRegex.ReplaceAllFunc(b, whitespaceRepl)
+	b = bytes.TrimSpace(b)
+	if _, err := w.Write(b); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1577,7 +1639,7 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *HeaderData) ([]byte, error) {
 	jq, ok := r.URL.Query()["jq"]
 	if !ok {
-		data.JQ += " |  jq ."
+		data.JQ += " | jq ."
 		return b, nil
 	}
 
@@ -1586,7 +1648,7 @@ func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *Hea
 		exp string
 	)
 
-	exps := []string{crane + " manifest " + data.Reference}
+	exps := []string{data.JQ}
 
 	for _, j := range jq {
 		if debug {
@@ -1626,11 +1688,6 @@ func splitFsURL(p string) (string, string, error) {
 	}
 
 	return "", "", fmt.Errorf("unexpected path: %v", p)
-}
-
-type DSSE struct {
-	PayloadType string `json:"payloadType"`
-	Payload     []byte `json:"payload"`
 }
 
 type RedirectCookie struct {

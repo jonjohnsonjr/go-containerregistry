@@ -232,7 +232,7 @@ func lexQuotedString(l *Lexer) stateFn {
 }
 
 func lexIdentifier(l *Lexer) stateFn {
-	for isAlphanumeric(l.next()) {
+	for isIdentifier(l.next()) {
 	}
 	l.backup()
 
@@ -260,6 +260,10 @@ func lexSentinel(l *Lexer) stateFn {
 
 func isAlphanumeric(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsNumber(r)
+}
+
+func isIdentifier(r rune) bool {
+	return isAlphanumeric(r) || r == '_' || r == '-'
 }
 
 func isString(r rune) bool {
