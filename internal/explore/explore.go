@@ -1027,18 +1027,17 @@ func renderDockerfile(w io.Writer, b []byte) error {
 		return err
 	}
 
-	var sb strings.Builder
-
 	for _, hist := range cf.History {
+		var sb strings.Builder
 		if err := renderCreatedBy(&sb, []byte(hist.CreatedBy)); err != nil {
 			return err
 		}
 		if _, err := sb.Write([]byte("\n\n")); err != nil {
 			return err
 		}
-	}
-	if _, err := w.Write([]byte(sb.String())); err != nil {
-		return err
+		if _, err := w.Write([]byte(sb.String())); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1052,6 +1051,12 @@ func renderCreatedBy(w io.Writer, b []byte) error {
 	b = bytes.ReplaceAll(b, []byte(" \t"), []byte(" \\\n\t"))
 	b = whitespaceRegex.ReplaceAllFunc(b, whitespaceRepl)
 	b = bytes.TrimSpace(b)
+	if bytes.HasPrefix(b, []byte("EXPOSE")) {
+		// Turn the map version into the dockerfile version
+		b = bytes.TrimSuffix(b, []byte("]"))
+		b = bytes.Replace(b, []byte("map["), []byte(""), 1)
+		b = bytes.ReplaceAll(b, []byte(":{}"), []byte(""))
+	}
 	if _, err := w.Write(b); err != nil {
 		return err
 	}
