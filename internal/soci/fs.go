@@ -146,17 +146,32 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	logs.Debug.Printf("multifs.ReadDir(%q)", s.name)
 	have := map[string]struct{}{}
 	de := []fs.DirEntry{}
-	for _, sfs := range s.fs.fss {
+	for i, sfs := range s.fs.fss {
 		des, err := sfs.ReadDir(s.name)
 		if err != nil {
 			return nil, err
 		}
+		sawOpaque := false
 		for _, got := range des {
 			name := got.Name()
+
+			if name == ".wh..wh..opq" {
+				logs.Debug.Printf("multifs.ReadDir(%q): saw opaque whiteout in layer[%d]", s.name, i)
+				sawOpaque = true
+			}
 			if _, ok := have[name]; !ok {
 				have[name] = struct{}{}
-				de = append(de, got)
+				if _, ok := have[".wh."+name]; ok {
+					logs.Debug.Printf("saw whiteout for %q, skipping", name)
+				} else if strings.HasPrefix(name, ".wh.") {
+					logs.Debug.Printf("do not return whiteout %q", name)
+				} else {
+					de = append(de, got)
+				}
 			}
+		}
+		if sawOpaque {
+			break
 		}
 	}
 	logs.Debug.Printf("len(multifs.ReadDir(%q)) = %d", s.name, len(de))
