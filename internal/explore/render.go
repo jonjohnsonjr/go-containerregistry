@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
-	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -964,7 +963,6 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		case "created_by":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
-					logs.Debug.Printf("created_by: k=%q, v=%q", k, s)
 					if w.jth(-2) == ".history" {
 						u := *w.u
 						qs := u.Query()

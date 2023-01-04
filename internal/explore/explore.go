@@ -1027,9 +1027,28 @@ func renderDockerfile(w io.Writer, b []byte) error {
 		return err
 	}
 
+	args := []string{}
 	for _, hist := range cf.History {
 		var sb strings.Builder
-		if err := renderCreatedBy(&sb, []byte(hist.CreatedBy)); err != nil {
+		cb := hist.CreatedBy
+
+		// Attempt to handle weird ARG stuff.
+		maybe := strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c #(nop)"))
+		if before, after, ok := strings.Cut(maybe, "ARG "); ok && before == "" {
+			args = append(args, after)
+		} else if strings.HasPrefix(cb, "|") {
+			if _, cb, ok = strings.Cut(cb, " "); ok {
+				for _, arg := range args {
+					cb = strings.TrimSpace(strings.TrimPrefix(cb, arg))
+				}
+
+				// Hack around array syntax.
+				if !strings.HasPrefix(cb, "/bin/sh -c ") {
+					cb = "/bin/sh -c " + cb
+				}
+			}
+		}
+		if err := renderCreatedBy(&sb, []byte(cb)); err != nil {
 			return err
 		}
 		if _, err := sb.Write([]byte("\n\n")); err != nil {
@@ -1057,6 +1076,12 @@ func renderCreatedBy(w io.Writer, b []byte) error {
 		b = bytes.TrimSuffix(b, []byte("]"))
 		b = bytes.Replace(b, []byte("map["), []byte(""), 1)
 		b = bytes.ReplaceAll(b, []byte(":{}"), []byte(""))
+	}
+	if bytes.HasPrefix(b, []byte("|")) {
+		if _, after, ok := bytes.Cut(b, []byte("/bin/sh -c")); ok {
+			b = []byte("RUN")
+			b = append(b, after...)
+		}
 	}
 	if _, err := w.Write(b); err != nil {
 		return err
