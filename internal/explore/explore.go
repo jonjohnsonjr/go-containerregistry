@@ -59,10 +59,10 @@ const respTooBig = 1 << 25
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
 const spanSize = 1 << 22
 
-var whitespaceRegex = regexp.MustCompile(`(     )(?:    )*`)
+var whitespaceRegex = regexp.MustCompile(`( )(?:    )+`)
 
 func whitespaceRepl(in []byte) []byte {
-	return bytes.Replace(in, []byte("     "), []byte(" \\\n    "), 1)
+	return bytes.Replace(in, []byte(" "), []byte(" \\\n"), 1)
 }
 
 type handler struct {
@@ -1049,6 +1049,7 @@ func renderCreatedBy(w io.Writer, b []byte) error {
 		b = bytes.Replace(b, []byte("/bin/sh -c"), []byte("RUN"), 1)
 	}
 	b = bytes.ReplaceAll(b, []byte(" \t"), []byte(" \\\n\t"))
+	b = bytes.ReplaceAll(b, []byte("&&\t"), []byte("\\\n&&\t"))
 	b = whitespaceRegex.ReplaceAllFunc(b, whitespaceRepl)
 	b = bytes.TrimSpace(b)
 	if bytes.HasPrefix(b, []byte("EXPOSE")) {
