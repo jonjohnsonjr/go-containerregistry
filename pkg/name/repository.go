@@ -65,6 +65,10 @@ func (r Repository) Scope(action string) string {
 	return fmt.Sprintf("repository:%s:%s", r.RepositoryStr(), action)
 }
 
+func (r Repository) PluginScope(action string) string {
+	return fmt.Sprintf("repository(plugin):%s:%s", r.RepositoryStr(), action)
+}
+
 func checkRepository(repository string) error {
 	return checkElement("repository", repository, repositoryChars, 2, 255)
 }
