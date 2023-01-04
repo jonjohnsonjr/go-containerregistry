@@ -378,9 +378,10 @@ type decompressor struct {
 	copyDist  int
 
 	// Jon's hacking
-	span    int64
-	last    int64
-	updates chan<- *Checkpoint
+	span           int64
+	last           int64
+	updates        chan<- *Checkpoint
+	sentOneAlready bool
 }
 
 func (f *decompressor) nextBlock() {
@@ -767,10 +768,11 @@ func (f *decompressor) finishBlock() {
 		// TODO(jon): What does final span look like.
 		if f.dict.availRead() > 0 {
 			f.toRead = f.dict.readFlush()
+			f.woffset += int64(len(f.toRead))
 		}
 		f.err = io.EOF
 	}
-	if f.updates != nil && (f.woffset-f.last > f.span || f.woffset == 0) {
+	if f.updates != nil && (f.woffset-f.last > f.span || (f.woffset == 0 && !f.sentOneAlready)) {
 		checkpoint := &Checkpoint{
 			Hist:  make([]byte, len(f.dict.hist)),
 			In:    f.roffset,
@@ -785,6 +787,7 @@ func (f *decompressor) finishBlock() {
 
 		f.updates <- checkpoint
 		f.last = checkpoint.Out
+		f.sentOneAlready = true
 	}
 	f.step = (*decompressor).nextBlock
 }
