@@ -168,6 +168,8 @@ func (bs *BlobSeeker) init() error {
 		}
 	}
 
+	rangePrefix := "bytes="
+
 	urlStr := bs.cachedUrl
 	var res *http.Response
 	if bs.cachedUrl == "" {
@@ -182,7 +184,8 @@ func (bs *BlobSeeker) init() error {
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Range", "bytes=0-1")
+			req.Header.Set("Range", rangePrefix+"0-1")
+			logs.Debug.Printf("Range: %s0-1", rangePrefix)
 
 			tr := f.Client.Transport
 			res, err = tr.RoundTrip(req)
@@ -199,6 +202,18 @@ func (bs *BlobSeeker) init() error {
 				}
 				urlStr = req.URL.ResolveReference(u).String()
 				continue
+			}
+
+			// Attempt to recover from distribution nonsense range headers.
+			if res.StatusCode >= 400 {
+				terr := transport.CheckError(res)
+				if rangePrefix != "" && strings.Contains(terr.Error(), `^[0-9]+\\-[0-9]+$`) {
+					logs.Debug.Printf("Retrying with no bytes= prefix")
+					rangePrefix = ""
+					continue
+				}
+				res.Body.Close()
+				return terr
 			}
 
 			break
@@ -273,12 +288,21 @@ func (b *BlobSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadC
 			return nil, err
 		}
 	}
+	if b.Body != nil {
+		logs.Debug.Printf("Didn't support range requests")
+		logs.Debug.Printf("Discarding %d bytes", off)
+		// Didn't support range requests.
+		if _, err := io.CopyN(io.Discard, b.Body, off); err != nil {
+			return nil, err
+		}
+		return b.Body, nil
+	}
 	ctx = redact.NewContext(ctx, "omitting binary blobs from logs")
 	req, err := http.NewRequestWithContext(ctx, "GET", b.Url, nil)
 	if err != nil {
 		return nil, err
 	}
-	rangeVal := fmt.Sprintf("bytes=%d-%d", off, end+1)
+	rangeVal := fmt.Sprintf("%d-%d", off, end+1)
 	req.Header.Set("Range", rangeVal)
 	logs.Debug.Printf("Fetching %s at %s ...\n", rangeVal, b.Url)
 	res, err := b.rl.Client.Transport.RoundTrip(req) // NOT DefaultClient; don't want redirects
