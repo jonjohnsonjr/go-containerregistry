@@ -861,6 +861,12 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			return err
 		}
 		fmt.Fprintf(w, "</pre>")
+	} else if r.URL.Query().Get("render") == "history" {
+		fmt.Fprintf(w, "<pre>")
+		if err := renderDockerfileSchema1(w, b); err != nil {
+			return nil
+		}
+		fmt.Fprintf(w, "</pre>")
 	} else {
 		if err := renderJSON(output, b); err != nil {
 			return err
@@ -1018,6 +1024,69 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 	fmt.Fprintf(w, footer)
 
+	return nil
+}
+
+type Schema1History struct {
+	V1Compatibility string `json:"v1Compatibility"`
+}
+
+type Schema1 struct {
+	History []Schema1History `json:"history"`
+}
+
+type Config struct {
+	Cmd []string `json:"Cmd"`
+}
+
+type Compat struct {
+	ContainerConfig Config `json:"container_config"`
+}
+
+// TODO: Dedupe
+func renderDockerfileSchema1(w io.Writer, b []byte) error {
+	m := Schema1{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+
+	args := []string{}
+	for i := len(m.History)-1; i >= 0; i-- {
+		compat := m.History[i]
+		var sb strings.Builder
+		c := Compat{}
+		if err := json.Unmarshal([]byte(compat.V1Compatibility), &c); err != nil {
+			return err
+		}
+
+		cb := strings.Join(c.ContainerConfig.Cmd, " ")
+
+		// Attempt to handle weird ARG stuff.
+		maybe := strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c #(nop)"))
+		if before, after, ok := strings.Cut(maybe, "ARG "); ok && before == "" {
+			args = append(args, after)
+		} else if strings.HasPrefix(cb, "|") {
+			if _, cb, ok = strings.Cut(cb, " "); ok {
+				for _, arg := range args {
+					cb = strings.TrimSpace(strings.TrimPrefix(cb, arg))
+				}
+
+				// Hack around array syntax.
+				if !strings.HasPrefix(cb, "/bin/sh -c ") {
+					cb = "/bin/sh -c " + cb
+				}
+			}
+		}
+		if err := renderCreatedBy(&sb, []byte(cb)); err != nil {
+			return err
+		}
+		if _, err := sb.Write([]byte("\n\n")); err != nil {
+			return err
+		}
+		if _, err := w.Write([]byte(sb.String())); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
