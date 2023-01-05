@@ -297,6 +297,10 @@ func (b *BlobSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadC
 		}
 		return b.Body, nil
 	}
+
+	if end == -1 {
+		end = b.size
+	}
 	ctx = redact.NewContext(ctx, "omitting binary blobs from logs")
 	req, err := http.NewRequestWithContext(ctx, "GET", b.Url, nil)
 	if err != nil {

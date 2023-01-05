@@ -936,18 +936,18 @@ func NewReaderDict(r io.Reader, dict []byte) io.ReadCloser {
 
 type Checkpoint struct {
 	// TODO: separate these from the rest
-	In  int64
-	Out int64
+	In  int64 `json:"in,omitempty"`
+	Out int64 `json:"out,omitempty"`
 
 	// bits?
-	B    uint32
-	NB   uint
-	Hist []byte // dict
+	B    uint32 `json:"b,omitempty"`
+	NB   uint   `json:"nb,omitempty"`
+	Hist []byte `json:"hist,omitempty"`
 
 	// Trying random stuff...
-	WrPos int
-	RdPos int
-	Full  bool
+	WrPos int  `json:"wrpos,omitempty"`
+	RdPos int  `json:"rdpos,omitempty"`
+	Full  bool `json:"full,omitempty"`
 }
 
 func (c *Checkpoint) String() string {

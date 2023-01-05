@@ -182,7 +182,7 @@ func WithRemote(opt []remote.Option) Option {
 }
 
 // TODO: We can drop ~60ms by skipping the auth handshake.
-func buildOciCache(cacheRepo string) (Cache, error) {
+func buildOciCache(cacheRepo string) (cache, error) {
 	repo, err := name.NewRepository(cacheRepo)
 	if err != nil {
 		return nil, err
@@ -210,7 +210,7 @@ func buildOciCache(cacheRepo string) (Cache, error) {
 	return &ociCache{repo, t}, nil
 }
 
-func buildGcsCache(bucket string) (Cache, error) {
+func buildGcsCache(bucket string) (cache, error) {
 	client, err := storage.NewClient(context.Background())
 	if err != nil {
 		return nil, err
@@ -220,13 +220,13 @@ func buildGcsCache(bucket string) (Cache, error) {
 	return &gcsCache{client, bkt}, nil
 }
 
-func buildCache() Cache {
+func buildCache() cache {
 	mc := &memCache{
 		// 50 MB * 50 = 2.5GB reserved for cache.
 		maxSize:  50 * (1 << 20),
 		entryCap: 50,
 	}
-	caches := []Cache{mc}
+	caches := []cache{mc}
 
 	if cd := os.Getenv("CACHE_DIR"); cd != "" {
 		logs.Debug.Printf("CACHE_DIR=%q", cd)

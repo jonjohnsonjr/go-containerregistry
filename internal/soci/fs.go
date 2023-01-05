@@ -18,7 +18,6 @@ import (
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/compress/gzip"
 	"github.com/google/go-containerregistry/pkg/logs"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
 // More than enough for FileServer to Peek at file contents.
@@ -182,7 +181,11 @@ func (s *multiFile) Close() error {
 	return nil
 }
 
-func FS(toc *Index, bs *remote.BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
+type BlobSeeker interface {
+	Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error)
+}
+
+func FS(toc *Index, bs BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
 	return &SociFS{
 		toc:     toc,
 		bs:      bs,
@@ -194,7 +197,7 @@ func FS(toc *Index, bs *remote.BlobSeeker, prefix string, ref string, maxSize in
 
 type SociFS struct {
 	toc     *Index
-	bs      *remote.BlobSeeker
+	bs      BlobSeeker
 	prefix  string
 	ref     string
 	maxSize int64
@@ -664,7 +667,7 @@ func TarHeader(header *TOCFile) *tar.Header {
 }
 
 // TODO: Make this a better API.
-func ExtractFile(ctx context.Context, bs *remote.BlobSeeker, index *Index, tf *TOCFile) (io.ReadCloser, error) {
+func ExtractFile(ctx context.Context, bs BlobSeeker, index *Index, tf *TOCFile) (io.ReadCloser, error) {
 	if tf.Size == 0 {
 		return io.NopCloser(bytes.NewReader([]byte{})), nil
 	}

@@ -28,22 +28,30 @@ type TOCFile struct {
 }
 
 type Index struct {
-	// TODO: Encode these as annotations?
-	Csize int64 // Compressed
-	Usize int64 // Uncompressed
-	Ssize int64 // Span
+	// Compressed size
+	Csize int64 `json:"csize,omitempty"`
+
+	// Uncompressed size
+	Usize int64 `json:"usize,omitempty"`
+
+	// Span size
+	Ssize int64 `json:"ssize,omitempty"`
 
 	size int64 // approximate binary size for caching purposes
 
 	// TODO: Encode as json-lines so we can avoid buffering the entire TOC.
 	//       Allow chunking into separate files with bloom filters per chunk.
-	TOC []TOCFile
+	TOC []TOCFile `json:"toc,omitempty"`
 
-	// TODO:
-	// Avoid depending on flate somehow.
-	// Write each checkpoint as a separate file in a separate layer so
-	// we can concurrently write TOC and Checkpoints and fetch them separately.
-	Checkpoints []flate.Checkpoint
+	// TODO: Avoid depending on flate somehow.
+	// TODO: Write each checkpoint as a separate file in a separate layer so
+	//	 we can concurrently write TOC and Checkpoints and fetch them separately.
+	// TODO: Store Checkpoint metadata separately from Hist.
+	Checkpoints []flate.Checkpoint `json:"checkpoints,omitempty"`
+}
+
+func (i *Index) Hist(index int) []byte {
+	return nil
 }
 
 func (i *Index) Size() int64 {
@@ -117,6 +125,7 @@ func (i *Indexer) Index() (*Index, error) {
 }
 
 func (i *Indexer) processUpdates() error {
+	// TODO: Check for i.Writer and upload to caches.
 	for update := range i.updates {
 		u := update
 		i.index.Checkpoints = append(i.index.Checkpoints, *u)

@@ -1,6 +1,7 @@
 package explore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -26,9 +27,34 @@ type Cache interface {
 	Put(context.Context, string, *soci.Index) error
 }
 
+// Streaming cache.
+type cache interface {
+	Cache
+	Size(context.Context, string) (int64, error)
+	Writer(context.Context, string) (io.WriteCloser, error)
+	Reader(context.Context, string) (io.ReadCloser, error)
+	RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error)
+}
+
 type ociCache struct {
 	repo      name.Repository
 	transport http.RoundTripper
+}
+
+func (m *ociCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
+	panic("ociCache.Writer")
+}
+
+func (m *ociCache) Reader(ctx context.Context, key string) (io.ReadCloser, error) {
+	panic("ociCache.Reader")
+}
+
+func (m *ociCache) RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	panic("ociCache.RangeReader")
+}
+
+func (m *ociCache) Size(ctx context.Context, key string) (int64, error) {
+	panic("ociCache.Size")
 }
 
 func (o *ociCache) ref(key string) name.Reference {
@@ -113,6 +139,26 @@ func (g *gcsCache) Put(ctx context.Context, key string, index *soci.Index) error
 	return w.Close()
 }
 
+func (g *gcsCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
+	return g.object(key).NewWriter(ctx), nil
+}
+
+func (g *gcsCache) Reader(ctx context.Context, key string) (io.ReadCloser, error) {
+	return g.object(key).NewReader(ctx)
+}
+
+func (g *gcsCache) RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	return g.object(key).NewRangeReader(ctx, offset, length)
+}
+
+func (g *gcsCache) Size(ctx context.Context, key string) (int64, error) {
+	attrs, err := g.object(key).Attrs(ctx)
+	if err != nil {
+		return -1, err
+	}
+	return attrs.Size, nil
+}
+
 type dirCache struct {
 	dir string
 }
@@ -143,31 +189,65 @@ func (d *dirCache) Put(ctx context.Context, key string, index *soci.Index) error
 	return json.NewEncoder(f).Encode(index)
 }
 
+func (d *dirCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
+	return os.OpenFile(d.file(key), os.O_RDWR|os.O_CREATE, 0755)
+}
+
+func (d *dirCache) Reader(ctx context.Context, key string) (io.ReadCloser, error) {
+	return os.Open(d.file(key))
+}
+
+func (d *dirCache) RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	f, err := os.Open(d.file(key))
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(io.NewSectionReader(f, offset, length)), nil
+}
+
+func (d *dirCache) Size(ctx context.Context, key string) (int64, error) {
+	stat, err := os.Stat(d.file(key))
+	if err != nil {
+		return -1, err
+	}
+	return stat.Size(), nil
+}
+
 type memCache struct {
 	sync.Mutex
 	entryCap int
 	maxSize  int64
-	entries  []*headerEntry
+	entries  []*cacheEntry
 }
 
-type headerEntry struct {
+type cacheEntry struct {
 	key    string
 	index  *soci.Index
+	buffer []byte
 	size   int64
 	access time.Time
 }
 
-func (m *memCache) Get(ctx context.Context, key string) (*soci.Index, error) {
+func (m *memCache) get(ctx context.Context, key string) (*cacheEntry, error) {
 	m.Lock()
 	defer m.Unlock()
 
 	for _, e := range m.entries {
 		if e.key == key {
 			e.access = time.Now()
-			return e.index, nil
+			return e, nil
 		}
 	}
 	return nil, io.EOF
+}
+
+func (m *memCache) Get(ctx context.Context, key string) (*soci.Index, error) {
+	e, err := m.get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+
+	return e.index, nil
 }
 
 func (m *memCache) Put(ctx context.Context, key string, index *soci.Index) error {
@@ -177,7 +257,7 @@ func (m *memCache) Put(ctx context.Context, key string, index *soci.Index) error
 		return nil
 	}
 
-	e := &headerEntry{
+	e := &cacheEntry{
 		key:    key,
 		index:  index,
 		size:   index.Size(),
@@ -200,8 +280,72 @@ func (m *memCache) Put(ctx context.Context, key string, index *soci.Index) error
 	return nil
 }
 
+func (m *memCache) New(ctx context.Context, key string) *cacheEntry {
+	e := &cacheEntry{
+		key:    key,
+		access: time.Now(),
+	}
+	if len(m.entries) >= m.entryCap {
+		min, idx := e.access, -1
+		for i, e := range m.entries {
+			if e.access.Before(min) {
+				min = e.access
+				idx = i
+			}
+		}
+		m.entries[idx] = e
+	} else {
+		m.entries = append(m.entries, e)
+	}
+	return e
+}
+
+type memWriter struct {
+	entry *cacheEntry
+	buf   *bytes.Buffer
+}
+
+func (w *memWriter) Write(p []byte) (n int, err error) {
+	return w.buf.Write(p)
+}
+
+func (w *memWriter) Close() (err error) {
+	w.entry.buffer = w.buf.Bytes()
+	return nil
+}
+
+func (m *memCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
+	e := m.New(ctx, key)
+	mw := &memWriter{entry: e}
+	return mw, nil
+}
+
+func (m *memCache) Reader(ctx context.Context, key string) (io.ReadCloser, error) {
+	e, err := m.get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(e.buffer)), nil
+}
+
+func (m *memCache) RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	e, err := m.get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(e.buffer[offset : offset+length])), nil
+}
+
+func (m *memCache) Size(ctx context.Context, key string) (int64, error) {
+	e, err := m.get(ctx, key)
+	if err != nil {
+		return -1, err
+	}
+	return int64(len(e.buffer)), nil
+}
+
 type multiCache struct {
-	caches []Cache
+	caches []cache
 }
 
 func (m *multiCache) Get(ctx context.Context, key string) (*soci.Index, error) {
@@ -237,6 +381,59 @@ func (m *multiCache) Put(ctx context.Context, key string, index *soci.Index) err
 	}
 
 	return Join(errs...)
+}
+
+func (m *multiCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
+	writers := []io.WriteCloser{}
+	for _, c := range m.caches {
+		w, err := c.Writer(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		writers = append(writers, w)
+	}
+	return MultiWriter(writers...), nil
+}
+
+type multiWriter struct {
+	writers []io.WriteCloser
+}
+
+func (t *multiWriter) Write(p []byte) (n int, err error) {
+	for _, w := range t.writers {
+		n, err = w.Write(p)
+		if err != nil {
+			return
+		}
+		if n != len(p) {
+			err = io.ErrShortWrite
+			return
+		}
+	}
+	return len(p), nil
+}
+
+func (t *multiWriter) Close() error {
+	errs := []error{}
+	for _, w := range t.writers {
+		if err := w.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return Join(errs...)
+}
+
+func MultiWriter(writers ...io.WriteCloser) io.WriteCloser {
+	allWriters := make([]io.WriteCloser, 0, len(writers))
+	for _, w := range writers {
+		if mw, ok := w.(*multiWriter); ok {
+			allWriters = append(allWriters, mw.writers...)
+		} else {
+			allWriters = append(allWriters, w)
+		}
+	}
+	return &multiWriter{allWriters}
 }
 
 // TODO: 1.20 errors.Join
