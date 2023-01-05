@@ -747,6 +747,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		},
 		Handler:          handlerForMT(string(desc.MediaType)),
 		EscapedMediaType: url.QueryEscape(string(desc.MediaType)),
+		MediaTypeLink:    getLink(string(desc.MediaType)),
 		JQ:               crane + " manifest " + jqref,
 	}
 
@@ -971,6 +972,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		},
 		Handler:          handlerForMT(string(mediaType)),
 		EscapedMediaType: url.QueryEscape(string(mediaType)),
+		MediaTypeLink:    getLink(string(mediaType)),
 		Up: &RepoParent{
 			Parent:    ref.Context().String(),
 			Separator: "@",
@@ -1054,7 +1056,7 @@ func renderDockerfileSchema1(w io.Writer, b []byte) error {
 	}
 
 	args := []string{}
-	for i := len(m.History)-1; i >= 0; i-- {
+	for i := len(m.History) - 1; i >= 0; i-- {
 		compat := m.History[i]
 		var sb strings.Builder
 		c := Compat{}

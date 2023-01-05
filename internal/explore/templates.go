@@ -167,7 +167,7 @@ body {
 {{ if .Descriptor }}
 Docker-Content-Digest: <a class="mt" href="{{.Handler}}{{$.Repo}}@{{.Descriptor.Digest}}&mt={{.EscapedMediaType}}&size={{.Descriptor.Size}}">{{.Descriptor.Digest}}<a><br>
 Content-Length: {{.Descriptor.Size}}<br>
-Content-Type: {{.Descriptor.MediaType}}<br>
+Content-Type: {{if .MediaTypeLink}}<a class="mt" href="{{.MediaTypeLink}}">{{.Descriptor.MediaType}}</a>{{else}}{{.Descriptor.MediaType}}{{end}}<br>
 {{end}}
 </div>
 <hr>{{ if .JQ }}
@@ -210,6 +210,7 @@ type HeaderData struct {
 	Descriptor       *v1.Descriptor
 	Handler          string
 	EscapedMediaType string
+	MediaTypeLink    string
 }
 
 // Cosign simple signing stuff.
