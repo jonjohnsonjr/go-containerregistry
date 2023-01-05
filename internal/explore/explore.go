@@ -828,6 +828,9 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		} else {
 			data.JQ += " | openssl x509 -text -noout"
 		}
+	} else if r.URL.Query().Get("render") == "history" {
+		data.JQ = strings.TrimSuffix(data.JQ, " | jq .")
+		data.JQ += ` | jq '.history[] | .v1Compatibility' -r | jq '.container_config.Cmd | join(" ")' -r | tac`
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
@@ -990,7 +993,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 	if r.URL.Query().Get("render") == "history" {
 		data.JQ = strings.TrimSuffix(data.JQ, " | jq .")
-		data.JQ += " | jq '.history[] | .created_by'"
+		data.JQ += " | jq '.history[] | .created_by' -r"
 
 	}
 
