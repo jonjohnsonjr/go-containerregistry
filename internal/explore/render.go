@@ -474,7 +474,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		if k == "layers" {
 			image := w.u.Query().Get("image")
 			w.Layers(image, "layers")
-		} else if k == "history" {
+		} else if k == "history" && shouldHistory(w.mt) {
 			w.History("history")
 		} else {
 			w.Key(k)
@@ -1401,4 +1401,12 @@ func parsePurl(s string) (*purl, error) {
 	}
 
 	return p, nil
+}
+
+func shouldHistory(mt string) bool {
+	tmt := types.MediaType(mt)
+	return tmt == types.DockerManifestSchema1 ||
+		tmt == types.DockerManifestSchema1Signed ||
+		tmt == types.DockerConfigJSON ||
+		tmt == types.OCIConfigJSON
 }
