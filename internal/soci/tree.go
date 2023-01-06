@@ -26,130 +26,19 @@ type TOC struct {
 	Checkpoints []flate.Checkpoint `json:"checkpoints,omitempty"`
 }
 
-type Checkpointer struct {
-	checkpoint *flate.Checkpoint
-	tf         *TOCFile
-	index      int
-	start      int64
-	end        int64
-	discard    int64
-}
-
-type Tree struct {
-	TOC   TOC
-	bs    BlobSeeker
-	dicts [][]byte
-
-	cachedDict []byte
-	cachedIdx  int
-
-	sub *Tree
-}
-
-func dictFile(i int) string {
-	return fmt.Sprintf("%d.dict", i)
-}
-
-const tocFile = "toc.json"
-
-// TODO: Make things other than dict access lazy.
-func (t *Tree) Dict(cp *Checkpointer) ([]byte, error) {
-	if cp.index == 0 {
-		return nil, nil
-	}
-	if t.sub == nil {
-		if cp.index >= len(t.dicts) {
-			return nil, fmt.Errorf("cannot access Dict[%d]", cp.index)
-		}
-		return t.dicts[cp.index], nil
-	}
-
-	if t.cachedIdx == cp.index {
-		return t.cachedDict, nil
-	}
-
-	filename := dictFile(cp.index)
-	rc, err := t.sub.Open(filename, t.bs)
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-
-	b, err := io.ReadAll(rc)
-	if err != nil {
-		return nil, err
-	}
-
-	t.cachedIdx = cp.index
-	t.cachedDict = b
-
-	return b, nil
-}
-
-func (t *Tree) OpenFile(tf *TOCFile) (io.ReadCloser, error) {
-	cp := t.Checkpoint(tf)
-	dict, err := t.Dict(cp)
-	if err != nil {
-		return nil, err
-	}
-
-	return t.ExtractFile(context.TODO(), t.bs, cp, dict)
-}
-
-func (t *Tree) Open(name string, bs BlobSeeker) (io.ReadCloser, error) {
-	tf, err := t.Locate(name)
-	if err != nil {
-		return nil, err
-	}
-	cp := t.Checkpoint(tf)
-	dict, err := t.Dict(cp)
-	if err != nil {
-		return nil, err
-	}
-
-	return t.ExtractFile(context.TODO(), bs, cp, dict)
-}
-
-func (t *Tree) ExtractFile(ctx context.Context, bs BlobSeeker, cp *Checkpointer, dict []byte) (io.ReadCloser, error) {
-	rc, err := bs.Reader(ctx, cp.start, cp.end)
-	if err != nil {
-		return nil, err
-	}
-
-	from := cp.checkpoint
-	from.Hist = dict
-
-	logs.Debug.Printf("len(from.Hist) = %d", len(from.Hist))
-
-	logs.Debug.Printf("Calling gzip.Continue")
-	r, err := gzip.Continue(rc, 1<<22, from, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	logs.Debug.Printf("Discarding %d bytes", cp.discard)
-	if _, err := io.CopyN(io.Discard, r, cp.discard); err != nil {
-		return nil, err
-	}
-
-	logs.Debug.Printf("Returning LimitedReader of size %d", cp.tf.Size)
-	lr := io.LimitedReader{r, cp.tf.Size}
-	return &and.ReadCloser{&lr, rc.Close}, nil
-}
-
-func (t *Tree) Checkpoint(tf *TOCFile) *Checkpointer {
-	from := t.TOC.Checkpoints[0]
+func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {
+	from := toc.Checkpoints[0]
 	discard := int64(0)
 	index := 0
-	for i, c := range t.TOC.Checkpoints {
+	for i, c := range toc.Checkpoints {
 		if c.Out > tf.Offset {
 			discard = tf.Offset - from.Out
 			break
 		}
-		if i == len(t.TOC.Checkpoints)-1 {
+		if i == len(toc.Checkpoints)-1 {
 			discard = tf.Offset - c.Out
 		}
-		from = t.TOC.Checkpoints[i]
+		from = toc.Checkpoints[i]
 		index = i
 	}
 	start := from.In
@@ -157,8 +46,8 @@ func (t *Tree) Checkpoint(tf *TOCFile) *Checkpointer {
 
 	logs.Debug.Printf("start=%d, uend=%d", start, uend)
 
-	end := t.TOC.Csize
-	for _, c := range t.TOC.Checkpoints {
+	end := toc.Csize
+	for _, c := range toc.Checkpoints {
 		if c.Out > uend {
 			end = c.In
 			break
@@ -175,8 +64,116 @@ func (t *Tree) Checkpoint(tf *TOCFile) *Checkpointer {
 	}
 }
 
-func (t *Tree) Locate(name string) (*TOCFile, error) {
-	for _, f := range t.TOC.Files {
+type Checkpointer struct {
+	checkpoint *flate.Checkpoint
+	tf         *TOCFile
+	index      int
+	start      int64
+	end        int64
+	discard    int64
+}
+
+type Tree interface {
+	Dict(cp *Checkpointer) ([]byte, error)
+	Locate(name string) (*TOCFile, error)
+	TOC() *TOC
+}
+
+type tree struct {
+	toc TOC
+
+	// BlobSeeker for _index_ files.
+	bs BlobSeeker
+
+	cachedDict []byte
+	cachedIdx  int
+
+	sub Tree
+}
+
+func (t *tree) TOC() *TOC {
+	return &t.toc
+}
+
+func dictFile(i int) string {
+	return fmt.Sprintf("%d.dict", i)
+}
+
+const tocFile = "toc.json"
+
+func (t *tree) Open(name string) (io.ReadCloser, error) {
+	logs.Debug.Printf("tree.Open(%q)", name)
+	tf, err := t.sub.Locate(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return ExtractTreeFile(context.TODO(), t.sub, t.bs, tf)
+}
+
+// TODO: Make things other than dict access lazy.
+func (t *tree) Dict(cp *Checkpointer) ([]byte, error) {
+	if cp.index == 0 {
+		return nil, nil
+	}
+
+	if t.cachedIdx == cp.index {
+		return t.cachedDict, nil
+	}
+
+	filename := dictFile(cp.index)
+	rc, err := t.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, err
+	}
+
+	t.cachedIdx = cp.index
+	t.cachedDict = b
+
+	return b, nil
+}
+
+func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (io.ReadCloser, error) {
+	cp := t.TOC().Checkpoint(tf)
+	dict, err := t.Dict(cp)
+	if err != nil {
+		return nil, err
+	}
+
+	rc, err := bs.Reader(ctx, cp.start, cp.end)
+	if err != nil {
+		return nil, err
+	}
+
+	from := cp.checkpoint
+	from.Hist = dict
+
+	logs.Debug.Printf("Tree: ETF: len(from.Hist) = %d", len(from.Hist))
+
+	logs.Debug.Printf("Tree: ETF: Calling gzip.Continue")
+	r, err := gzip.Continue(rc, 1<<22, from, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	logs.Debug.Printf("Tree: Discarding %d bytes", cp.discard)
+	if _, err := io.CopyN(io.Discard, r, cp.discard); err != nil {
+		return nil, err
+	}
+
+	logs.Debug.Printf("Tree: Returning LimitedReader of size %d", cp.tf.Size)
+	lr := io.LimitedReader{r, cp.tf.Size}
+	return &and.ReadCloser{&lr, rc.Close}, nil
+}
+
+func (t *tree) Locate(name string) (*TOCFile, error) {
+	for _, f := range t.toc.Files {
 		if f.Name == name {
 			return &f, nil
 		}
@@ -185,13 +182,7 @@ func (t *Tree) Locate(name string) (*TOCFile, error) {
 	return nil, fs.ErrNotExist
 }
 
-func NewTree(bs BlobSeeker, sub *Tree) (*Tree, error) {
-	tree := &Tree{
-		bs:        bs,
-		sub:       sub,
-		cachedIdx: -1,
-	}
-
+func NewTree(bs BlobSeeker, sub Tree) (Tree, error) {
 	if sub == nil {
 		rc, err := bs.Reader(context.TODO(), 0, -1)
 		if err != nil {
@@ -199,10 +190,16 @@ func NewTree(bs BlobSeeker, sub *Tree) (*Tree, error) {
 		}
 		defer rc.Close()
 
-		return tree, tree.init(rc)
+		return newLeaf(rc)
 	}
 
-	rc, err := sub.Open(tocFile, bs)
+	t := &tree{
+		bs:        bs,
+		sub:       sub,
+		cachedIdx: -1,
+	}
+
+	rc, err := t.Open(tocFile)
 	if err != nil {
 		return nil, err
 	}
@@ -211,18 +208,20 @@ func NewTree(bs BlobSeeker, sub *Tree) (*Tree, error) {
 	if err := json.NewDecoder(rc).Decode(&toc); err != nil {
 		return nil, err
 	}
-	tree.TOC = toc
-	return tree, nil
+	t.toc = toc
+	return t, nil
 }
 
-func (t *Tree) init(rc io.Reader) error {
+func newLeaf(rc io.Reader) (*leaf, error) {
+	t := &leaf{
+		dicts: [][]byte{},
+	}
 	zr, err := gzip.NewReader(rc)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tr := tar.NewReader(zr)
 
-	t.dicts = [][]byte{}
 	dictIndex := 0
 	dictName := dictFile(dictIndex)
 
@@ -234,20 +233,42 @@ func (t *Tree) init(rc io.Reader) error {
 		if header.Name == dictName {
 			b, err := io.ReadAll(tr)
 			if err != nil {
-				return fmt.Errorf("%s ReadAll: %w", dictName, err)
+				return nil, fmt.Errorf("%s ReadAll: %w", dictName, err)
 			}
 			t.dicts = append(t.dicts, b)
 			dictIndex++
 			dictName = dictFile(dictIndex)
 		} else if header.Name == tocFile {
-			toc := TOC{}
-			if err := json.NewDecoder(tr).Decode(&toc); err != nil {
-				return fmt.Errorf("Decode toc: %w", err)
+			t.toc = TOC{}
+			if err := json.NewDecoder(tr).Decode(&t.toc); err != nil {
+				return nil, fmt.Errorf("Decode toc: %w", err)
 			}
-			t.TOC = toc
 		}
 	}
-	return nil
+
+	return t, nil
+}
+
+type leaf struct {
+	dicts [][]byte
+	toc   TOC
+}
+
+func (t *leaf) Dict(cp *Checkpointer) ([]byte, error) {
+	return t.dicts[cp.index], nil
+}
+
+func (t *leaf) Locate(name string) (*TOCFile, error) {
+	for _, f := range t.toc.Files {
+		if f.Name == name {
+			return &f, nil
+		}
+	}
+
+	return nil, fs.ErrNotExist
+}
+func (t *leaf) TOC() *TOC {
+	return &t.toc
 }
 
 type TreeIndexer struct {
@@ -290,17 +311,16 @@ func (i *TreeIndexer) Close() error {
 	return i.in.Close()
 }
 
-func (i *TreeIndexer) Tree(bs BlobSeeker) (*Tree, error) {
+func (i *TreeIndexer) Tree(bs BlobSeeker) (Tree, error) {
 	toc, err := i.TOC()
 	if err != nil {
 		return nil, err
 	}
 
-	tree := &Tree{
-		TOC:       *toc,
+	tree := &tree{
+		toc:       *toc,
 		bs:        bs,
 		cachedIdx: -1,
-		dicts:     [][]byte{},
 	}
 
 	return tree, nil

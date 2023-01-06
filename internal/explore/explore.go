@@ -1200,7 +1200,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	var (
 		index *soci.Index
-		tree  *soci.Tree
+		tree  soci.Tree
 	)
 	if h.cache != nil {
 		index, err = h.cache.Get(r.Context(), dig.Identifier())
@@ -1227,7 +1227,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		if index != nil {
 			opts = append(opts, remote.WithSize(index.Csize))
 		} else if tree != nil {
-			opts = append(opts, remote.WithSize(tree.TOC.Csize))
+			opts = append(opts, remote.WithSize(tree.TOC().Csize))
 		}
 
 		cachedUrl := ""
@@ -1362,11 +1362,18 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				logs.Debug.Printf("cache.Writer: %v", err)
 			} else {
 				defer ocw.Close()
-				cw, err = ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
+				zw, err := ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
 				if err != nil {
 					return err
 				}
-				cw = &and.WriteCloser{bufio.NewWriter(cw), cw.Close}
+				bw := bufio.NewWriterSize(zw, 1<<16)
+				flushClose := func() error {
+					if err := bw.Flush(); err != nil {
+						return err
+					}
+					return zw.Close()
+				}
+				cw = &and.WriteCloser{bw, flushClose}
 			}
 		}
 		fs, err := h.newLayerFS(w, r, shouldIndex, cw)
@@ -1519,7 +1526,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 
 		var (
 			index *soci.Index
-			tree  *soci.Tree
+			tree  soci.Tree
 			err   error
 		)
 		if h.cache != nil {
@@ -1581,9 +1588,9 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, prefix string, idx int) (*soci.Tree, error) {
+func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, prefix string, idx int) (soci.Tree, error) {
 	logs.Debug.Printf("createTree(%q, %d)", prefix, idx)
-	ok, pr, err := gztarPeek(rc)
+	ok, pr, err := gztarPeek(bufio.NewReaderSize(rc, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("peek: %w", err)
 	}
@@ -1603,7 +1610,7 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, prefix strin
 		return nil, fmt.Errorf("ogzip.NewWriterLevel: %w", err)
 	}
 
-	bw := bufio.NewWriter(zw)
+	bw := bufio.NewWriterSize(zw, 1<<16)
 	flushClose := func() error {
 		if err := bw.Flush(); err != nil {
 			return err
@@ -1618,13 +1625,12 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, prefix strin
 	}
 	for {
 		// Make sure we hit the end.
-		hdr, err := indexer.Next()
+		_, err := indexer.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
 			return nil, fmt.Errorf("indexer.Next: %w", err)
 		}
-		logs.Debug.Printf("hdr: %v", hdr)
 	}
 
 	if _, err := indexer.TOC(); err != nil {
@@ -1695,7 +1701,7 @@ func (h *handler) createIndex(w http.ResponseWriter, r *http.Request, img v1.Ima
 	return index, nil
 }
 
-func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, digest v1.Hash, index *soci.Index, tree *soci.Tree, opts []remote.Option) (*soci.SociFS, error) {
+func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, digest v1.Hash, index *soci.Index, tree soci.Tree, opts []remote.Option) (*soci.SociFS, error) {
 	if opts == nil {
 		opts = h.remoteOptions(w, r, dig.Context().Name())
 	}
@@ -1919,11 +1925,11 @@ func treeKey(prefix string, idx int) string {
 	return fmt.Sprintf("%s.%d", prefix, idx)
 }
 
-func (h *handler) getTree(ctx context.Context, prefix string) (*soci.Tree, error) {
+func (h *handler) getTree(ctx context.Context, prefix string) (soci.Tree, error) {
 	return h.getTreeIndex(ctx, prefix, 0)
 }
 
-func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (*soci.Tree, error) {
+func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (soci.Tree, error) {
 	key := treeKey(prefix, idx)
 	bs := &cacheSeeker{h.cache, key}
 

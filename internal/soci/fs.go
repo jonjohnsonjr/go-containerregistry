@@ -185,7 +185,7 @@ type BlobSeeker interface {
 	Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error)
 }
 
-func FS(index *Index, tree *Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
+func FS(index *Index, tree Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
 	sfs := &SociFS{
 		index:   index,
 		tree:    tree,
@@ -195,7 +195,7 @@ func FS(index *Index, tree *Tree, bs BlobSeeker, prefix string, ref string, maxS
 		ref:     ref,
 	}
 	if tree != nil {
-		sfs.files = tree.TOC.Files
+		sfs.files = tree.TOC().Files
 	} else if index != nil {
 		sfs.files = index.TOC
 	} else {
@@ -210,7 +210,7 @@ type SociFS struct {
 	index *Index
 	bs    BlobSeeker
 
-	tree *Tree
+	tree Tree
 
 	prefix  string
 	ref     string
@@ -219,10 +219,10 @@ type SociFS struct {
 
 func (s *SociFS) extractFile(ctx context.Context, tf *TOCFile) (io.ReadCloser, error) {
 	if s.tree != nil {
-		return s.tree.OpenFile(tf)
+		return ExtractTreeFile(ctx, s.tree, s.bs, tf)
 	}
 	if s.index != nil {
-		return ExtractFile(context.Background(), s.bs, s.index, tf)
+		return ExtractFile(ctx, s.bs, s.index, tf)
 	}
 
 	panic("not initialized")
@@ -693,6 +693,7 @@ func TarHeader(header *TOCFile) *tar.Header {
 
 // TODO: Make this a better API.
 func ExtractFile(ctx context.Context, bs BlobSeeker, index *Index, tf *TOCFile) (io.ReadCloser, error) {
+	logs.Debug.Printf("ExtractFile %T", bs)
 	if tf.Size == 0 {
 		return io.NopCloser(bytes.NewReader([]byte{})), nil
 	}

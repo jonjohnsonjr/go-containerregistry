@@ -114,7 +114,7 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 		pr = p
 	} else {
 		// For tar peek.
-		pr = bufio.NewReaderSize(r, 1024)
+		pr = bufio.NewReaderSize(r, 1<<16)
 	}
 
 	block, err := pr.Peek(512)
@@ -132,7 +132,7 @@ func tarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 }
 
 func gztarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
-	pr := bufio.NewReaderSize(r, 2048)
+	pr := bufio.NewReaderSize(r, 1<<16)
 
 	// Should be enough to read first block?
 	zb, err := pr.Peek(1024)

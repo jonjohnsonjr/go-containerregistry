@@ -104,6 +104,8 @@ var DefaultTransport http.RoundTripper = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
+	ReadBufferSize:        1 << 16,
+	WriteBufferSize:       1 << 16,
 	TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper), // Disable HTTP/2
 }
 
