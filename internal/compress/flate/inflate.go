@@ -15,6 +15,8 @@ import (
 	"math/bits"
 	"strconv"
 	"sync"
+
+	"github.com/google/go-containerregistry/pkg/logs"
 )
 
 const (
@@ -972,6 +974,7 @@ func NewReaderWithSpans(r io.Reader, span int64, start int64, updates chan<- *Ch
 }
 
 func Continue(r io.Reader, from *Checkpoint, span int64, updates chan<- *Checkpoint) io.ReadCloser {
+	logs.Debug.Printf("flate.Continue: %v", from)
 	fixedHuffmanDecoderInit()
 
 	var f decompressor

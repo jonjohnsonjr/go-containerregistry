@@ -61,7 +61,7 @@ func (s *multifs) find(name string) (*TOCFile, *SociFS, error) {
 	logs.Debug.Printf("find(%q)", name)
 	needle := path.Clean("/" + name)
 	for _, sfs := range s.fss {
-		for _, fm := range sfs.toc.TOC {
+		for _, fm := range sfs.files {
 			if path.Clean("/"+fm.Name) == needle {
 				logs.Debug.Printf("returning %q (%d bytes)", fm.Name, fm.Size)
 				return &fm, sfs, nil
@@ -185,22 +185,47 @@ type BlobSeeker interface {
 	Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error)
 }
 
-func FS(toc *Index, bs BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
-	return &SociFS{
-		toc:     toc,
+func FS(index *Index, tree *Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
+	sfs := &SociFS{
+		index:   index,
+		tree:    tree,
 		bs:      bs,
 		maxSize: maxSize,
 		prefix:  prefix,
 		ref:     ref,
 	}
+	if tree != nil {
+		sfs.files = tree.TOC.Files
+	} else if index != nil {
+		sfs.files = index.TOC
+	} else {
+		panic("no files")
+	}
+	return sfs
 }
 
 type SociFS struct {
-	toc     *Index
-	bs      BlobSeeker
+	files []TOCFile
+
+	index *Index
+	bs    BlobSeeker
+
+	tree *Tree
+
 	prefix  string
 	ref     string
 	maxSize int64
+}
+
+func (s *SociFS) extractFile(ctx context.Context, tf *TOCFile) (io.ReadCloser, error) {
+	if s.tree != nil {
+		return s.tree.OpenFile(tf)
+	}
+	if s.index != nil {
+		return ExtractFile(context.Background(), s.bs, s.index, tf)
+	}
+
+	panic("not initialized")
 }
 
 func (s *SociFS) err(name string) fs.File {
@@ -279,7 +304,7 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	}
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
-	for _, fm := range s.toc.TOC {
+	for _, fm := range s.files {
 		fm := fm
 		name := path.Clean("/" + fm.Name)
 
@@ -321,7 +346,7 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	if len(de) == 0 {
 		logs.Debug.Printf("ReadDir(%q): No matching headers, synthesizing directories", original)
 		dirs := map[string]struct{}{}
-		for _, fm := range s.toc.TOC {
+		for _, fm := range s.files {
 			name := path.Clean("/" + fm.Name)
 
 			if !strings.HasPrefix(name, prefix) {
@@ -350,7 +375,7 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 func (s *SociFS) find(name string) (*TOCFile, error) {
 	logs.Debug.Printf("find(%q)", name)
 	needle := path.Clean("/" + name)
-	for _, fm := range s.toc.TOC {
+	for _, fm := range s.files {
 		if path.Clean("/"+fm.Name) == needle {
 			logs.Debug.Printf("returning %q (%d bytes)", fm.Name, fm.Size)
 			return &fm, nil
@@ -385,7 +410,7 @@ func (s *SociFS) chase(original string, gen int) (*TOCFile, error) {
 		}
 	}
 
-	for _, fm := range s.toc.TOC {
+	for _, fm := range s.files {
 		if fm.Name == original {
 			if fm.Typeflag == tar.TypeSymlink {
 				return s.chase(fm.Linkname, gen+1)
@@ -439,9 +464,9 @@ func (s *sociFile) Read(p []byte) (int, error) {
 			return 0, fmt.Errorf("invalid cursor position: %d", s.cursor)
 		}
 
-		rc, err := ExtractFile(context.Background(), s.fs.bs, s.fs.toc, s.fm)
+		rc, err := s.fs.extractFile(context.Background(), s.fm)
 		if err != nil {
-			logs.Debug.Printf("ExtractFile: %v", err)
+			logs.Debug.Printf("extractFile: %v", err)
 			return 0, err
 		}
 		s.closer = rc.Close

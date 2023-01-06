@@ -56,10 +56,12 @@ type tarReader interface {
 // Implements http.FileSystem.
 type layerFS struct {
 	// The HTTP request that originated this filesystem, useful for resetting.
-	req   *http.Request
-	w     http.ResponseWriter
-	h     *handler
+	req *http.Request
+	w   http.ResponseWriter
+	h   *handler
+
 	index bool
+	iw    io.WriteCloser
 
 	ref      string
 	digest   string
@@ -71,10 +73,11 @@ type layerFS struct {
 	blobRef string
 }
 
-func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request, index bool) (*layerFS, error) {
+func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request, index bool, iw io.WriteCloser) (*layerFS, error) {
 	fs := &layerFS{
 		req:   r,
 		w:     w,
+		iw:    iw,
 		h:     h,
 		index: index,
 	}
@@ -104,7 +107,11 @@ func (fs *layerFS) reset() error {
 	if ok {
 		logs.Debug.Printf("it is gzip!")
 		if fs.index {
-			rc, err = soci.NewIndexer(rc, spanSize)
+			if fs.iw != nil {
+				rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
+			} else {
+				rc, err = soci.NewIndexer(rc, spanSize)
+			}
 		} else {
 			rc, err = ogzip.NewReader(rc)
 		}
@@ -121,7 +128,10 @@ func (fs *layerFS) reset() error {
 
 	fs.rc = rc
 
-	if idx, ok := rc.(*soci.Indexer); ok {
+	if idx, ok := rc.(*soci.TreeIndexer); ok {
+		logs.Debug.Printf("it is tree indexer!")
+		fs.tr = idx
+	} else if idx, ok := rc.(*soci.Indexer); ok {
 		logs.Debug.Printf("it is indexer!")
 		fs.tr = idx
 	} else {

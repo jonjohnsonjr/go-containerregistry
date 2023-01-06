@@ -14,6 +14,7 @@
 package explore
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -36,6 +37,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/storage"
+
+	ogzip "compress/gzip"
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
@@ -78,7 +81,7 @@ type handler struct {
 	// reg.String() -> ping resp
 	pings map[string]*transport.PingResp
 
-	cache Cache
+	cache cache
 
 	sync.Mutex
 	sawTags map[string][]string
@@ -221,12 +224,13 @@ func buildGcsCache(bucket string) (cache, error) {
 }
 
 func buildCache() cache {
-	mc := &memCache{
+	// TODO
+	_ = &memCache{
 		// 50 MB * 50 = 2.5GB reserved for cache.
 		maxSize:  50 * (1 << 20),
 		entryCap: 50,
 	}
-	caches := []cache{mc}
+	caches := []cache{}
 
 	if cd := os.Getenv("CACHE_DIR"); cd != "" {
 		logs.Debug.Printf("CACHE_DIR=%q", cd)
@@ -1194,11 +1198,20 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	var index *soci.Index
+	var (
+		index *soci.Index
+		tree  *soci.Tree
+	)
 	if h.cache != nil {
 		index, err = h.cache.Get(r.Context(), dig.Identifier())
 		if err != nil {
 			logs.Debug.Printf("cache.Get(%q) = %v", dig.Identifier(), err)
+		} else {
+			logs.Debug.Printf("cache hit: %s", dig.Identifier())
+		}
+		tree, err = h.getTree(r.Context(), dig.Identifier())
+		if err != nil {
+			logs.Debug.Printf("cache.Tree(%q) = %v", dig.Identifier(), err)
 		} else {
 			logs.Debug.Printf("cache hit: %s", dig.Identifier())
 		}
@@ -1208,10 +1221,14 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	ignore := false
 
 	shouldIndex := !ignore
-	if index != nil {
+	if index != nil || tree != nil {
 		shouldIndex = false
 		opts := h.remoteOptions(w, r, dig.Context().Name())
-		opts = append(opts, remote.WithSize(index.Csize))
+		if index != nil {
+			opts = append(opts, remote.WithSize(index.Csize))
+		} else if tree != nil {
+			opts = append(opts, remote.WithSize(tree.TOC.Csize))
+		}
 
 		cachedUrl := ""
 		canRange := true
@@ -1267,7 +1284,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				// The blob has a body, which means range requests don't work.
 				// Serve the old path but reuse the remote.Blob body.
 				h.blobs[r] = &sizeBlob{blob.Body, index.Csize}
-				fs, err := h.newLayerFS(w, r, false)
+				fs, err := h.newLayerFS(w, r, false, nil)
 				if err != nil {
 					return err
 				}
@@ -1282,7 +1299,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				// We never saw a non-nil Body, we can do the range.
 				prefix := strings.TrimPrefix(ref, "/")
 				logs.Debug.Printf("prefix = %s", prefix)
-				fs := soci.FS(index, blob, prefix, dig.String(), respTooBig)
+				fs := soci.FS(index, tree, blob, prefix, dig.String(), respTooBig)
 				http.FileServer(http.FS(fs)).ServeHTTP(w, r)
 				return nil
 			}
@@ -1338,7 +1355,21 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		// Cache this for layerFS.reset() so we don't have to re-fetch it.
 		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
 
-		fs, err := h.newLayerFS(w, r, shouldIndex)
+		var cw io.WriteCloser
+		if shouldIndex && true {
+			ocw, err := h.cache.Writer(r.Context(), treeKey(dig.Identifier(), 0))
+			if err != nil {
+				logs.Debug.Printf("cache.Writer: %v", err)
+			} else {
+				defer ocw.Close()
+				cw, err = ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
+				if err != nil {
+					return err
+				}
+				cw = &and.WriteCloser{bufio.NewWriter(cw), cw.Close}
+			}
+		}
+		fs, err := h.newLayerFS(w, r, shouldIndex, cw)
 		if err != nil {
 			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
 			return err
@@ -1353,7 +1384,23 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 		// TODO: Make it so we can do this incrementally.
 		if shouldIndex {
-			if indexer, ok := fs.tr.(*soci.Indexer); ok {
+			if indexer, ok := fs.tr.(*soci.TreeIndexer); ok {
+				logs.Debug.Printf("got tree indexer")
+				for {
+					// Make sure we hit the end.
+					_, err := indexer.Next()
+					if errors.Is(err, io.EOF) {
+						break
+					} else if err != nil {
+						return err
+					}
+				}
+
+				if _, err := indexer.TOC(); err != nil {
+					return err
+				}
+				logs.Debug.Printf("tree size: %d", indexer.Size())
+			} else if indexer, ok := fs.tr.(*soci.Indexer); ok {
 				logs.Debug.Printf("got indexer")
 				for {
 					// Make sure we hit the end.
@@ -1472,6 +1519,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 
 		var (
 			index *soci.Index
+			tree  *soci.Tree
 			err   error
 		)
 		if h.cache != nil {
@@ -1480,6 +1528,12 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 				logs.Debug.Printf("cache.Get(%q) = %v", digest.String(), err)
 			} else {
 				logs.Debug.Printf("cache hit: %s", digest.String())
+			}
+			tree, err = h.getTree(r.Context(), dig.Identifier())
+			if err != nil {
+				logs.Debug.Printf("cache.Tree(%q) = %v", dig.Identifier(), err)
+			} else {
+				logs.Debug.Printf("cache hit: %s", dig.Identifier())
 			}
 		}
 		if index == nil && img == nil {
@@ -1502,7 +1556,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 				}
 			}
 
-			fs, err := h.createFs(w, r, ref, layerDig, digest, index, opts)
+			fs, err := h.createFs(w, r, ref, layerDig, digest, index, tree, opts)
 			if err != nil {
 				return err
 			}
@@ -1525,6 +1579,64 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	http.FileServer(http.FS(mfs)).ServeHTTP(w, r)
 
 	return nil
+}
+
+func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, prefix string, idx int) (*soci.Tree, error) {
+	logs.Debug.Printf("createTree(%q, %d)", prefix, idx)
+	ok, pr, err := gztarPeek(rc)
+	if err != nil {
+		return nil, fmt.Errorf("peek: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("not targz")
+	}
+
+	blob := &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}
+
+	ocw, err := h.cache.Writer(ctx, treeKey(prefix, idx))
+	if err != nil {
+		return nil, fmt.Errorf("cache.Writer: %w", err)
+	}
+
+	zw, err := ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
+	if err != nil {
+		return nil, fmt.Errorf("ogzip.NewWriterLevel: %w", err)
+	}
+
+	bw := bufio.NewWriter(zw)
+	flushClose := func() error {
+		if err := bw.Flush(); err != nil {
+			return err
+		}
+		return zw.Close()
+	}
+	cw := &and.WriteCloser{bw, flushClose}
+
+	indexer, err := soci.NewTreeIndexer(blob, cw, spanSize)
+	if err != nil {
+		return nil, fmt.Errorf("soci.NewTreeIndexer: %w", err)
+	}
+	for {
+		// Make sure we hit the end.
+		hdr, err := indexer.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("indexer.Next: %w", err)
+		}
+		logs.Debug.Printf("hdr: %v", hdr)
+	}
+
+	if _, err := indexer.TOC(); err != nil {
+		return nil, fmt.Errorf("TOC: %w", err)
+	}
+	logs.Debug.Printf("tree size: %d", indexer.Size())
+
+	if err := ocw.Close(); err != nil {
+		return nil, fmt.Errorf("ocw.Close: %w", err)
+	}
+
+	return h.getTreeIndex(ctx, prefix, idx)
 }
 
 func (h *handler) createIndex(w http.ResponseWriter, r *http.Request, img v1.Image, ref string, dig name.Digest, digest v1.Hash) (*soci.Index, error) {
@@ -1583,7 +1695,7 @@ func (h *handler) createIndex(w http.ResponseWriter, r *http.Request, img v1.Ima
 	return index, nil
 }
 
-func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, digest v1.Hash, index *soci.Index, opts []remote.Option) (*soci.SociFS, error) {
+func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, digest v1.Hash, index *soci.Index, tree *soci.Tree, opts []remote.Option) (*soci.SociFS, error) {
 	if opts == nil {
 		opts = h.remoteOptions(w, r, dig.Context().Name())
 	}
@@ -1593,7 +1705,7 @@ func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, d
 
 	// We never saw a non-nil Body, we can do the range.
 	prefix := strings.TrimPrefix(ref, "/")
-	fs := soci.FS(index, blob, prefix, dig.String(), respTooBig)
+	fs := soci.FS(index, tree, blob, prefix, dig.String(), respTooBig)
 	return fs, nil
 }
 
@@ -1799,4 +1911,56 @@ type RedirectCookie struct {
 	Digest string
 	Url    string
 	Body   bool
+}
+
+const threshold = (1 << 20) * 5
+
+func treeKey(prefix string, idx int) string {
+	return fmt.Sprintf("%s.%d", prefix, idx)
+}
+
+func (h *handler) getTree(ctx context.Context, prefix string) (*soci.Tree, error) {
+	return h.getTreeIndex(ctx, prefix, 0)
+}
+
+func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (*soci.Tree, error) {
+	key := treeKey(prefix, idx)
+	bs := &cacheSeeker{h.cache, key}
+
+	sz, err := h.cache.Size(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("cache.Size: %w", err)
+	}
+	if sz <= threshold {
+		tree, err := soci.NewTree(bs, nil)
+		if err != nil {
+			return nil, fmt.Errorf("soci.NewTree(bs, nil) = %w", err)
+		}
+		return tree, nil
+	}
+
+	sub, err := h.getTreeIndex(ctx, prefix, idx+1)
+	if err != nil {
+		rc, err := h.cache.Reader(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("cache.Reader: %w", err)
+		}
+		logs.Debug.Printf("got here")
+		sub, err = h.createTree(ctx, rc, prefix, idx+1)
+		if err != nil {
+			return nil, fmt.Errorf("createTree: %w", err)
+		}
+	}
+
+	return soci.NewTree(bs, sub)
+}
+
+type cacheSeeker struct {
+	cache cache
+	key   string
+}
+
+func (bs *cacheSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error) {
+	logs.Debug.Printf("cacheSeeker.Reader(%d, %d)", off, end)
+	return bs.cache.RangeReader(ctx, bs.key, off, end-off)
 }

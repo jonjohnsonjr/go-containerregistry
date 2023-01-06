@@ -50,10 +50,6 @@ type Index struct {
 	Checkpoints []flate.Checkpoint `json:"checkpoints,omitempty"`
 }
 
-func (i *Index) Hist(index int) []byte {
-	return nil
-}
-
 func (i *Index) Size() int64 {
 	if i.size != 0 {
 		// TODO: do this while we generate it so we don't have to hit it twice.

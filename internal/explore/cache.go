@@ -88,6 +88,10 @@ func (g *gcsCache) path(key string) string {
 	return path.Join("soci", strings.Replace(key, ":", "-", 1), "index.json.zstd")
 }
 
+func (g *gcsCache) treePath(key string) string {
+	return path.Join("soci", strings.Replace(key, ":", "-", 1)) + ".tar.gz"
+}
+
 func (g *gcsCache) object(key string) *storage.ObjectHandle {
 	return g.bucket.Object(g.path(key))
 }
@@ -140,19 +144,19 @@ func (g *gcsCache) Put(ctx context.Context, key string, index *soci.Index) error
 }
 
 func (g *gcsCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
-	return g.object(key).NewWriter(ctx), nil
+	return g.bucket.Object(g.treePath(key)).NewWriter(ctx), nil
 }
 
 func (g *gcsCache) Reader(ctx context.Context, key string) (io.ReadCloser, error) {
-	return g.object(key).NewReader(ctx)
+	return g.bucket.Object(g.treePath(key)).NewReader(ctx)
 }
 
 func (g *gcsCache) RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
-	return g.object(key).NewRangeReader(ctx, offset, length)
+	return g.bucket.Object(g.treePath(key)).NewRangeReader(ctx, offset, length)
 }
 
 func (g *gcsCache) Size(ctx context.Context, key string) (int64, error) {
-	attrs, err := g.object(key).Attrs(ctx)
+	attrs, err := g.bucket.Object(g.treePath(key)).Attrs(ctx)
 	if err != nil {
 		return -1, err
 	}
@@ -190,15 +194,16 @@ func (d *dirCache) Put(ctx context.Context, key string, index *soci.Index) error
 }
 
 func (d *dirCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
-	return os.OpenFile(d.file(key), os.O_RDWR|os.O_CREATE, 0755)
+	return os.OpenFile(d.file(key)+".tar.gz", os.O_RDWR|os.O_CREATE, 0755)
 }
 
 func (d *dirCache) Reader(ctx context.Context, key string) (io.ReadCloser, error) {
-	return os.Open(d.file(key))
+	logs.Debug.Printf("dirCache.Reader(%q)", key)
+	return os.Open(d.file(key) + ".tar.gz")
 }
 
 func (d *dirCache) RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
-	f, err := os.Open(d.file(key))
+	f, err := os.Open(d.file(key) + ".tar.gz")
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +211,7 @@ func (d *dirCache) RangeReader(ctx context.Context, key string, offset, length i
 }
 
 func (d *dirCache) Size(ctx context.Context, key string) (int64, error) {
-	stat, err := os.Stat(d.file(key))
+	stat, err := os.Stat(d.file(key) + ".tar.gz")
 	if err != nil {
 		return -1, err
 	}
@@ -316,7 +321,7 @@ func (w *memWriter) Close() (err error) {
 
 func (m *memCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
 	e := m.New(ctx, key)
-	mw := &memWriter{entry: e}
+	mw := &memWriter{entry: e, buf: bytes.NewBuffer([]byte{})}
 	return mw, nil
 }
 
@@ -333,7 +338,10 @@ func (m *memCache) RangeReader(ctx context.Context, key string, offset, length i
 	if err != nil {
 		return nil, err
 	}
-	return io.NopCloser(bytes.NewReader(e.buffer[offset : offset+length])), nil
+	if e.buffer == nil || int64(len(e.buffer)) < offset+length+1 {
+		return nil, io.EOF
+	}
+	return io.NopCloser(bytes.NewReader(e.buffer[offset : offset+length-1])), nil
 }
 
 func (m *memCache) Size(ctx context.Context, key string) (int64, error) {
@@ -393,6 +401,48 @@ func (m *multiCache) Writer(ctx context.Context, key string) (io.WriteCloser, er
 		writers = append(writers, w)
 	}
 	return MultiWriter(writers...), nil
+}
+
+// TODO: Does this make sense?
+func (m *multiCache) Reader(ctx context.Context, key string) (io.ReadCloser, error) {
+	for _, c := range m.caches {
+		rc, err := c.Reader(ctx, key)
+		if err == nil {
+			return rc, nil
+		} else {
+			logs.Debug.Printf("multi[%T].Reader(%q) = %v", c, key, err)
+		}
+	}
+
+	return nil, io.EOF
+}
+
+// TODO: Does this make sense?
+func (m *multiCache) RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	for _, c := range m.caches {
+		rc, err := c.RangeReader(ctx, key, offset, length)
+		if err == nil {
+			return rc, nil
+		} else {
+			logs.Debug.Printf("multi[%T].RangeReader(%q) = %v", c, key, err)
+		}
+	}
+
+	return nil, io.EOF
+}
+
+// TODO: Does this make sense?
+func (m *multiCache) Size(ctx context.Context, key string) (int64, error) {
+	for _, c := range m.caches {
+		sz, err := c.Size(ctx, key)
+		if err == nil {
+			return sz, nil
+		} else {
+			logs.Debug.Printf("multi[%T].Size(%q) = %v", c, key, err)
+		}
+	}
+
+	return -1, io.EOF
 }
 
 type multiWriter struct {

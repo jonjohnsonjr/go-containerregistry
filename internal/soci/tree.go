@@ -36,26 +36,64 @@ type Checkpointer struct {
 }
 
 type Tree struct {
-	toc   TOC
+	TOC   TOC
 	bs    BlobSeeker
 	dicts [][]byte
+
+	cachedDict []byte
+	cachedIdx  int
 
 	sub *Tree
 }
 
+func dictFile(i int) string {
+	return fmt.Sprintf("%d.dict", i)
+}
+
+const tocFile = "toc.json"
+
+// TODO: Make things other than dict access lazy.
 func (t *Tree) Dict(cp *Checkpointer) ([]byte, error) {
+	if cp.index == 0 {
+		return nil, nil
+	}
 	if t.sub == nil {
+		if cp.index >= len(t.dicts) {
+			return nil, fmt.Errorf("cannot access Dict[%d]", cp.index)
+		}
 		return t.dicts[cp.index], nil
 	}
 
-	filename := fmt.Sprintf("%d.dict", cp.index)
+	if t.cachedIdx == cp.index {
+		return t.cachedDict, nil
+	}
+
+	filename := dictFile(cp.index)
 	rc, err := t.sub.Open(filename, t.bs)
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
 
-	return io.ReadAll(rc)
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, err
+	}
+
+	t.cachedIdx = cp.index
+	t.cachedDict = b
+
+	return b, nil
+}
+
+func (t *Tree) OpenFile(tf *TOCFile) (io.ReadCloser, error) {
+	cp := t.Checkpoint(tf)
+	dict, err := t.Dict(cp)
+	if err != nil {
+		return nil, err
+	}
+
+	return t.ExtractFile(context.TODO(), t.bs, cp, dict)
 }
 
 func (t *Tree) Open(name string, bs BlobSeeker) (io.ReadCloser, error) {
@@ -78,8 +116,13 @@ func (t *Tree) ExtractFile(ctx context.Context, bs BlobSeeker, cp *Checkpointer,
 		return nil, err
 	}
 
+	from := cp.checkpoint
+	from.Hist = dict
+
+	logs.Debug.Printf("len(from.Hist) = %d", len(from.Hist))
+
 	logs.Debug.Printf("Calling gzip.Continue")
-	r, err := gzip.Continue(rc, 1<<22, cp.checkpoint, nil)
+	r, err := gzip.Continue(rc, 1<<22, from, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -95,18 +138,18 @@ func (t *Tree) ExtractFile(ctx context.Context, bs BlobSeeker, cp *Checkpointer,
 }
 
 func (t *Tree) Checkpoint(tf *TOCFile) *Checkpointer {
-	from := t.toc.Checkpoints[0]
+	from := t.TOC.Checkpoints[0]
 	discard := int64(0)
 	index := 0
-	for i, c := range t.toc.Checkpoints {
+	for i, c := range t.TOC.Checkpoints {
 		if c.Out > tf.Offset {
 			discard = tf.Offset - from.Out
 			break
 		}
-		if i == len(t.toc.Checkpoints)-1 {
+		if i == len(t.TOC.Checkpoints)-1 {
 			discard = tf.Offset - c.Out
 		}
-		from = t.toc.Checkpoints[i]
+		from = t.TOC.Checkpoints[i]
 		index = i
 	}
 	start := from.In
@@ -114,8 +157,8 @@ func (t *Tree) Checkpoint(tf *TOCFile) *Checkpointer {
 
 	logs.Debug.Printf("start=%d, uend=%d", start, uend)
 
-	end := t.toc.Csize
-	for _, c := range t.toc.Checkpoints {
+	end := t.TOC.Csize
+	for _, c := range t.TOC.Checkpoints {
 		if c.Out > uend {
 			end = c.In
 			break
@@ -133,7 +176,7 @@ func (t *Tree) Checkpoint(tf *TOCFile) *Checkpointer {
 }
 
 func (t *Tree) Locate(name string) (*TOCFile, error) {
-	for _, f := range t.toc.Files {
+	for _, f := range t.TOC.Files {
 		if f.Name == name {
 			return &f, nil
 		}
@@ -144,48 +187,67 @@ func (t *Tree) Locate(name string) (*TOCFile, error) {
 
 func NewTree(bs BlobSeeker, sub *Tree) (*Tree, error) {
 	tree := &Tree{
-		bs:  bs,
-		sub: sub,
+		bs:        bs,
+		sub:       sub,
+		cachedIdx: -1,
 	}
 
-	if sub != nil {
-		rc, err := sub.Open("toc.json", bs)
+	if sub == nil {
+		rc, err := bs.Reader(context.TODO(), 0, -1)
 		if err != nil {
 			return nil, err
 		}
-		toc := TOC{}
-		if err := json.NewDecoder(rc).Decode(&toc); err != nil {
-			return nil, err
-		}
-		tree.toc = toc
-		return tree, nil
+		defer rc.Close()
+
+		return tree, tree.init(rc)
 	}
 
-	rc, err := bs.Reader(context.TODO(), 0, -1)
+	rc, err := sub.Open(tocFile, bs)
 	if err != nil {
 		return nil, err
 	}
+	defer rc.Close()
+	toc := TOC{}
+	if err := json.NewDecoder(rc).Decode(&toc); err != nil {
+		return nil, err
+	}
+	tree.TOC = toc
+	return tree, nil
+}
+
+func (t *Tree) init(rc io.Reader) error {
 	zr, err := gzip.NewReader(rc)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	tr := tar.NewReader(zr)
+
+	t.dicts = [][]byte{}
+	dictIndex := 0
+	dictName := dictFile(dictIndex)
+
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
-		if header.Name == "toc.json" {
+		if header.Name == dictName {
+			b, err := io.ReadAll(tr)
+			if err != nil {
+				return fmt.Errorf("%s ReadAll: %w", dictName, err)
+			}
+			t.dicts = append(t.dicts, b)
+			dictIndex++
+			dictName = dictFile(dictIndex)
+		} else if header.Name == tocFile {
 			toc := TOC{}
 			if err := json.NewDecoder(tr).Decode(&toc); err != nil {
-				return nil, err
+				return fmt.Errorf("Decode toc: %w", err)
 			}
-			tree.toc = toc
-			return tree, nil
+			t.TOC = toc
 		}
 	}
-
-	return nil, io.EOF
+	return nil
 }
 
 type TreeIndexer struct {
@@ -197,6 +259,7 @@ type TreeIndexer struct {
 	tr       *tar.Reader
 	w        io.WriteCloser
 	tw       *tar.Writer
+	cw       *countWriter
 	finished bool
 	written  bool
 }
@@ -227,6 +290,26 @@ func (i *TreeIndexer) Close() error {
 	return i.in.Close()
 }
 
+func (i *TreeIndexer) Tree(bs BlobSeeker) (*Tree, error) {
+	toc, err := i.TOC()
+	if err != nil {
+		return nil, err
+	}
+
+	tree := &Tree{
+		TOC:       *toc,
+		bs:        bs,
+		cachedIdx: -1,
+		dicts:     [][]byte{},
+	}
+
+	return tree, nil
+}
+
+func (i *TreeIndexer) Size() int64 {
+	return i.cw.n
+}
+
 func (i *TreeIndexer) TOC() (*TOC, error) {
 	if i.written {
 		return i.toc, nil
@@ -255,6 +338,9 @@ func (i *TreeIndexer) TOC() (*TOC, error) {
 	if _, err := i.tw.Write(b); err != nil {
 		return nil, err
 	}
+	if err := i.tw.Close(); err != nil {
+		return nil, err
+	}
 	if err := i.w.Close(); err != nil {
 		return nil, err
 	}
@@ -271,7 +357,7 @@ func (i *TreeIndexer) processUpdates() error {
 
 		// TODO: Should updates be buffered so this doesn't block?
 		b := u.Hist
-		f := fmt.Sprintf("%d.dict", len(i.toc.Checkpoints))
+		f := dictFile(len(i.toc.Checkpoints))
 
 		if err := i.tw.WriteHeader(&tar.Header{
 			Name: f,
@@ -303,7 +389,7 @@ func NewTreeIndexer(rc io.ReadCloser, w io.WriteCloser, span int64) (*TreeIndexe
 	if err != nil {
 		return nil, err
 	}
-	toc.Checkpoints = append(toc.Checkpoints, flate.Checkpoint{In: zr.CompressedCount()})
+	cw := &countWriter{w, 0}
 
 	i := &TreeIndexer{
 		updates: updates,
@@ -311,10 +397,24 @@ func NewTreeIndexer(rc io.ReadCloser, w io.WriteCloser, span int64) (*TreeIndexe
 		in:      rc,
 		zr:      zr,
 		tr:      tar.NewReader(zr),
-		tw:      tar.NewWriter(w),
+		tw:      tar.NewWriter(cw),
+		cw:      cw,
 		w:       w,
 	}
 	i.g.Go(i.processUpdates)
 
+	updates <- &flate.Checkpoint{In: zr.CompressedCount()}
+
 	return i, nil
+}
+
+type countWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countWriter) Write(p []byte) (n int, err error) {
+	n, err = c.w.Write(p)
+	c.n += int64(n)
+	return
 }
