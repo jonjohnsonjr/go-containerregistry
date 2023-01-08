@@ -18,11 +18,15 @@ import (
 
 type TOC struct {
 	// TODO: Move these so files/checkpoints can be streamingly parsed.
+	// metadata.json?
 	Csize int64 `json:"csize,omitempty"`
 	Usize int64 `json:"usize,omitempty"`
 	Ssize int64 `json:"ssize,omitempty"`
 
-	Files       []TOCFile          `json:"files,omitempty"`
+	// TODO: Files as jsonlines in separate file.
+	Files []TOCFile `json:"files,omitempty"`
+
+	// TODO: Checkpoints as jsonlines in separate file.
 	Checkpoints []flate.Checkpoint `json:"checkpoints,omitempty"`
 
 	size int64 //cached
