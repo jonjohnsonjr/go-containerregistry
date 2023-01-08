@@ -367,7 +367,6 @@ func (s *SociFS) find(name string) (*TOCFile, error) {
 		}
 	}
 
-	// TODO: Better error
 	return nil, fs.ErrNotExist
 }
 
@@ -375,6 +374,8 @@ func (s *SociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
 	return &sociDirEntry{s, dir, fm}
 }
 
+// todo: cache symlinks to require fewer iterations?
+// todo: or maybe symlinks as separate list?
 func (s *SociFS) chase(original string, gen int) (*TOCFile, error) {
 	if original == "" {
 		return nil, fmt.Errorf("empty string")
