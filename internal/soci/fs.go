@@ -302,6 +302,10 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	if dir != original {
 		logs.Debug.Printf("soci.ReadDir(%q)", dir)
 	}
+
+	// Implicit directories.
+	dirs := map[string]struct{}{}
+
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
 	for _, fm := range s.files {
@@ -313,7 +317,25 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		}
 
 		fdir := path.Dir(strings.TrimPrefix(name, prefix))
+		logs.Debug.Printf("fdir=%q, name=%q", fdir, name)
 		if !(fdir == "/" || (fdir == "." && prefix == "/")) {
+			if fdir != "" && fdir != "." {
+				if fdir[0] == '/' {
+					fdir = fdir[1:]
+				}
+				implicit := strings.Split(fdir, "/")[0]
+				if implicit != "" {
+					dirs[implicit] = struct{}{}
+				}
+			}
+			continue
+		}
+
+		// Only do implicit dirs
+		// TODO: Undo this to keep permissions?
+		if fm.Typeflag == tar.TypeDir {
+			dirname := s.dirEntry(dir, &fm).Name()
+			dirs[dirname] = struct{}{}
 			continue
 		}
 
@@ -342,32 +364,11 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		de = append(de, &le)
 	}
 
-	// TODO: Do this earlier
-	if len(de) == 0 {
-		logs.Debug.Printf("ReadDir(%q): No matching headers, synthesizing directories", original)
-		dirs := map[string]struct{}{}
-		for _, fm := range s.files {
-			name := path.Clean("/" + fm.Name)
-
-			if !strings.HasPrefix(name, prefix) {
-				continue
-			}
-
-			dir := path.Dir(strings.TrimPrefix(name, prefix))
-			if dir != "" && dir != "." {
-				prev := dir
-				// Walk up to the first directory.
-				for next := prev; next != "." && next != prefix && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
-					logs.Debug.Printf("ReadDir(%q): dir: %q, prev: %q, next: %q", original, dir, prev, next)
-				}
-				dirs[prev] = struct{}{}
-			}
-		}
-		for dir := range dirs {
-			logs.Debug.Printf("ReadDir(%q): dir: %q", original, dir)
-			de = append(de, s.dirEntry(dir, nil))
-		}
+	for dir := range dirs {
+		logs.Debug.Printf("Adding implicit dir: %s", dir)
+		de = append(de, s.dirEntry(dir, nil))
 	}
+
 	logs.Debug.Printf("len(ReadDir(%q)) = %d", dir, len(de))
 	return de, nil
 }
