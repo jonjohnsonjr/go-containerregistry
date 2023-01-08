@@ -312,6 +312,7 @@ func New(opts ...Option) http.Handler {
 
 	// Try to detect mediaType.
 	h.mux.HandleFunc("/blob/", h.fsHandler)
+	h.mux.HandleFunc("/cache/", h.treeHandler)
 
 	// We know it's JSON.
 	h.mux.HandleFunc("/json/", h.fsHandler)
@@ -1195,6 +1196,43 @@ func renderCreatedBy(w io.Writer, b []byte) error {
 	return nil
 }
 
+func (h *handler) treeHandler(w http.ResponseWriter, r *http.Request) {
+	if err := h.renderTree(w, r); err != nil {
+		log.Printf("renderTree: %v", err)
+		fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
+	}
+}
+func (h *handler) renderTree(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	idx := 0 // todo?
+	dig, _, err := h.getDigest(w, r)
+	if err != nil {
+		return err
+	}
+	key := treeKey(dig.Identifier(), idx)
+	size, err := h.treeCache.Size(ctx, key)
+	if err != nil {
+		return fmt.Errorf("treeCache.Size: %w", err)
+	}
+	rc, err := h.treeCache.Reader(ctx, key)
+	if err != nil {
+		return fmt.Errorf("treeCache.Reader: %w", err)
+	}
+	h.blobs[r] = &sizeBlob{rc, size}
+	fs, err := h.newLayerFS(w, r, false, nil)
+	if err != nil {
+		return err
+	}
+	fs.blobRef = dig.String()
+	defer fs.Close()
+
+	// Allow this to be cached for an hour.
+	w.Header().Set("Cache-Control", "max-age=3600, immutable")
+
+	http.FileServer(fs).ServeHTTP(w, r)
+	return nil
+}
+
 // Render blob, either as just ungzipped bytes, or via http.FileServer.
 func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	if strings.HasPrefix(r.URL.Path, "/json/") {
@@ -1863,7 +1901,7 @@ func getBlobQuery(r *http.Request) (string, bool) {
 }
 
 func splitFsURL(p string) (string, string, error) {
-	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/gzip/", "/raw/", "/blob/", "/json/"} {
+	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/gzip/", "/raw/", "/blob/", "/json/", "/cache/"} {
 		if strings.HasPrefix(p, prefix) {
 			return strings.TrimPrefix(p, prefix), prefix, nil
 		}
