@@ -24,6 +24,8 @@ type TOC struct {
 
 	Files       []TOCFile          `json:"files,omitempty"`
 	Checkpoints []flate.Checkpoint `json:"checkpoints,omitempty"`
+
+	size int64 //cached
 }
 
 func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {
@@ -63,6 +65,24 @@ func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {
 		discard:    discard,
 	}
 }
+func (toc *TOC) Size() int64 {
+	if toc.size != 0 {
+		// TODO: do this while we generate it so we don't have to hit it twice.
+		return toc.size
+	}
+
+	toc.size += 8 + 8 + 8
+
+	for _, f := range toc.Files {
+		toc.size += int64(1 + len(f.Name) + len(f.Linkname) + 8 + 8 + 8)
+	}
+
+	for _, c := range toc.Checkpoints {
+		toc.size += int64(8 + 8 + 4 + 4 + len(c.Hist))
+	}
+
+	return toc.size
+}
 
 type Checkpointer struct {
 	checkpoint *flate.Checkpoint
@@ -80,7 +100,7 @@ type Tree interface {
 }
 
 type tree struct {
-	toc TOC
+	toc *TOC
 
 	// BlobSeeker for _index_ files.
 	bs BlobSeeker
@@ -92,7 +112,7 @@ type tree struct {
 }
 
 func (t *tree) TOC() *TOC {
-	return &t.toc
+	return t.toc
 }
 
 func dictFile(i int) string {
@@ -154,8 +174,6 @@ func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (i
 	from := cp.checkpoint
 	from.Hist = dict
 
-	logs.Debug.Printf("Tree: ETF: len(from.Hist) = %d", len(from.Hist))
-
 	logs.Debug.Printf("Tree: ETF: Calling gzip.Continue")
 	r, err := gzip.Continue(rc, 1<<22, from, nil)
 	if err != nil {
@@ -182,15 +200,9 @@ func (t *tree) Locate(name string) (*TOCFile, error) {
 	return nil, fs.ErrNotExist
 }
 
-func NewTree(bs BlobSeeker, sub Tree) (Tree, error) {
+func NewTree(bs BlobSeeker, toc *TOC, sub Tree) (Tree, error) {
 	if sub == nil {
-		rc, err := bs.Reader(context.TODO(), 0, -1)
-		if err != nil {
-			return nil, err
-		}
-		defer rc.Close()
-
-		return newLeaf(rc)
+		return newLeaf(bs, toc)
 	}
 
 	t := &tree{
@@ -199,26 +211,46 @@ func NewTree(bs BlobSeeker, sub Tree) (Tree, error) {
 		cachedIdx: -1,
 	}
 
+	if toc != nil {
+		t.toc = toc
+		return t, nil
+	}
+
 	rc, err := t.Open(tocFile)
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	toc := TOC{}
-	if err := json.NewDecoder(rc).Decode(&toc); err != nil {
+	toc = &TOC{}
+	if err := json.NewDecoder(rc).Decode(toc); err != nil {
 		return nil, err
 	}
 	t.toc = toc
 	return t, nil
 }
 
-func newLeaf(rc io.Reader) (*leaf, error) {
+func newLeaf(bs BlobSeeker, toc *TOC) (*leaf, error) {
 	t := &leaf{
-		dicts: [][]byte{},
+		bs:  bs,
+		toc: toc,
 	}
+	if toc == nil {
+		return t, t.init()
+	}
+	return t, nil
+}
+
+func (t *leaf) init() error {
+	t.dicts = [][]byte{}
+	rc, err := t.bs.Reader(context.TODO(), 0, -1)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
 	zr, err := gzip.NewReader(rc)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	tr := tar.NewReader(zr)
 
@@ -229,36 +261,58 @@ func newLeaf(rc io.Reader) (*leaf, error) {
 		header, err := tr.Next()
 		if err == io.EOF {
 			break
+		} else if err != nil {
+			return err
 		}
 		if header.Name == dictName {
 			b, err := io.ReadAll(tr)
 			if err != nil {
-				return nil, fmt.Errorf("%s ReadAll: %w", dictName, err)
+				return fmt.Errorf("%s ReadAll: %w", dictName, err)
 			}
 			t.dicts = append(t.dicts, b)
 			dictIndex++
 			dictName = dictFile(dictIndex)
 		} else if header.Name == tocFile {
-			t.toc = TOC{}
-			if err := json.NewDecoder(tr).Decode(&t.toc); err != nil {
-				return nil, fmt.Errorf("Decode toc: %w", err)
+			if t.toc != nil {
+				break
+			}
+
+			t.toc = &TOC{}
+			if err := json.NewDecoder(tr).Decode(t.toc); err != nil {
+				return fmt.Errorf("Decode toc: %w", err)
 			}
 		}
 	}
 
-	return t, nil
+	return nil
 }
 
 type leaf struct {
+	bs BlobSeeker
+
 	dicts [][]byte
-	toc   TOC
+	toc   *TOC
 }
 
 func (t *leaf) Dict(cp *Checkpointer) ([]byte, error) {
+	if t.dicts == nil {
+		if err := t.init(); err != nil {
+			return nil, err
+		}
+	}
+
+	if cp.index >= len(t.dicts) {
+		return nil, fmt.Errorf("Dict(%d) vs len(t.dicts) = %d", cp.index, len(t.dicts))
+	}
 	return t.dicts[cp.index], nil
 }
 
 func (t *leaf) Locate(name string) (*TOCFile, error) {
+	if t.toc == nil {
+		if err := t.init(); err != nil {
+			return nil, err
+		}
+	}
 	for _, f := range t.toc.Files {
 		if f.Name == name {
 			return &f, nil
@@ -268,7 +322,7 @@ func (t *leaf) Locate(name string) (*TOCFile, error) {
 	return nil, fs.ErrNotExist
 }
 func (t *leaf) TOC() *TOC {
-	return &t.toc
+	return t.toc
 }
 
 type TreeIndexer struct {
@@ -318,7 +372,7 @@ func (i *TreeIndexer) Tree(bs BlobSeeker) (Tree, error) {
 	}
 
 	tree := &tree{
-		toc:       *toc,
+		toc:       toc,
 		bs:        bs,
 		cachedIdx: -1,
 	}

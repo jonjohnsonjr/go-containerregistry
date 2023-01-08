@@ -185,30 +185,21 @@ type BlobSeeker interface {
 	Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error)
 }
 
-func FS(index *Index, tree Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
-	sfs := &SociFS{
-		index:   index,
+func FS(tree Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
+	return &SociFS{
 		tree:    tree,
+		files:   tree.TOC().Files,
 		bs:      bs,
 		maxSize: maxSize,
 		prefix:  prefix,
 		ref:     ref,
 	}
-	if tree != nil {
-		sfs.files = tree.TOC().Files
-	} else if index != nil {
-		sfs.files = index.TOC
-	} else {
-		panic("no files")
-	}
-	return sfs
 }
 
 type SociFS struct {
 	files []TOCFile
 
-	index *Index
-	bs    BlobSeeker
+	bs BlobSeeker
 
 	tree Tree
 
@@ -218,14 +209,7 @@ type SociFS struct {
 }
 
 func (s *SociFS) extractFile(ctx context.Context, tf *TOCFile) (io.ReadCloser, error) {
-	if s.tree != nil {
-		return ExtractTreeFile(ctx, s.tree, s.bs, tf)
-	}
-	if s.index != nil {
-		return ExtractFile(ctx, s.bs, s.index, tf)
-	}
-
-	panic("not initialized")
+	return ExtractTreeFile(ctx, s.tree, s.bs, tf)
 }
 
 func (s *SociFS) err(name string) fs.File {
