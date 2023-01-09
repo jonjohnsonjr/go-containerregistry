@@ -29,7 +29,8 @@ type TOC struct {
 	// TODO: Checkpoints as jsonlines in separate file.
 	Checkpoints []flate.Checkpoint `json:"checkpoints,omitempty"`
 
-	size int64 //cached
+	ArchiveSize int64 `json:"asize,omitempty"`
+	Size        int64 `json:"size,omitempty"`
 }
 
 func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {
@@ -69,23 +70,23 @@ func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {
 		discard:    discard,
 	}
 }
-func (toc *TOC) Size() int64 {
-	if toc.size != 0 {
+func (toc *TOC) size() int64 {
+	if toc.Size != 0 {
 		// TODO: do this while we generate it so we don't have to hit it twice.
-		return toc.size
+		return toc.Size
 	}
 
-	toc.size += 8 + 8 + 8
+	toc.Size += 8 + 8 + 8
 
 	for _, f := range toc.Files {
-		toc.size += int64(1 + len(f.Name) + len(f.Linkname) + 8 + 8 + 8)
+		toc.Size += int64(1 + len(f.Name) + len(f.Linkname) + 8 + 8 + 8)
 	}
 
 	for _, c := range toc.Checkpoints {
-		toc.size += int64(8 + 8 + 4 + 4 + len(c.Hist))
+		toc.Size += int64(8 + 8 + 4 + 4 + len(c.Hist))
 	}
 
-	return toc.size
+	return toc.Size
 }
 
 type Checkpointer struct {
@@ -206,7 +207,7 @@ func (t *tree) Locate(name string) (*TOCFile, error) {
 
 func NewTree(bs BlobSeeker, toc *TOC, sub Tree) (Tree, error) {
 	if sub == nil {
-		return newLeaf(bs, toc)
+		return NewLeaf(bs, toc)
 	}
 
 	t := &tree{
@@ -226,15 +227,17 @@ func NewTree(bs BlobSeeker, toc *TOC, sub Tree) (Tree, error) {
 	}
 	defer rc.Close()
 	toc = &TOC{}
-	if err := json.NewDecoder(rc).Decode(toc); err != nil {
+	dec := json.NewDecoder(rc)
+	if err := dec.Decode(toc); err != nil {
 		return nil, err
 	}
+	toc.Size = dec.InputOffset()
 	t.toc = toc
 	return t, nil
 }
 
-func newLeaf(bs BlobSeeker, toc *TOC) (*leaf, error) {
-	t := &leaf{
+func NewLeaf(bs BlobSeeker, toc *TOC) (*Leaf, error) {
+	t := &Leaf{
 		bs:  bs,
 		toc: toc,
 	}
@@ -244,7 +247,7 @@ func newLeaf(bs BlobSeeker, toc *TOC) (*leaf, error) {
 	return t, nil
 }
 
-func (t *leaf) init() error {
+func (t *Leaf) init() error {
 	t.dicts = [][]byte{}
 	rc, err := t.bs.Reader(context.TODO(), 0, -1)
 	if err != nil {
@@ -285,20 +288,22 @@ func (t *leaf) init() error {
 			if err := json.NewDecoder(tr).Decode(t.toc); err != nil {
 				return fmt.Errorf("Decode toc: %w", err)
 			}
+			t.toc.Size = header.Size
+			t.toc.ArchiveSize = zr.UncompressedCount()
 		}
 	}
 
 	return nil
 }
 
-type leaf struct {
+type Leaf struct {
 	bs BlobSeeker
 
 	dicts [][]byte
 	toc   *TOC
 }
 
-func (t *leaf) Dict(cp *Checkpointer) ([]byte, error) {
+func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {
 	if t.dicts == nil {
 		if err := t.init(); err != nil {
 			return nil, err
@@ -311,7 +316,7 @@ func (t *leaf) Dict(cp *Checkpointer) ([]byte, error) {
 	return t.dicts[cp.index], nil
 }
 
-func (t *leaf) Locate(name string) (*TOCFile, error) {
+func (t *Leaf) Locate(name string) (*TOCFile, error) {
 	if t.toc == nil {
 		if err := t.init(); err != nil {
 			return nil, err
@@ -325,7 +330,7 @@ func (t *leaf) Locate(name string) (*TOCFile, error) {
 
 	return nil, fs.ErrNotExist
 }
-func (t *leaf) TOC() *TOC {
+func (t *Leaf) TOC() *TOC {
 	return t.toc
 }
 
@@ -407,9 +412,10 @@ func (i *TreeIndexer) TOC() (*TOC, error) {
 	if err != nil {
 		return nil, err
 	}
+	tocSize := int64(len(b))
 	if err := i.tw.WriteHeader(&tar.Header{
-		Name: "toc.json",
-		Size: int64(len(b)),
+		Name: tocFile,
+		Size: tocSize,
 	}); err != nil {
 		return nil, err
 	}
@@ -424,16 +430,16 @@ func (i *TreeIndexer) TOC() (*TOC, error) {
 	}
 
 	i.written = true
+	i.toc.ArchiveSize = i.cw.n
+	i.toc.Size = tocSize
 
 	return i.toc, nil
 }
 
 func (i *TreeIndexer) processUpdates() error {
-	// TODO: Check for i.Writer and upload to caches.
 	for update := range i.updates {
 		u := update
 
-		// TODO: Should updates be buffered so this doesn't block?
 		b := u.Hist
 		f := dictFile(len(i.toc.Checkpoints))
 
@@ -455,7 +461,7 @@ func (i *TreeIndexer) processUpdates() error {
 
 // TODO: Make it so we can resume this.
 func NewTreeIndexer(rc io.ReadCloser, w io.WriteCloser, span int64) (*TreeIndexer, error) {
-	updates := make(chan *flate.Checkpoint)
+	updates := make(chan *flate.Checkpoint, 10)
 
 	toc := &TOC{
 		Files:       []TOCFile{},

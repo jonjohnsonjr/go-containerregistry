@@ -274,16 +274,18 @@ func (m *memCache) Get(ctx context.Context, key string) (*soci.TOC, error) {
 }
 
 func (m *memCache) Put(ctx context.Context, key string, toc *soci.TOC) error {
+	logs.Debug.Printf("memCache.Put(%q) at %d bytes", key, toc.Size)
 	m.Lock()
 	defer m.Unlock()
-	if toc.Size() > m.maxSize {
+	if toc.Size > m.maxSize {
+		logs.Debug.Printf("toc.Size = %d, m.maxSize = %d", toc.Size, m.maxSize)
 		return nil
 	}
 
 	e := &cacheEntry{
 		key:    key,
 		toc:    toc,
-		size:   toc.Size(),
+		size:   toc.Size,
 		access: time.Now(),
 	}
 

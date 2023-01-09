@@ -1466,7 +1466,10 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 					return err
 				}
 				if h.cache != nil {
-					h.cache.Put(r.Context(), treeKey(dig.Identifier(), 0), toc)
+					key := treeKey(dig.Identifier(), 0)
+					if err := h.cache.Put(r.Context(), key, toc); err != nil {
+						logs.Debug.Printf("cache.Put(%q) = %v", key, err)
+					}
 				}
 				logs.Debug.Printf("tree size: %d", indexer.Size())
 			}
@@ -1688,7 +1691,10 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 		return nil, fmt.Errorf("TOC: %w", err)
 	}
 	if h.cache != nil {
-		h.cache.Put(ctx, treeKey(prefix, idx), toc)
+		key := treeKey(prefix, idx)
+		if err := h.cache.Put(ctx, key, toc); err != nil {
+			logs.Debug.Printf("cache.Put(%q) = %v", key, err)
+		}
 	}
 	logs.Debug.Printf("tree size: %d", indexer.Size())
 
@@ -1917,6 +1923,7 @@ type RedirectCookie struct {
 	Body   bool
 }
 
+// 5 MB.
 const threshold = (1 << 20) * 5
 
 func treeKey(prefix string, idx int) string {
@@ -1927,9 +1934,30 @@ func (h *handler) getTree(ctx context.Context, prefix string) (soci.Tree, error)
 	return h.getTreeIndex(ctx, prefix, 0)
 }
 
-func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (soci.Tree, error) {
+func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (tree soci.Tree, err error) {
 	key := treeKey(prefix, idx)
 	bs := &cacheSeeker{h.treeCache, key}
+
+	var toc *soci.TOC
+	// Avoid calling cache.Size if we can.
+	if h.cache != nil {
+		toc, err = h.cache.Get(ctx, key)
+		if err != nil {
+			logs.Debug.Printf("cache.Get(%q) = %v", key, err)
+			defer func() {
+				if err == nil {
+					if err := h.cache.Put(ctx, key, tree.TOC()); err != nil {
+						logs.Debug.Printf("cache.Put(%q) = %v", key, err)
+					}
+				}
+			}()
+		} else {
+			if toc.Size != 0 && toc.Size < threshold {
+				logs.Debug.Printf("cache.Get(%q) = hit", key)
+				return soci.NewTree(bs, toc, nil)
+			}
+		}
+	}
 
 	// Handle in-memory tree under a certain size.
 	sz, err := h.treeCache.Size(ctx, key)
@@ -1937,14 +1965,8 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (soc
 		return nil, fmt.Errorf("treeCache.Size: %w", err)
 	}
 	if sz <= threshold {
-		if h.cache != nil {
-			toc, err := h.cache.Get(ctx, key)
-			if err != nil {
-				logs.Debug.Printf("cache.Get(%q) = %v", key, err)
-			} else {
-				logs.Debug.Printf("cache.Get(%q) = hit", key)
-				return soci.NewTree(bs, toc, nil)
-			}
+		if toc != nil {
+			return soci.NewTree(bs, toc, nil)
 		}
 		return soci.NewTree(bs, nil, nil)
 	}
@@ -1963,13 +1985,8 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (soc
 		}
 	}
 
-	if h.cache != nil {
-		toc, err := h.cache.Get(ctx, key)
-		if err != nil {
-			logs.Debug.Printf("cache.Get(%q) = %v", key, err)
-		} else {
-			return soci.NewTree(bs, toc, sub)
-		}
+	if toc != nil {
+		return soci.NewTree(bs, toc, sub)
 	}
 	return soci.NewTree(bs, nil, sub)
 }
