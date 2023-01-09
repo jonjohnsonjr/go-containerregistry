@@ -242,6 +242,10 @@ func (s *SociFS) tooBig(fm *TOCFile) fs.File {
 
 func (s *SociFS) Open(original string) (fs.File, error) {
 	logs.Debug.Printf("soci.Open(%q)", original)
+	start := time.Now()
+	defer func() {
+		log.Printf("soci.Open(%q) (%s)", original, time.Since(start))
+	}()
 	name := strings.TrimPrefix(original, s.prefix)
 
 	chunks := strings.Split(name, " -> ")

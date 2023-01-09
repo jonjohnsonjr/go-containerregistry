@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
+	"time"
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/compress/flate"
@@ -27,7 +29,7 @@ type TOC struct {
 	Files []TOCFile `json:"files,omitempty"`
 
 	// TODO: Checkpoints as jsonlines in separate file.
-	Checkpoints []flate.Checkpoint `json:"checkpoints,omitempty"`
+	Checkpoints []*flate.Checkpoint `json:"checkpoints,omitempty"`
 
 	ArchiveSize int64 `json:"asize,omitempty"`
 	Size        int64 `json:"size,omitempty"`
@@ -62,7 +64,7 @@ func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {
 	}
 
 	return &Checkpointer{
-		checkpoint: &from,
+		checkpoint: from,
 		tf:         tf,
 		index:      index,
 		start:      start,
@@ -110,9 +112,6 @@ type tree struct {
 	// BlobSeeker for _index_ files.
 	bs BlobSeeker
 
-	cachedDict []byte
-	cachedIdx  int
-
 	sub Tree
 }
 
@@ -128,6 +127,10 @@ const tocFile = "toc.json"
 
 func (t *tree) Open(name string) (io.ReadCloser, error) {
 	logs.Debug.Printf("tree.Open(%q)", name)
+	start := time.Now()
+	defer func() {
+		log.Printf("tree.Open(%q) (%s)", name, time.Since(start))
+	}()
 	tf, err := t.sub.Locate(name)
 	if err != nil {
 		return nil, err
@@ -141,9 +144,8 @@ func (t *tree) Dict(cp *Checkpointer) ([]byte, error) {
 	if cp.index == 0 {
 		return nil, nil
 	}
-
-	if t.cachedIdx == cp.index {
-		return t.cachedDict, nil
+	if cp.checkpoint.Hist != nil {
+		return cp.checkpoint.Hist, nil
 	}
 
 	filename := dictFile(cp.index)
@@ -157,9 +159,7 @@ func (t *tree) Dict(cp *Checkpointer) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	t.cachedIdx = cp.index
-	t.cachedDict = b
+	cp.checkpoint.Hist = b
 
 	return b, nil
 }
@@ -211,9 +211,8 @@ func NewTree(bs BlobSeeker, toc *TOC, sub Tree) (Tree, error) {
 	}
 
 	t := &tree{
-		bs:        bs,
-		sub:       sub,
-		cachedIdx: -1,
+		bs:  bs,
+		sub: sub,
 	}
 
 	if toc != nil {
@@ -248,6 +247,10 @@ func NewLeaf(bs BlobSeeker, toc *TOC) (*Leaf, error) {
 }
 
 func (t *Leaf) init() error {
+	start := time.Now()
+	defer func() {
+		log.Printf("tree.init() (%s)", time.Since(start))
+	}()
 	t.dicts = [][]byte{}
 	rc, err := t.bs.Reader(context.TODO(), 0, -1)
 	if err != nil {
@@ -304,6 +307,9 @@ type Leaf struct {
 }
 
 func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {
+	if cp.checkpoint.Hist != nil {
+		return cp.checkpoint.Hist, nil
+	}
 	if t.dicts == nil {
 		if err := t.init(); err != nil {
 			return nil, err
@@ -313,7 +319,11 @@ func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {
 	if cp.index >= len(t.dicts) {
 		return nil, fmt.Errorf("Dict(%d) vs len(t.dicts) = %d", cp.index, len(t.dicts))
 	}
-	return t.dicts[cp.index], nil
+
+	hist := t.dicts[cp.index]
+	cp.checkpoint.Hist = hist
+
+	return hist, nil
 }
 
 func (t *Leaf) Locate(name string) (*TOCFile, error) {
@@ -381,9 +391,8 @@ func (i *TreeIndexer) Tree(bs BlobSeeker) (Tree, error) {
 	}
 
 	tree := &tree{
-		toc:       toc,
-		bs:        bs,
-		cachedIdx: -1,
+		toc: toc,
+		bs:  bs,
 	}
 
 	return tree, nil
@@ -454,7 +463,7 @@ func (i *TreeIndexer) processUpdates() error {
 		}
 
 		u.Hist = nil
-		i.toc.Checkpoints = append(i.toc.Checkpoints, *u)
+		i.toc.Checkpoints = append(i.toc.Checkpoints, u)
 	}
 	return nil
 }
@@ -465,7 +474,7 @@ func NewTreeIndexer(rc io.ReadCloser, w io.WriteCloser, span int64) (*TreeIndexe
 
 	toc := &TOC{
 		Files:       []TOCFile{},
-		Checkpoints: []flate.Checkpoint{},
+		Checkpoints: []*flate.Checkpoint{},
 		Ssize:       span,
 	}
 

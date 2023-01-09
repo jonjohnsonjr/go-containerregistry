@@ -1931,6 +1931,10 @@ func treeKey(prefix string, idx int) string {
 }
 
 func (h *handler) getTree(ctx context.Context, prefix string) (soci.Tree, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("getTree(%q) (%s)", prefix, time.Since(start))
+	}()
 	return h.getTreeIndex(ctx, prefix, 0)
 }
 
