@@ -120,7 +120,7 @@ func (t *tree) TOC() *TOC {
 }
 
 func dictFile(i int) string {
-	return fmt.Sprintf("%d.dict", i)
+	return fmt.Sprintf("%05d.dict", i)
 }
 
 const tocFile = "toc.json"
