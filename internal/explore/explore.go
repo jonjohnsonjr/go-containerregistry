@@ -1169,11 +1169,18 @@ func renderDockerfile(w io.Writer, b []byte) error {
 	return nil
 }
 
+const (
+	winPrefix = `powershell -Command $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';`
+	linPrefix = `/bin/sh -c`
+)
+
 func renderCreatedBy(w io.Writer, b []byte) error {
 	// Heuristically try to format this correctly.
-	b = bytes.TrimPrefix(b, []byte("/bin/sh -c #(nop)"))
-	if bytes.HasPrefix(b, []byte("/bin/sh -c")) {
-		b = bytes.Replace(b, []byte("/bin/sh -c"), []byte("RUN"), 1)
+	for _, prefix := range []string{linPrefix, winPrefix} {
+		b = bytes.TrimPrefix(b, []byte(prefix+" #(nop)"))
+		if bytes.HasPrefix(b, []byte(prefix)) {
+			b = bytes.Replace(b, []byte(prefix), []byte("RUN"), 1)
+		}
 	}
 	b = bytes.ReplaceAll(b, []byte(" \t"), []byte(" \\\n\t"))
 	b = bytes.ReplaceAll(b, []byte("&&\t"), []byte("\\\n&&\t"))
