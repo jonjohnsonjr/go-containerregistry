@@ -1269,7 +1269,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	dig, ref, err := h.getDigest(w, r)
 	if err != nil {
-		return err
+		return fmt.Errorf("getDigest: %w", err)
 	}
 
 	var (
@@ -1284,13 +1284,14 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	// TODO: have some criteria?
-	ignore := false
-
-	shouldIndex := !ignore
+	foreign := strings.HasPrefix(ref, "/http/") || strings.HasPrefix(ref, "/https/")
+	shouldIndex := tree == nil
 	if tree != nil {
-		shouldIndex = false
-		opts := h.remoteOptions(w, r, dig.Context().Name())
+		opts := []remote.Option{}
+		if !foreign {
+			opts = h.remoteOptions(w, r, dig.Context().Name())
+		}
+
 		if tree != nil {
 			opts = append(opts, remote.WithSize(tree.TOC().Csize))
 		}
@@ -1316,6 +1317,30 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			}
 		} else {
 			logs.Debug.Printf("cookie err: %v", err)
+		}
+
+		if h, s := strings.HasPrefix(ref, "/http/"), strings.HasPrefix(ref, "/https/"); h || s {
+			p := ref
+			if h {
+				p = strings.TrimPrefix(p, "/http/")
+			} else {
+				p = strings.TrimPrefix(ref, "/https/")
+			}
+			chunks := strings.SplitN(p, "@", 2)
+			if len(chunks) == 2 {
+				u, err := url.PathUnescape(chunks[0])
+				if err != nil {
+					return err
+				}
+				scheme := "https://"
+				if h {
+					scheme = "http://"
+				}
+				u = scheme + u
+				logs.Debug.Printf("u = %q", u)
+				cachedUrl = u
+				opts = append(opts, remote.WithTransport(transport.Wrap(remote.DefaultTransport)))
+			}
 		}
 
 		blob, err := remote.Blob(dig, cachedUrl, opts...)
@@ -1572,6 +1597,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	for i, layer := range m.Layers {
 		i := i
 		digest := layer.Digest
+		urls := layer.URLs
 		layerDig := dig.Context().Digest(layer.Digest.String())
 
 		var (
@@ -1622,7 +1648,8 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 				}
 			}
 
-			fs, err := h.createFs(w, r, ref, layerDig, tree, size, opts)
+			// TODO: plumb urls through here
+			fs, err := h.createFs(w, r, ref, layerDig, tree, size, urls, opts)
 			if err != nil {
 				return err
 			}
@@ -1712,13 +1739,17 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 	return h.getTreeIndex(ctx, prefix, idx)
 }
 
-func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, tree soci.Tree, size int64, opts []remote.Option) (*soci.SociFS, error) {
+func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, tree soci.Tree, size int64, urls []string, opts []remote.Option) (*soci.SociFS, error) {
 	if opts == nil {
 		opts = h.remoteOptions(w, r, dig.Context().Name())
 	}
 	opts = append(opts, remote.WithSize(size))
 
-	blob := remote.LazyBlob(dig, "", opts...)
+	cachedStr := ""
+	if len(urls) > 0 {
+		cachedStr = urls[0]
+	}
+	blob := remote.LazyBlob(dig, cachedStr, opts...)
 
 	// We never saw a non-nil Body, we can do the range.
 	prefix := strings.TrimPrefix(ref, "/")
@@ -1748,6 +1779,15 @@ func (h *handler) getDigest(w http.ResponseWriter, r *http.Request) (name.Digest
 	ref := strings.Join([]string{chunks[0], digest}, "@")
 	if ref == "" {
 		return name.Digest{}, "", fmt.Errorf("bad ref: %s", path)
+	}
+
+	if root == "/http/" || root == "/https/" {
+		fake := "example.com/foreign/layer" + "@" + digest
+		dig, err := name.NewDigest(fake)
+		if err != nil {
+			return name.Digest{}, "", err
+		}
+		return dig, root + ref, nil
 	}
 
 	dig, err := name.NewDigest(ref)

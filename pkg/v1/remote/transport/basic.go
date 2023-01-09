@@ -22,16 +22,16 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 )
 
-type basicTransport struct {
+type BasicTransport struct {
 	inner  http.RoundTripper
 	auth   authn.Authenticator
 	target string
 }
 
-var _ http.RoundTripper = (*basicTransport)(nil)
+var _ http.RoundTripper = (*BasicTransport)(nil)
 
 // RoundTrip implements http.RoundTripper
-func (bt *basicTransport) RoundTrip(in *http.Request) (*http.Response, error) {
+func (bt *BasicTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 	if bt.auth != authn.Anonymous {
 		auth, err := bt.auth.Authorization()
 		if err != nil {
@@ -59,4 +59,8 @@ func (bt *basicTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 		}
 	}
 	return bt.inner.RoundTrip(in)
+}
+
+func Wrap(inner http.RoundTripper) http.RoundTripper {
+	return &Wrapper{inner}
 }

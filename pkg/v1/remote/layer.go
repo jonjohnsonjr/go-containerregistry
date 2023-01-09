@@ -162,9 +162,17 @@ func (bs *BlobSeeker) init() error {
 	}
 	if o.size == 0 {
 		logs.Debug.Printf("should never call this")
-		o.size, err = rl.Size()
-		if err != nil {
-			return err
+		if bs.cachedUrl != "" {
+			resp, err := f.Client.Head(bs.cachedUrl)
+			if err != nil {
+				return err
+			}
+			o.size = resp.ContentLength
+		} else {
+			o.size, err = rl.Size()
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -277,6 +285,17 @@ func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusPartialContent {
 		logs.Debug.Printf("range read of %s: %v", b.Url, res.Status)
+		if redir := res.Header.Get("Location"); redir != "" && res.StatusCode/100 == 3 {
+			res.Body.Close()
+
+			u, err := url.Parse(redir)
+			if err != nil {
+				return -1, err
+			}
+			b.Url = req.URL.ResolveReference(u).String()
+			b.cachedUrl = b.Url
+			return b.ReadAt(p, off)
+		}
 		return 0, err
 	}
 	return io.ReadFull(res.Body, p)
@@ -316,6 +335,17 @@ func (b *BlobSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadC
 	}
 	if res.StatusCode != http.StatusPartialContent {
 		logs.Debug.Printf("range read of %s: %v", b.Url, res.Status)
+		if redir := res.Header.Get("Location"); redir != "" && res.StatusCode/100 == 3 {
+			res.Body.Close()
+
+			u, err := url.Parse(redir)
+			if err != nil {
+				return nil, err
+			}
+			b.Url = req.URL.ResolveReference(u).String()
+			b.cachedUrl = b.Url
+			return b.Reader(ctx, off, end)
+		}
 		return nil, err
 	}
 

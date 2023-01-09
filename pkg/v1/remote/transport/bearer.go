@@ -44,7 +44,7 @@ type TokenResponse struct {
 func NewBearer(ctx context.Context, pr *PingResp, reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scopes []string) (*Wrapper, *TokenResponse, error) {
 	switch pr.challenge.Canonical() {
 	case anonymous, basic:
-		return &Wrapper{&basicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil, nil
+		return &Wrapper{&BasicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil, nil
 	}
 	// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
 	realm, ok := pr.Parameters["realm"]
@@ -79,7 +79,7 @@ func NewBearer(ctx context.Context, pr *PingResp, reg name.Registry, auth authn.
 func OldBearer(pr *PingResp, tok *TokenResponse, reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scopes []string) (*Wrapper, error) {
 	switch pr.challenge.Canonical() {
 	case anonymous, basic:
-		return &Wrapper{&basicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil
+		return &Wrapper{&BasicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil
 	}
 	// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
 	realm, ok := pr.Parameters["realm"]
@@ -368,7 +368,7 @@ func (bt *bearerTransport) refreshBasic(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &basicTransport{
+	b := &BasicTransport{
 		inner:  bt.inner,
 		auth:   bt.basic,
 		target: u.Host,

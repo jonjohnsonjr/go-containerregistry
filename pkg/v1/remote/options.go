@@ -49,6 +49,7 @@ type options struct {
 	retryBackoff                   Backoff
 	retryPredicate                 retry.Predicate
 	maxSize                        int64
+	urls                           []string
 
 	// Optimization in case we know the size already.
 	size int64
@@ -311,6 +312,13 @@ func WithMaxSize(size int64) Option {
 func WithSize(size int64) Option {
 	return func(o *options) error {
 		o.size = size
+		return nil
+	}
+}
+
+func WithUrls(urls []string) Option {
+	return func(o *options) error {
+		o.urls = urls
 		return nil
 	}
 }
