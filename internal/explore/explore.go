@@ -231,29 +231,30 @@ func buildCache() cache {
 		maxSize:  50 * (1 << 20),
 		entryCap: 50,
 	}
-	caches := []cache{mc}
+	return mc
+	//caches := []cache{mc}
 
-	if cd := os.Getenv("CACHE_DIR"); cd != "" {
-		logs.Debug.Printf("CACHE_DIR=%q", cd)
-		cache := &dirCache{cd}
-		caches = append(caches, cache)
-	} else if cb := os.Getenv("CACHE_BUCKET"); cb != "" {
-		logs.Debug.Printf("CACHE_BUCKET=%q", cb)
-		if cache, err := buildGcsCache(cb); err != nil {
-			logs.Debug.Printf("buildGcsCache(): %v", err)
-		} else {
-			caches = append(caches, cache)
-		}
-	} else if cr := os.Getenv("CACHE_REPO"); cr != "" {
-		logs.Debug.Printf("CACHE_REPO=%q", cr)
-		if cache, err := buildOciCache(cr); err != nil {
-			logs.Debug.Printf("buildOciCache(): %v", err)
-		} else {
-			caches = append(caches, cache)
-		}
-	}
+	//if cd := os.Getenv("CACHE_DIR"); cd != "" {
+	//	logs.Debug.Printf("CACHE_DIR=%q", cd)
+	//	cache := &dirCache{cd}
+	//	caches = append(caches, cache)
+	//} else if cb := os.Getenv("CACHE_BUCKET"); cb != "" {
+	//	logs.Debug.Printf("CACHE_BUCKET=%q", cb)
+	//	if cache, err := buildGcsCache(cb); err != nil {
+	//		logs.Debug.Printf("buildGcsCache(): %v", err)
+	//	} else {
+	//		caches = append(caches, cache)
+	//	}
+	//} else if cr := os.Getenv("CACHE_REPO"); cr != "" {
+	//	logs.Debug.Printf("CACHE_REPO=%q", cr)
+	//	if cache, err := buildOciCache(cr); err != nil {
+	//		logs.Debug.Printf("buildOciCache(): %v", err)
+	//	} else {
+	//		caches = append(caches, cache)
+	//	}
+	//}
 
-	return &multiCache{caches}
+	//return &multiCache{caches}
 }
 
 // TODO: dedupe above

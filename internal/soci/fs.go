@@ -301,7 +301,6 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		}
 
 		fdir := path.Dir(strings.TrimPrefix(name, prefix))
-		logs.Debug.Printf("fdir=%q, name=%q", fdir, name)
 		if !(fdir == "/" || (fdir == "." && prefix == "/")) {
 			if fdir != "" && fdir != "." {
 				if fdir[0] == '/' {

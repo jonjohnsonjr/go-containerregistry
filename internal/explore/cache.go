@@ -160,6 +160,10 @@ func (g *gcsCache) RangeReader(ctx context.Context, key string, offset, length i
 }
 
 func (g *gcsCache) Size(ctx context.Context, key string) (int64, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("bucket.Size(%q) (%s)", key, time.Since(start))
+	}()
 	attrs, err := g.bucket.Object(g.treePath(key)).Attrs(ctx)
 	if err != nil {
 		return -1, err
