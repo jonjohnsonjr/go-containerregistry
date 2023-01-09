@@ -127,6 +127,9 @@ func (g *gcsCache) Put(ctx context.Context, key string, toc *soci.TOC) error {
 		log.Printf("bucket.Put(%q) (%s)", key, time.Since(start))
 	}()
 	w := g.object(key).NewWriter(ctx)
+
+	// TODO: Ideally, we could fork gzip.Writer and flush at checkpoints
+	// to create very very small second order indexes.
 	zw, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
 	if err != nil {
 		logs.Debug.Printf("gzip.NewWriter() = %v", err)

@@ -1930,6 +1930,7 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (soc
 	key := treeKey(prefix, idx)
 	bs := &cacheSeeker{h.treeCache, key}
 
+	// Handle in-memory tree under a certain size.
 	sz, err := h.treeCache.Size(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("treeCache.Size: %w", err)
@@ -1947,6 +1948,7 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (soc
 		return soci.NewTree(bs, nil, nil)
 	}
 
+	// Tree is too big to hold in memory, fetch or create an index of the index.
 	sub, err := h.getTreeIndex(ctx, prefix, idx+1)
 	if err != nil {
 		logs.Debug.Printf("getTreeIndex(%q, %d) = %v", prefix, idx+1, err)
@@ -1954,7 +1956,6 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (soc
 		if err != nil {
 			return nil, fmt.Errorf("treeCache.Reader: %w", err)
 		}
-		logs.Debug.Printf("got here")
 		sub, err = h.createTree(ctx, rc, sz, prefix, idx+1)
 		if err != nil {
 			return nil, fmt.Errorf("createTree(%q, %d): %w", prefix, idx+1, err)
