@@ -630,7 +630,14 @@ func (h *handler) renderGoogleRepo(w http.ResponseWriter, r *http.Request, repo 
 		Repo:      repo,
 		Reference: repo,
 	}
-	if ref.RepositoryStr() != "" {
+	if ref.RepositoryStr() == "" {
+		uri := &url.URL{
+			Scheme: ref.Registry.Scheme(),
+			Host:   ref.Registry.RegistryStr(),
+			Path:   "/v2/tags/list",
+		}
+		data.JQ = fmt.Sprintf("curl -sL %q | jq .", uri.String())
+	} else {
 		data.JQ = gcrane + " ls --json " + repo + " | jq ."
 	}
 	if strings.Contains(repo, "/") {
