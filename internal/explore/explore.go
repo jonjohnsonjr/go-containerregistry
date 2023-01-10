@@ -1320,7 +1320,6 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		cachedUrl := ""
-		canRange := true
 		cookie, err := r.Cookie("redirect")
 		if err == nil {
 			b, err := base64.URLEncoding.DecodeString(cookie.Value)
@@ -1333,13 +1332,13 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			}
 			if v.Digest == dig.Identifier() {
 				cachedUrl = v.Url
-				canRange = !v.Body
 			} else {
+				logs.Debug.Printf("%q vs %q", v.Digest, dig.Identifier())
 				// Clear so we reset it.
 				cookie = nil
 			}
 		} else {
-			logs.Debug.Printf("cookie err: %v", err)
+			logs.Debug.Printf("redirect cookie err: %v", err)
 		}
 
 		if h, s := strings.HasPrefix(ref, "/http/"), strings.HasPrefix(ref, "/https/"); h || s {
@@ -1374,60 +1373,42 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 
-		blob, err := remote.Blob(dig, cachedUrl, opts...)
-		if err != nil {
-			logs.Debug.Printf("remote.Blob: %v", err)
-		} else {
-			if cookie == nil {
-				v := &RedirectCookie{
-					Digest: dig.Identifier(),
-					Url:    blob.Url,
-					Body:   blob.Body != nil,
-				}
-				b, err := json.Marshal(v)
-				if err != nil {
-					return err
-				}
-				cv := base64.URLEncoding.EncodeToString(b)
-				cookie := &http.Cookie{
-					Name:     "redirect",
-					Value:    cv,
-					Expires:  time.Now().Add(time.Minute * 10),
-					Secure:   true,
-					HttpOnly: true,
-					SameSite: http.SameSiteLaxMode,
-				}
-				http.SetCookie(w, cookie)
-			}
-
-			if blob.Body != nil {
-				logs.Debug.Printf("blob.Body != nil")
-				// The blob has a body, which means range requests don't work.
-				// Serve the old path but reuse the remote.Blob body.
-				h.blobs[r] = &sizeBlob{blob.Body, tree.TOC().Csize}
-				fs, err := h.newLayerFS(w, r, false, nil)
-				if err != nil {
-					return err
-				}
-				fs.blobRef = dig.String()
-				defer fs.Close()
-
-				// Allow this to be cached for an hour.
-				w.Header().Set("Cache-Control", "max-age=3600, immutable")
-				http.FileServer(fs).ServeHTTP(w, r)
-			} else if canRange {
-				logs.Debug.Printf("soci serve")
-				// We never saw a non-nil Body, we can do the range.
-				prefix := strings.TrimPrefix(ref, "/")
-				logs.Debug.Printf("prefix = %s", prefix)
-				fs := soci.FS(tree, blob, prefix, dig.String(), respTooBig)
-				http.FileServer(http.FS(fs)).ServeHTTP(w, r)
+		setCookie := func(blob *remote.BlobSeeker) error {
+			if cookie != nil || blob.Url == "" {
 				return nil
 			}
+			v := &RedirectCookie{
+				Digest: dig.Identifier(),
+				Url:    blob.Url,
+			}
+			logs.Debug.Printf("setting cookie: %v", v)
+			b, err := json.Marshal(v)
+			if err != nil {
+				return err
+			}
+			cv := base64.URLEncoding.EncodeToString(b)
+			cookie := &http.Cookie{
+				Name:     "redirect",
+				Value:    cv,
+				Expires:  time.Now().Add(time.Minute * 10),
+				Secure:   true,
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+			}
+			http.SetCookie(w, cookie)
 
-			// Otherwise we fall through to the old path.
-			logs.Debug.Printf("falling through")
+			return nil
 		}
+
+		blob := remote.LazyBlob(dig, cachedUrl, setCookie, opts...)
+		logs.Debug.Printf("soci serve")
+		// We never saw a non-nil Body, we can do the range.
+		prefix := strings.TrimPrefix(ref, "/")
+		logs.Debug.Printf("prefix = %s", prefix)
+		fs := soci.FS(tree, blob, prefix, dig.String(), respTooBig)
+		http.FileServer(http.FS(fs)).ServeHTTP(w, r)
+
+		return nil
 	}
 
 	// Determine if this is actually a filesystem thing.
@@ -1785,7 +1766,7 @@ func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, d
 	if len(urls) > 0 {
 		cachedStr = urls[0]
 	}
-	blob := remote.LazyBlob(dig, cachedStr, opts...)
+	blob := remote.LazyBlob(dig, cachedStr, nil, opts...)
 
 	// We never saw a non-nil Body, we can do the range.
 	prefix := strings.TrimPrefix(ref, "/")
@@ -2014,7 +1995,6 @@ func splitFsURL(p string) (string, string, error) {
 type RedirectCookie struct {
 	Digest string
 	Url    string
-	Body   bool
 }
 
 // 5 MB.

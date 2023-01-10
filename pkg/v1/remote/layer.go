@@ -124,8 +124,10 @@ func Layer(ref name.Digest, options ...Option) (v1.Layer, error) {
 type BlobSeeker struct {
 	rl   *remoteLayer
 	size int64
+	done func(*BlobSeeker) error
 
-	Body io.ReadCloser
+	Body   io.ReadCloser
+	Status int
 
 	Url string
 
@@ -134,15 +136,19 @@ type BlobSeeker struct {
 	options   []Option
 }
 
-func LazyBlob(ref name.Digest, cachedUrl string, options ...Option) *BlobSeeker {
+func LazyBlob(ref name.Digest, cachedUrl string, done func(*BlobSeeker) error, options ...Option) *BlobSeeker {
 	return &BlobSeeker{
 		ref:       ref,
 		cachedUrl: cachedUrl,
 		options:   options,
+		done:      done,
 	}
 }
 
-func (bs *BlobSeeker) init() error {
+func (bs *BlobSeeker) init(start, end int64) error {
+	if end == 0 {
+		end = 1
+	}
 	o, err := makeOptions(bs.ref.Context(), bs.options...)
 	if err != nil {
 		return err
@@ -177,6 +183,7 @@ func (bs *BlobSeeker) init() error {
 	}
 
 	rangePrefix := "bytes="
+	rangeSuffix := fmt.Sprintf("%d-%d", start, end)
 
 	urlStr := bs.cachedUrl
 	var res *http.Response
@@ -192,8 +199,8 @@ func (bs *BlobSeeker) init() error {
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Range", rangePrefix+"0-1")
-			logs.Debug.Printf("Range: %s0-1", rangePrefix)
+			req.Header.Set("Range", rangePrefix+rangeSuffix)
+			logs.Debug.Printf("Range: %s%s", rangePrefix, rangeSuffix)
 
 			tr := f.Client.Transport
 			res, err = tr.RoundTrip(req)
@@ -228,8 +235,6 @@ func (bs *BlobSeeker) init() error {
 		}
 		if res.StatusCode == 200 {
 			logs.Debug.Printf("does not look like it supports range requests")
-		} else {
-			defer res.Body.Close()
 		}
 
 		logs.Debug.Printf("got past redir")
@@ -247,21 +252,26 @@ func (bs *BlobSeeker) init() error {
 	bs.size = o.size
 	bs.Url = urlStr
 
-	if res != nil && res.StatusCode == 200 {
+	if res != nil {
+		bs.Status = res.StatusCode
 		bs.Body = res.Body
+	}
+
+	if bs.done != nil {
+		return bs.done(bs)
 	}
 	return nil
 }
 
 // Blob returns a seekable blob.
 func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, error) {
-	bs := LazyBlob(ref, cachedUrl, options...)
-	return bs, bs.init()
+	bs := LazyBlob(ref, cachedUrl, nil, options...)
+	return bs, bs.init(0, 1)
 }
 
 func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 	if b.rl == nil {
-		if err := b.init(); err != nil {
+		if err := b.init(off, off+int64(len(p))+1); err != nil {
 			return 0, err
 		}
 	}
@@ -303,18 +313,22 @@ func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 
 func (b *BlobSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error) {
 	if b.rl == nil {
-		if err := b.init(); err != nil {
+		if err := b.init(off, end+1); err != nil {
 			return nil, err
 		}
 	}
 	if b.Body != nil {
-		logs.Debug.Printf("Didn't support range requests")
-		logs.Debug.Printf("Discarding %d bytes", off)
-		// Didn't support range requests.
-		if _, err := io.CopyN(io.Discard, b.Body, off); err != nil {
-			return nil, err
+		if b.Status == 200 {
+			logs.Debug.Printf("Didn't support range requests")
+			logs.Debug.Printf("Discarding %d bytes", off)
+			// Didn't support range requests.
+			if _, err := io.CopyN(io.Discard, b.Body, off); err != nil {
+				return nil, err
+			}
 		}
-		return b.Body, nil
+		ret := b.Body
+		b.Body = nil
+		return ret, nil
 	}
 
 	if end == -1 {
