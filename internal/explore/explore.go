@@ -146,7 +146,10 @@ func (h *handler) googleOptions(w http.ResponseWriter, r *http.Request, repo str
 
 	opts := []goog.Option{}
 	opts = append(opts, goog.WithContext(ctx))
-
+	if repo == "mirror.gcr.io" {
+		opts = append(opts, goog.WithTransport(transport.Wrap(remote.DefaultTransport)))
+		return opts
+	}
 	auth := authn.Anonymous
 
 	parsed, err := name.NewRepository(repo)
@@ -543,7 +546,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		return err
 	}
 
-	if ref.RegistryStr() == "registry.k8s.io" || (isGoogle(ref.RegistryStr()) && ref.RepositoryStr() != "") {
+	if ref.RegistryStr() == "registry.k8s.io" || ref.RegistryStr() == "mirror.gcr.io" || (isGoogle(ref.RegistryStr()) && ref.RepositoryStr() != "") {
 		return h.renderGoogleRepo(w, r, repo)
 	} else if ref.RepositoryStr() == "" {
 		return h.renderCatalog(w, r, repo)
