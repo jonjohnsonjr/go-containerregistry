@@ -48,13 +48,21 @@ func (s *multifs) err(name string) fs.File {
 	}
 }
 
-func (s *multifs) chase(original string) (*TOCFile, *SociFS, error) {
+func (s *multifs) chase(original string, gen int) (*TOCFile, *SociFS, error) {
+	logs.Debug.Printf("multifs.chase(%q, %d)", original, gen)
 	if original == "" {
 		return nil, nil, fmt.Errorf("empty string")
 	}
+	if gen > 64 {
+		log.Printf("chase(%q) aborting at gen=%d", original, gen)
+		return nil, nil, fmt.Errorf("too many symlinks")
+	}
 	for _, sfs := range s.fss {
-		chased, err := sfs.chase(original, 0)
+		chased, next, err := sfs.chase(original, gen)
 		if err == fs.ErrNotExist {
+			if next != original && next != "" {
+				return s.chase(next, gen+1)
+			}
 			continue
 		}
 		return chased, sfs, err
@@ -64,7 +72,7 @@ func (s *multifs) chase(original string) (*TOCFile, *SociFS, error) {
 }
 
 func (s *multifs) find(name string) (*TOCFile, *SociFS, error) {
-	logs.Debug.Printf("find(%q)", name)
+	logs.Debug.Printf("multifs.find(%q)", name)
 	needle := path.Clean("/" + name)
 	for _, sfs := range s.fss {
 		for _, fm := range sfs.files {
@@ -96,7 +104,7 @@ func (s *multifs) Open(original string) (fs.File, error) {
 			return nil, fs.ErrNotExist
 		}
 
-		chased, sfs, err := s.chase(name)
+		fm, sfs, err = s.chase(name, 0)
 		if err != nil {
 			if sfs == nil {
 				// Possibly a directory?
@@ -105,12 +113,11 @@ func (s *multifs) Open(original string) (fs.File, error) {
 			return sfs.err(name), nil
 		}
 
-		if chased.Typeflag == tar.TypeDir {
-			return sfs.dir(chased), nil
+		if fm.Typeflag == tar.TypeDir {
+			return sfs.dir(fm), nil
 		}
 
-		name = path.Clean("/" + chased.Name)
-		fm = chased
+		name = path.Clean("/" + fm.Name)
 	}
 
 	if int64(fm.Size) > sfs.maxSize {
@@ -264,7 +271,7 @@ func (s *SociFS) Open(original string) (fs.File, error) {
 			return nil, fs.ErrNotExist
 		}
 
-		chased, err := s.chase(name, 0)
+		chased, _, err := s.chase(name, 0)
 		if err != nil {
 			// Possibly a directory?
 			return s.err(name), nil
@@ -381,13 +388,13 @@ func (s *SociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
 
 // todo: cache symlinks to require fewer iterations?
 // todo: or maybe symlinks as separate list?
-func (s *SociFS) chase(original string, gen int) (*TOCFile, error) {
+func (s *SociFS) chase(original string, gen int) (*TOCFile, string, error) {
 	if original == "" {
-		return nil, fmt.Errorf("empty string")
+		return nil, "", fmt.Errorf("empty string")
 	}
 	if gen > 64 {
 		log.Printf("chase(%q) aborting at gen=%d", original, gen)
-		return nil, fmt.Errorf("too many symlinks")
+		return nil, "", fmt.Errorf("too many symlinks")
 	}
 
 	name := path.Clean("/" + original)
@@ -402,11 +409,12 @@ func (s *SociFS) chase(original string, gen int) (*TOCFile, error) {
 	}
 
 	for _, fm := range s.files {
-		if fm.Name == original {
+		fm := fm
+		if fm.Name == original || fm.Name == name {
 			if fm.Typeflag == tar.TypeSymlink {
 				return s.chase(fm.Linkname, gen+1)
 			}
-			return &fm, nil
+			return &fm, "", nil
 		}
 		if fm.Typeflag == tar.TypeSymlink {
 			for _, dir := range dirs {
@@ -420,7 +428,7 @@ func (s *SociFS) chase(original string, gen int) (*TOCFile, error) {
 		}
 	}
 
-	return nil, fs.ErrNotExist
+	return nil, original, fs.ErrNotExist
 }
 
 type sociFile struct {
