@@ -979,7 +979,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					}
 				}
 			}
-		case "moby.buildkit.buildinfo.v1":
+		case "moby.buildkit.buildinfo.v1", "moby.buildkit.cache.v0":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
 					jq := strings.Join(w.jq, "")
