@@ -2027,7 +2027,7 @@ func treeKey(prefix string, idx int) string {
 func (h *handler) getTree(ctx context.Context, prefix string) (soci.Tree, error) {
 	start := time.Now()
 	defer func() {
-		log.Printf("getTree(%q) (%s)", prefix, time.Since(start))
+		logs.Debug.Printf("getTree(%q) (%s)", prefix, time.Since(start))
 	}()
 	return h.getTreeIndex(ctx, prefix, 0)
 }
@@ -2036,7 +2036,10 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (tre
 	key := treeKey(prefix, idx)
 	bs := &cacheSeeker{h.treeCache, key}
 
-	var toc *soci.TOC
+	var (
+		toc  *soci.TOC
+		size int64
+	)
 	// Avoid calling cache.Size if we can.
 	if h.cache != nil {
 		toc, err = h.cache.Get(ctx, key)
@@ -2050,23 +2053,20 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (tre
 				}
 			}()
 		} else {
-			if toc.Size != 0 && toc.Size < threshold {
-				logs.Debug.Printf("cache.Get(%q) = hit", key)
-				return soci.NewTree(bs, toc, nil)
-			}
+			size = toc.Size
+			logs.Debug.Printf("cache.Get(%q) = hit", key)
 		}
 	}
 
 	// Handle in-memory tree under a certain size.
-	sz, err := h.treeCache.Size(ctx, key)
-	if err != nil {
-		return nil, fmt.Errorf("treeCache.Size: %w", err)
-	}
-	if sz <= threshold {
-		if toc != nil {
-			return soci.NewTree(bs, toc, nil)
+	if size == 0 {
+		size, err = h.treeCache.Size(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("treeCache.Size: %w", err)
 		}
-		return soci.NewTree(bs, nil, nil)
+	}
+	if size <= threshold {
+		return soci.NewTree(bs, toc, nil)
 	}
 
 	// Tree is too big to hold in memory, fetch or create an index of the index.
@@ -2077,7 +2077,7 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (tre
 		if err != nil {
 			return nil, fmt.Errorf("treeCache.Reader: %w", err)
 		}
-		sub, err = h.createTree(ctx, rc, sz, prefix, idx+1)
+		sub, err = h.createTree(ctx, rc, size, prefix, idx+1)
 		if err != nil {
 			return nil, fmt.Errorf("createTree(%q, %d): %w", prefix, idx+1, err)
 		}
@@ -2086,10 +2086,7 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (tre
 		}
 	}
 
-	if toc != nil {
-		return soci.NewTree(bs, toc, sub)
-	}
-	return soci.NewTree(bs, nil, sub)
+	return soci.NewTree(bs, toc, sub)
 }
 
 type cacheSeeker struct {
