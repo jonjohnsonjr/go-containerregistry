@@ -232,6 +232,10 @@ func lexQuotedString(l *Lexer) stateFn {
 }
 
 func lexIdentifier(l *Lexer) stateFn {
+	if l.peek() == '[' {
+		l.next()
+		return lexInsideBrackets
+	}
 	for isIdentifier(l.next()) {
 	}
 	l.backup()

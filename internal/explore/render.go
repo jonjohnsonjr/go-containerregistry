@@ -480,7 +480,11 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 			w.Key(k)
 		}
 		if strings.Contains(k, ".") {
-			w.jpush(fmt.Sprintf("[%q]", k))
+			if len(w.jq) == 0 {
+				w.jpush(fmt.Sprintf(".[%q]", k))
+			} else {
+				w.jpush(fmt.Sprintf("[%q]", k))
+			}
 		} else {
 			w.jpush("." + k)
 		}
@@ -973,6 +977,21 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 
 						continue
 					}
+				}
+			}
+		case "moby.buildkit.buildinfo.v1":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					jq := strings.Join(w.jq, "")
+					u := *w.u
+					qs := u.Query()
+					qs.Add("jq", jq)
+					qs.Add("jq", "base64 -d")
+					qs.Add("jq", "jq .")
+					u.RawQuery = qs.Encode()
+					w.BlueDoc(u.String(), s)
+
+					continue
 				}
 			}
 		}
