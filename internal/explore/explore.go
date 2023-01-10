@@ -147,7 +147,14 @@ func (h *handler) googleOptions(w http.ResponseWriter, r *http.Request, repo str
 	opts := []goog.Option{}
 	opts = append(opts, goog.WithContext(ctx))
 	if repo == "mirror.gcr.io" {
-		opts = append(opts, goog.WithTransport(transport.Wrap(remote.DefaultTransport)))
+		t := remote.DefaultTransport
+		t = transport.NewRetry(t)
+		t = transport.NewUserAgent(t, ua)
+		if logs.Enabled(logs.Trace) {
+			t = transport.NewTracer(t)
+		}
+		t = transport.Wrap(t)
+		opts = append(opts, goog.WithTransport(t))
 		return opts
 	}
 	auth := authn.Anonymous
@@ -1355,7 +1362,15 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				u = scheme + u
 				logs.Debug.Printf("u = %q", u)
 				cachedUrl = u
-				opts = append(opts, remote.WithTransport(transport.Wrap(remote.DefaultTransport)))
+
+				t := remote.DefaultTransport
+				t = transport.NewRetry(t)
+				t = transport.NewUserAgent(t, ua)
+				if logs.Enabled(logs.Trace) {
+					t = transport.NewTracer(t)
+				}
+				t = transport.Wrap(t)
+				opts = append(opts, remote.WithTransport(t))
 			}
 		}
 
