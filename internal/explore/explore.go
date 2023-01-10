@@ -1289,6 +1289,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	if tree != nil {
 		opts := []remote.Option{}
 		if !foreign {
+			// Skip the ping for foreign layers.
 			opts = h.remoteOptions(w, r, dig.Context().Name())
 		}
 
@@ -1675,7 +1676,12 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, prefix string, idx int) (soci.Tree, error) {
-	logs.Debug.Printf("createTree(%q, %d)", prefix, idx)
+	key := treeKey(prefix, idx)
+	logs.Debug.Printf("createTree(%q)", key, idx)
+	start := time.Now()
+	defer func() {
+		log.Printf("createTree(%q) (%s)", key, time.Since(start))
+	}()
 	ok, pr, err := gztarPeek(bufio.NewReaderSize(rc, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("peek: %w", err)
@@ -1686,7 +1692,7 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 
 	blob := &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}
 
-	ocw, err := h.treeCache.Writer(ctx, treeKey(prefix, idx))
+	ocw, err := h.treeCache.Writer(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("treeCache.Writer: %w", err)
 	}
@@ -1725,7 +1731,6 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 		return nil, fmt.Errorf("TOC: %w", err)
 	}
 	if h.cache != nil {
-		key := treeKey(prefix, idx)
 		if err := h.cache.Put(ctx, key, toc); err != nil {
 			logs.Debug.Printf("cache.Put(%q) = %v", key, err)
 		}

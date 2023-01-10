@@ -165,6 +165,10 @@ func (t *tree) Dict(cp *Checkpointer) ([]byte, error) {
 }
 
 func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (io.ReadCloser, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("ExtractTreeFile(%q) (%s)", tf.Name, time.Since(start))
+	}()
 	cp := t.TOC().Checkpoint(tf)
 	dict, err := t.Dict(cp)
 	if err != nil {
@@ -185,10 +189,13 @@ func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (i
 		return nil, err
 	}
 
+	start2 := time.Now()
 	logs.Debug.Printf("Tree: Discarding %d bytes", cp.discard)
-	if _, err := io.CopyN(io.Discard, r, cp.discard); err != nil {
+	n, err := io.CopyN(io.Discard, r, cp.discard)
+	if err != nil {
 		return nil, err
 	}
+	log.Printf("Discarded %d bytes before %q (%s)", n, tf.Name, time.Since(start2))
 
 	logs.Debug.Printf("Tree: Returning LimitedReader of size %d", cp.tf.Size)
 	lr := io.LimitedReader{r, cp.tf.Size}
