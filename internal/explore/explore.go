@@ -1219,7 +1219,7 @@ func (h *handler) treeHandler(w http.ResponseWriter, r *http.Request) {
 }
 func (h *handler) renderTree(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
-	idx := 0 // todo?
+	idx := 0
 	dig, idxs, err := h.getDigest(w, r)
 	if err != nil {
 		return err
@@ -1580,7 +1580,6 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 		desc, _ = h.manifests[dig.Identifier()]
 	}
 
-	// TODO: We could maybe skip this ping.
 	if opts == nil {
 		opts = h.remoteOptions(w, r, dig.Context().Name())
 		opts = append(opts, remote.WithMaxSize(tooBig))
@@ -1658,9 +1657,11 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 				if err != nil {
 					return fmt.Errorf("createTree: %w", err)
 				}
+				if tree == nil {
+					return nil
+				}
 			}
 
-			// TODO: plumb urls through here
 			fs, err := h.createFs(w, r, ref, layerRef, tree, size, urls, opts)
 			if err != nil {
 				return err
@@ -1698,7 +1699,8 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 		return nil, fmt.Errorf("peek: %w", err)
 	}
 	if !ok {
-		return nil, fmt.Errorf("not targz")
+		logs.Debug.Printf("not targz")
+		return nil, nil
 	}
 
 	blob := &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}
@@ -2060,6 +2062,9 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (tre
 		sub, err = h.createTree(ctx, rc, sz, prefix, idx+1)
 		if err != nil {
 			return nil, fmt.Errorf("createTree(%q, %d): %w", prefix, idx+1, err)
+		}
+		if sub == nil {
+			return nil, fmt.Errorf("createTree returned nil, not a tar.gz file")
 		}
 	}
 

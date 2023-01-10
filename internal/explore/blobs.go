@@ -143,10 +143,15 @@ func gztarPeek(r io.Reader) (bool, gzip.PeekReader, error) {
 	}
 
 	br := bytes.NewReader(zb)
-	zr, err := ogzip.NewReader(br)
+	ok, zpr, err := gzip.Peek(br)
+	if !ok {
+		return ok, pr, err
+	}
+
+	zr, err := ogzip.NewReader(zpr)
 	if err != nil {
 		return false, pr, err
 	}
-	ok, _, err := tarPeek(zr)
+	ok, _, err = tarPeek(zr)
 	return ok, pr, err
 }
