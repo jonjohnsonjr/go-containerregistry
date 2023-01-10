@@ -1220,9 +1220,14 @@ func (h *handler) treeHandler(w http.ResponseWriter, r *http.Request) {
 func (h *handler) renderTree(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	idx := 0 // todo?
-	dig, _, err := h.getDigest(w, r)
+	dig, idxs, err := h.getDigest(w, r)
 	if err != nil {
 		return err
+	}
+	if parsed, err := strconv.ParseInt(idxs, 10, 64); err != nil {
+		logs.Debug.Printf("ParseInt(%q)", idxs)
+	} else {
+		idx = int(parsed)
 	}
 	key := treeKey(dig.Identifier(), idx)
 	size, err := h.treeCache.Size(ctx, key)
@@ -1799,6 +1804,17 @@ func (h *handler) getDigest(w http.ResponseWriter, r *http.Request) (name.Digest
 			return name.Digest{}, "", err
 		}
 		return dig, root + ref, nil
+	}
+	if root == "/cache/" {
+		idx, ref, ok := strings.Cut(ref, "/")
+		if !ok {
+			return name.Digest{}, "", fmt.Errorf("strings.Cut(%q)", ref)
+		}
+		dig, err := name.NewDigest(ref)
+		if err != nil {
+			return name.Digest{}, "", err
+		}
+		return dig, idx, nil
 	}
 
 	dig, err := name.NewDigest(ref)
