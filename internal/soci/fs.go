@@ -29,8 +29,14 @@ type multifs struct {
 }
 
 func MultiFS(fss []*SociFS, prefix string) fs.FS {
+	filtered := []*SociFS{}
+	for _, fs := range fss {
+		if fs != nil {
+			filtered = append(filtered, fs)
+		}
+	}
 	return &multifs{
-		fss:    fss,
+		fss:    filtered,
 		prefix: prefix,
 	}
 }

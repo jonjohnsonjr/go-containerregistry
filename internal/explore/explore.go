@@ -1597,9 +1597,15 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	var g errgroup.Group
 	for i, layer := range m.Layers {
 		i := i
+		size := layer.Size
 		digest := layer.Digest
 		urls := layer.URLs
-		layerDig := dig.Context().Digest(layer.Digest.String())
+		layerRef := dig.Context().Digest(layer.Digest.String())
+
+		if digest.String() == emptyDigest {
+			// TODO: Non-targz should fail gracefully.
+			continue
+		}
 
 		var (
 			tree soci.Tree
@@ -1626,10 +1632,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		g.Go(func() error {
-			var size int64
-			if tree != nil {
-				size = tree.TOC().Csize
-			} else {
+			if tree == nil {
 				l, err := img.LayerByDigest(digest)
 				if err != nil {
 					return err
@@ -1638,19 +1641,15 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 				if err != nil {
 					return err
 				}
-				sz, err := l.Size()
-				if err != nil {
-					return err
-				}
-				size = sz
-				tree, err = h.createTree(r.Context(), rc, sz, digest.String(), 0)
+
+				tree, err = h.createTree(r.Context(), rc, size, digest.String(), 0)
 				if err != nil {
 					return fmt.Errorf("createTree: %w", err)
 				}
 			}
 
 			// TODO: plumb urls through here
-			fs, err := h.createFs(w, r, ref, layerDig, tree, size, urls, opts)
+			fs, err := h.createFs(w, r, ref, layerRef, tree, size, urls, opts)
 			if err != nil {
 				return err
 			}
