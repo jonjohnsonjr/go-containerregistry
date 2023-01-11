@@ -405,10 +405,6 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 		return nil, err
 	}
 	scopes := []string{parsed.Scope(transport.PullScope)}
-	if parsed.Registry.String() == name.DefaultRegistry {
-		scopes = append(scopes, parsed.PluginScope(transport.PullScope))
-	}
-
 	reg := parsed.Registry
 
 	var (
