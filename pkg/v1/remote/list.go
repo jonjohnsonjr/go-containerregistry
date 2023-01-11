@@ -35,13 +35,13 @@ type Tags struct {
 // ListWithContext calls List with the given context.
 //
 // Deprecated: Use List and WithContext. This will be removed in a future release.
-func ListWithContext(ctx context.Context, repo name.Repository, options ...Option) ([]string, error) {
+func ListWithContext(ctx context.Context, repo name.Repository, options ...Option) (*Tags, error) {
 	return List(repo, append(options, WithContext(ctx))...)
 }
 
 // List calls /tags/list for the given repository, returning the list of tags
 // in the "tags" property.
-func List(repo name.Repository, options ...Option) ([]string, error) {
+func List(repo name.Repository, options ...Option) (*Tags, error) {
 	o, err := makeOptions(repo, options...)
 	if err != nil {
 		return nil, err
@@ -63,25 +63,29 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 	}
 
 	client := http.Client{Transport: tr}
-	tagList := []string{}
+	ret := Tags{}
 	parsed := &Tags{
 		Next: uri.String(),
+	}
+	if o.next != "" {
+		parsed.Next = o.next
 	}
 
 	// get responses until there is no next page
 	for {
 		select {
 		case <-o.context.Done():
-			return nil, o.context.Err()
+			return &ret, o.context.Err()
 		default:
 		}
 
 		parsed, err = listPage(o.context, client, parsed.Next)
 		if err != nil {
-			return nil, err
+			return &ret, err
 		}
-
-		tagList = append(tagList, parsed.Tags...)
+		ret.Name = parsed.Name
+		ret.Next = parsed.Next
+		ret.Tags = append(ret.Tags, parsed.Tags...)
 
 		// no next page
 		if parsed.Next == "" {
@@ -89,7 +93,7 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 		}
 	}
 
-	return tagList, nil
+	return &ret, nil
 }
 
 func ListPage(repo name.Repository, next string, options ...Option) (*Tags, error) {

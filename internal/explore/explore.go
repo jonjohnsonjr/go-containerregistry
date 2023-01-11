@@ -136,6 +136,9 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 			opts = append(opts, remote.WithPageSize(int(size)))
 		}
 	}
+	if next := r.URL.Query().Get("next"); next != "" {
+		opts = append(opts, remote.WithNext(next))
+	}
 
 	return opts
 }
@@ -592,18 +595,22 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 			return err
 		}
 	} else {
-		tags, err := remote.List(ref, h.remoteOptions(w, r, repo)...)
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		opts := h.remoteOptions(w, r, repo)
+		opts = append(opts, remote.WithContext(ctx))
+
+		v, err = remote.List(ref, opts...)
 		if err != nil {
-			return err
+			if v != nil && errors.Is(err, context.DeadlineExceeded) {
+				fmt.Fprintf(w, "<p>deadline exceeded, returning partial response</p>\n<hr>\n")
+			} else {
+				return err
+			}
 		}
 		h.Lock()
-		h.sawTags[ref.String()] = tags
+		h.sawTags[ref.String()] = v.Tags
 		h.Unlock()
-
-		v = &remote.Tags{
-			Tags: tags,
-			Name: ref.RepositoryStr(),
-		}
 	}
 	b, err := json.Marshal(v)
 	if err != nil {

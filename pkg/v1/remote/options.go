@@ -53,6 +53,9 @@ type options struct {
 
 	// Optimization in case we know the size already.
 	size int64
+
+	// Avoid breaking api beacuse i'm lazy.
+	next string
 }
 
 var defaultPlatform = v1.Platform{
@@ -319,6 +322,13 @@ func WithSize(size int64) Option {
 func WithUrls(urls []string) Option {
 	return func(o *options) error {
 		o.urls = urls
+		return nil
+	}
+}
+
+func WithNext(next string) Option {
+	return func(o *options) error {
+		o.next = next
 		return nil
 	}
 }
