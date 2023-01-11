@@ -1587,18 +1587,12 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 		opts = append(opts, remote.WithMaxSize(tooBig))
 	}
 
-	var img v1.Image
 	if desc == nil {
 		desc, err = remote.Get(dig, opts...)
 		if err != nil {
 			return err
 		}
 		h.manifests[desc.Digest.String()] = desc
-
-		img, err = desc.Image()
-		if err != nil {
-			return err
-		}
 	}
 
 	m, err := v1.ParseManifest(bytes.NewReader(desc.Manifest))
@@ -1620,33 +1614,21 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 			continue
 		}
 
-		var (
-			tree soci.Tree
-			err  error
-		)
-		if h.treeCache != nil {
-			tree, err = h.getTree(r.Context(), digest.String())
-			if err != nil {
-				logs.Debug.Printf("treeCache.Tree(%q) = %v", digest.String(), err)
-			} else {
-				logs.Debug.Printf("treeCache hit: %s", digest.String())
-			}
-		}
-		if tree == nil && img == nil {
-			desc, err = remote.Get(dig, opts...)
-			if err != nil {
-				return err
-			}
-			h.manifests[desc.Digest.String()] = desc
-
-			img, err = desc.Image()
-			if err != nil {
-				return err
-			}
-		}
 		g.Go(func() error {
+			var (
+				tree soci.Tree
+				err  error
+			)
+			if h.treeCache != nil {
+				tree, err = h.getTree(r.Context(), digest.String())
+				if err != nil {
+					logs.Debug.Printf("treeCache.Tree(%q) = %v", digest.String(), err)
+				} else {
+					logs.Debug.Printf("treeCache hit: %s", digest.String())
+				}
+			}
 			if tree == nil {
-				l, err := img.LayerByDigest(digest)
+				l, err := remote.Layer(layerRef)
 				if err != nil {
 					return err
 				}
