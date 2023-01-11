@@ -121,13 +121,13 @@ func (w *jsonOutputter) History(text string) {
 	u.RawQuery = qs.Encode()
 
 	w.tabf()
-	w.Printf(`"<a class="mt" href="%s">%s</a>":`, u.String(), html.EscapeString(text))
+	w.Printf(`"<a href="%s">%s</a>":`, u.String(), html.EscapeString(text))
 	w.key = true
 }
 
 func (w *jsonOutputter) Layers(ref, text string) {
 	w.tabf()
-	w.Printf(`"<a class="mt" href="/layers/%s/">%s</a>":`, ref, html.EscapeString(text))
+	w.Printf(`"<a href="/layers/%s/">%s</a>":`, ref, html.EscapeString(text))
 	w.key = true
 }
 
