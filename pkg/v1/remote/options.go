@@ -90,6 +90,9 @@ var retryableStatusCodes = []int{
 	http.StatusGatewayTimeout,
 }
 
+// Allocate one logger so we can compare options.transport with transport.Is.
+var loggerForUnwrap = &transport.Logger{}
+
 const (
 	defaultJobs = 4
 
@@ -152,7 +155,10 @@ func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
 		// It's expensive to generate the dumps, so skip it if we're writing
 		// to nothing.
 		if logs.Enabled(logs.Debug) {
-			o.transport = transport.NewLogger(o.transport)
+			// Don't double wrap loggers.
+			if !transport.Is(o.transport, loggerForUnwrap) {
+				o.transport = transport.NewLogger(o.transport)
+			}
 		}
 
 		// Wrap the transport in something that can retry network flakes.

@@ -85,6 +85,9 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 			if err != nil {
 				logs.Debug.Printf("failed to read config file: %v", err)
 			} else if len(cf.HTTPHeaders) != 0 {
+				if logs.Enabled(logs.Debug) {
+					rt = transport.NewLogger(rt)
+				}
 				rt = &headerTransport{
 					inner:       rt,
 					httpHeaders: cf.HTTPHeaders,
@@ -146,4 +149,8 @@ func (ht *headerTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 		in.Header.Set(k, v)
 	}
 	return ht.inner.RoundTrip(in)
+}
+
+func (ht *headerTransport) Unwrap() http.RoundTripper {
+	return ht.inner
 }
