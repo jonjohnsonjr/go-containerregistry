@@ -24,17 +24,17 @@ import (
 	"github.com/google/go-containerregistry/pkg/logs"
 )
 
-type logTransport struct {
+type Logger struct {
 	inner http.RoundTripper
 }
 
 // NewLogger returns a transport that logs requests and responses to
 // github.com/google/go-containerregistry/pkg/logs.Debug.
 func NewLogger(inner http.RoundTripper) http.RoundTripper {
-	return &logTransport{inner}
+	return &Logger{inner}
 }
 
-func (t *logTransport) RoundTrip(in *http.Request) (out *http.Response, err error) {
+func (t *Logger) RoundTrip(in *http.Request) (out *http.Response, err error) {
 	// Inspired by: github.com/motemen/go-loghttp
 
 	// We redact token responses and binary blobs in response/request.

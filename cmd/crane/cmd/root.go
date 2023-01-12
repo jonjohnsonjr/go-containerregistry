@@ -26,6 +26,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -72,12 +73,12 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 
 			options = append(options, crane.WithPlatform(platform.platform))
 
-			transport := remote.DefaultTransport.(*http.Transport).Clone()
-			transport.TLSClientConfig = &tls.Config{
+			t := remote.DefaultTransport.(*http.Transport).Clone()
+			t.TLSClientConfig = &tls.Config{
 				InsecureSkipVerify: insecure, //nolint: gosec
 			}
 
-			var rt http.RoundTripper = transport
+			var rt http.RoundTripper = t
 
 			// Add any http headers if they are set in the config file.
 			cf, err := config.Load(os.Getenv("DOCKER_CONFIG"))
