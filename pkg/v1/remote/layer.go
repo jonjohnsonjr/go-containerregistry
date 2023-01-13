@@ -199,8 +199,10 @@ func (bs *BlobSeeker) init(start, end int64) error {
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Range", rangePrefix+rangeSuffix)
-			logs.Debug.Printf("Range: %s%s", rangePrefix, rangeSuffix)
+			if !strings.Contains(urlStr, "gcr.io") || strings.Contains(urlStr, "/artifacts-downloads/") {
+				req.Header.Set("Range", rangePrefix+rangeSuffix)
+				logs.Debug.Printf("Range: %s%s", rangePrefix, rangeSuffix)
+			}
 
 			tr := f.Client.Transport
 			res, err = tr.RoundTrip(req)
