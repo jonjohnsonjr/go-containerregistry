@@ -32,8 +32,12 @@ import (
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
+	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/logs"
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
 // Lots of debugging that we don't want to compile into the binary.
@@ -70,7 +74,9 @@ type layerFS struct {
 	headers  []*tar.Header
 	complete bool
 
-	blobRef string
+	blobRef    string
+	size       int64
+	compressed bool
 }
 
 func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request, index bool, iw io.WriteCloser) (*layerFS, error) {
@@ -89,12 +95,20 @@ func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request, index bool,
 	return fs, nil
 }
 
+type withSize interface {
+	Size() (int64, error)
+}
+
 // refetches the blob in case FileServer has sent us over the edge
 func (fs *layerFS) reset() error {
 	debugf("reset %s", fs.req.URL.String())
 	blob, ref, err := fs.h.fetchBlob(fs.w, fs.req)
 	if err != nil {
 		return err
+	}
+
+	if fs.size, err = blob.Size(); err != nil {
+		logs.Debug.Printf("reset(): Size(): %v", err)
 	}
 
 	logs.Debug.Printf("blob %T", blob)
@@ -106,6 +120,7 @@ func (fs *layerFS) reset() error {
 	}
 	if ok {
 		logs.Debug.Printf("it is gzip!")
+		fs.compressed = true
 		if fs.index {
 			if fs.iw != nil {
 				rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
@@ -159,8 +174,66 @@ func (fs *layerFS) Close() error {
 	return fs.rc.Close()
 }
 
+func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.Reference, compressed bool, size int64) error {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
+		return err
+	}
+
+	filename := strings.TrimPrefix(fname, ref.String())
+	chunks := strings.Split(filename, " -> ")
+	filename = strings.TrimPrefix(chunks[len(chunks)-1], "/")
+
+	mediaType := types.DockerUncompressedLayer
+	tarflags := "tar -Oxf - "
+	if compressed {
+		tarflags = "tar -Oxzf - "
+		mediaType = types.DockerLayer
+	}
+
+	hash, err := v1.NewHash(ref.Identifier())
+	if err != nil {
+		return err
+	}
+
+	data := HeaderData{
+		Repo:      ref.Context().String(),
+		Reference: ref.String(),
+		Descriptor: &v1.Descriptor{
+			Size:      size,
+			Digest:    hash,
+			MediaType: mediaType,
+		},
+		Handler: handlerForMT(string(mediaType)),
+		//EscapedMediaType: url.QueryEscape(string(mediaType)),
+		MediaTypeLink: getLink(string(mediaType)),
+		Up: &RepoParent{
+			Parent:    ref.Context().String(),
+			Separator: "@",
+			Child:     ref.Identifier(),
+		},
+		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filename,
+	}
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
+	// fmt.Fprintf(w, footer)
+	if _, err := fmt.Fprintf(w, "<pre>"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+	ref, err := name.ParseReference(fs.blobRef)
+	if err != nil {
+		return err
+	}
+	return renderHeader(w, fname, fs.ref, ref, fs.compressed, fs.size)
+}
+
 // TODO: Check to see if we hit tr or rc EOF and reset.
-func (fs *layerFS) Open(original string) (http.File, error) {
+func (fs *layerFS) Open(original string) (httpserve.File, error) {
 	name := strings.TrimPrefix(original, fs.ref)
 
 	// This is a bit nasty. For symlinks and hardlinks, we have to handle:

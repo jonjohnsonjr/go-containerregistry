@@ -160,12 +160,12 @@ body {
 <body>
 <div>
 {{ if .Up }}
-<h2><a href="/"><img class="crane" src="/favicon.svg"/><a> <a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}{{if .Handler }}<a class="mt" href="{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{else}}{{.Up.Child}}{{end}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
+<h2><a href="/"><img class="crane" src="/favicon.svg"/><a> <a class="mt" href="/?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}{{if .Handler }}<a class="mt" href="/{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{else}}{{.Up.Child}}{{end}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ else }}
 <h2><a href="/"><img class="crane" src="/favicon.svg"/><a> {{.Reference}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ end }}
 {{ if .Descriptor }}
-Docker-Content-Digest: <a class="mt" href="{{.Handler}}{{$.Repo}}@{{.Descriptor.Digest}}&mt={{.EscapedMediaType}}&size={{.Descriptor.Size}}">{{.Descriptor.Digest}}<a><br>
+Docker-Content-Digest: <a class="mt" href="/{{.Handler}}{{$.Repo}}@{{.Descriptor.Digest}}{{if .EscapedMediaType }}&mt={{.EscapedMediaType}}&size={{.Descriptor.Size}}{{end}}">{{.Descriptor.Digest}}<a><br>
 Content-Length: {{.Descriptor.Size}}<br>
 Content-Type: {{if .MediaTypeLink}}<a class="mt" href="{{.MediaTypeLink}}">{{.Descriptor.MediaType}}</a>{{else}}{{.Descriptor.MediaType}}{{end}}<br>
 {{end}}

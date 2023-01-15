@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/internal/safefilepath"
+	"github.com/google/go-containerregistry/pkg/logs"
 )
 
 // A Dir implements FileSystem using the native file system restricted to a
@@ -88,6 +89,15 @@ func (d Dir) Open(name string) (File, error) {
 	return f, nil
 }
 
+func (d Dir) RenderHeader(w http.ResponseWriter, name string, f File) error {
+	// We don't use this.
+	return nil
+}
+
+type HeaderRenderer interface {
+	RenderHeader(w http.ResponseWriter, name string, f File) error
+}
+
 // A FileSystem implements access to a collection of named files.
 // The elements in a file path are separated by slash ('/', U+002F)
 // characters, regardless of host operating system convention.
@@ -97,6 +107,7 @@ func (d Dir) Open(name string) (File, error) {
 // the FS adapter function converts an fs.FS to a FileSystem.
 type FileSystem interface {
 	Open(name string) (File, error)
+	HeaderRenderer
 }
 
 // A File is returned by a FileSystem's Open method and can be
@@ -217,11 +228,13 @@ var errSeeker = errors.New("seeker can't seek")
 // all of the byte-range-spec values is greater than the content size.
 var errNoOverlap = errors.New("invalid range: failed to overlap")
 
+type renderFunc func(w http.ResponseWriter) error
+
 // if name is empty, filename is unknown. (used for mime type, before sniffing)
 // if modtime.IsZero(), modtime is unknown.
 // content must be seeked to the beginning of the file.
 // The sizeFunc is called at most once. Its error, if any, is sent in the HTTP response.
-func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime time.Time, sizeFunc func() (int64, error), content io.ReadSeeker, prefix []byte) {
+func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime time.Time, sizeFunc func() (int64, error), content io.ReadSeeker, render renderFunc) {
 	setLastModified(w, modtime)
 	done, rangeReq := checkPreconditions(w, r, modtime)
 	if done {
@@ -341,6 +354,10 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 			mw.Close()
 			pw.Close()
 		}()
+	}
+
+	if err := render(w); err != nil {
+		logs.Debug.Printf("render(w): %v", err)
 	}
 
 	w.Header().Set("Accept-Ranges", "bytes")
@@ -678,7 +695,12 @@ func serveFile(w http.ResponseWriter, r *http.Request, fs FileSystem, name strin
 
 	// serveContent will check modification time
 	sizeFunc := func() (int64, error) { return d.Size(), nil }
-	serveContent(w, r, d.Name(), d.ModTime(), sizeFunc, f, nil)
+	render := func(w http.ResponseWriter) error {
+		logs.Debug.Printf("render: %v", f)
+		logs.Debug.Printf("name: %s", name)
+		return fs.RenderHeader(w, name, f)
+	}
+	serveContent(w, r, d.Name(), d.ModTime(), sizeFunc, f, render)
 }
 
 // toHTTPError returns a non-specific HTTP error message and status code
@@ -762,6 +784,15 @@ type fileHandler struct {
 
 type ioFS struct {
 	fsys fs.FS
+}
+
+func (i ioFS) RenderHeader(w http.ResponseWriter, name string, f File) error {
+	if hr, ok := i.fsys.(HeaderRenderer); ok {
+		logs.Debug.Printf("ok RenderHeader: %v", f)
+		return hr.RenderHeader(w, name, f)
+	}
+	logs.Debug.Printf("RenderHeader nope")
+	return nil
 }
 
 type ioFile struct {

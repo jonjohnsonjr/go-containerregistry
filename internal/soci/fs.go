@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,7 +18,9 @@ import (
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/compress/gzip"
+	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/pkg/logs"
+	"github.com/google/go-containerregistry/pkg/name"
 )
 
 // More than enough for FileServer to Peek at file contents.
@@ -26,6 +29,9 @@ const bufferLen = 2 << 16
 type multifs struct {
 	fss    []*SociFS
 	prefix string
+
+	lastFs   *SociFS
+	lastFile string
 }
 
 func MultiFS(fss []*SociFS, prefix string) fs.FS {
@@ -87,6 +93,7 @@ func (s *multifs) find(name string) (*TOCFile, *SociFS, error) {
 }
 
 func (s *multifs) Open(original string) (fs.File, error) {
+	s.lastFile = original
 	logs.Debug.Printf("multifs.Open(%q)", original)
 	name := strings.TrimPrefix(original, s.prefix)
 
@@ -110,6 +117,7 @@ func (s *multifs) Open(original string) (fs.File, error) {
 				// Possibly a directory?
 				return s.err(name), nil
 			}
+			s.lastFs = sfs
 			return sfs.err(name), nil
 		}
 
@@ -119,6 +127,7 @@ func (s *multifs) Open(original string) (fs.File, error) {
 
 		name = path.Clean("/" + fm.Name)
 	}
+	s.lastFs = sfs
 
 	if int64(fm.Size) > sfs.maxSize {
 		logs.Debug.Printf("multifs.Open(%q): too big: %d", name, fm.Size)
@@ -131,6 +140,17 @@ func (s *multifs) Open(original string) (fs.File, error) {
 	}
 
 	return &sociFile{fs: sfs, name: name, fm: fm}, nil
+}
+
+// TODO: Header should maybe be slightly different for flattened?
+func (s *multifs) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+	logs.Debug.Printf("s.lastFile=%q, s.lastFs=%v, fname=%q", s.lastFile, s.lastFs == nil, fname)
+	if s.lastFile == strings.TrimPrefix(fname, "/") && s.lastFs != nil {
+		return s.lastFs.RenderHeader(w, fname, f)
+	}
+
+	logs.Debug.Printf("did not RenderHeader")
+	return nil
 }
 
 type multiFile struct {
@@ -209,6 +229,8 @@ func FS(tree Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *Soc
 	}
 }
 
+type RenderFunc func(w http.ResponseWriter, fname string, prefix string, ref name.Reference, compressed bool, size int64) error
+
 type SociFS struct {
 	files []TOCFile
 
@@ -219,6 +241,21 @@ type SociFS struct {
 	prefix  string
 	ref     string
 	maxSize int64
+
+	Render RenderFunc
+}
+
+func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+	logs.Debug.Printf("soci.RenderHeader: %v", s.Render)
+	if s.Render != nil {
+		ref, err := name.ParseReference(s.ref)
+		if err != nil {
+			return err
+		}
+		logs.Debug.Printf("ref=%q, ref.String()=%q", s.ref, ref.String())
+		return s.Render(w, fname, s.prefix, ref, true, s.tree.TOC().Csize)
+	}
+	return nil
 }
 
 func (s *SociFS) extractFile(ctx context.Context, tf *TOCFile) (io.ReadCloser, error) {
