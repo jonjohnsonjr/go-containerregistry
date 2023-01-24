@@ -17,9 +17,12 @@ package cmd
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/trace"
+	"strings"
 
 	"github.com/docker/cli/cli/config"
 	"github.com/google/go-containerregistry/internal/cmd"
@@ -42,7 +45,13 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 	verbose := false
 	insecure := false
 	ndlayers := false
+	traceFilename := ""
 	platform := &platformValue{}
+
+	var (
+		traceFile io.WriteCloser
+		err       error
+	)
 
 	root := &cobra.Command{
 		Use:               use,
@@ -51,7 +60,18 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 		DisableAutoGenTag: true,
 		SilenceUsage:      true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			options = append(options, crane.WithContext(cmd.Context()))
+			ctx := cmd.Context()
+			if traceFilename != "" {
+				traceFile, err = os.OpenFile(traceFilename, os.O_RDWR|os.O_CREATE, 0755)
+				if err != nil {
+					logs.Debug.Printf("failed to open %q: %v", traceFilename, err)
+				} else {
+					logs.Debug.Printf("starting trace")
+					trace.Start(traceFile)
+					ctx, _ = trace.NewTask(ctx, cmd.Name()+" "+strings.Join(args, " "))
+				}
+			}
+			options = append(options, crane.WithContext(ctx))
 			// TODO(jonjohnsonjr): crane.Verbose option?
 			if verbose {
 				logs.Debug.SetOutput(os.Stderr)
@@ -79,6 +99,10 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 
 			var rt http.RoundTripper = transport
 
+			if traceFile != nil {
+				rt = &traceTransport{rt}
+			}
+
 			// Add any http headers if they are set in the config file.
 			cf, err := config.Load(os.Getenv("DOCKER_CONFIG"))
 			if err != nil {
@@ -91,6 +115,16 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 			}
 
 			options = append(options, crane.WithTransport(rt))
+		},
+		PersistentPostRun: func(cmd *cobra.Command, args []string) {
+			logs.Debug.Printf("i am in postrun")
+			if traceFile != nil {
+				logs.Debug.Printf("stopping trace")
+				trace.Stop()
+				if err := traceFile.Close(); err != nil {
+					logs.Debug.Printf("traceFile.Close(): %v", err)
+				}
+			}
 		},
 	}
 
@@ -121,6 +155,7 @@ func New(use, short string, options []crane.Option) *cobra.Command {
 	root.AddCommand(commands...)
 
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable debug logs")
+	root.PersistentFlags().StringVar(&traceFilename, "trace", "", "Capture trace and write to given file")
 	root.PersistentFlags().BoolVar(&insecure, "insecure", false, "Allow image references to be fetched without TLS")
 	root.PersistentFlags().BoolVar(&ndlayers, "allow-nondistributable-artifacts", false, "Allow pushing non-distributable (foreign) layers")
 	root.PersistentFlags().Var(platform, "platform", "Specifies the platform in the form os/arch[/variant][:osversion] (e.g. linux/amd64).")
@@ -145,4 +180,13 @@ func (ht *headerTransport) RoundTrip(in *http.Request) (*http.Response, error) {
 		in.Header.Set(k, v)
 	}
 	return ht.inner.RoundTrip(in)
+}
+
+type traceTransport struct {
+	inner http.RoundTripper
+}
+
+func (tt *traceTransport) RoundTrip(in *http.Request) (*http.Response, error) {
+	defer trace.StartRegion(in.Context(), in.URL.String()).End()
+	return tt.inner.RoundTrip(in)
 }
