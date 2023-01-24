@@ -14,6 +14,7 @@
 package main
 
 import (
+	"crypto"
 	"flag"
 	"fmt"
 	"log"
@@ -24,12 +25,18 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+
+	sha256simd "github.com/minio/sha256-simd"
 )
 
 var auth = flag.Bool("auth", false, "use docker credentials")
 var verbose = flag.Bool("v", false, "verbose logs")
 
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
+
+func init() {
+	crypto.RegisterHash(crypto.SHA256, sha256simd.New)
+}
 
 func main() {
 	flag.Parse()
