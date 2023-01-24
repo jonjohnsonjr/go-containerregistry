@@ -59,7 +59,7 @@ func TestGetSchema1(t *testing.T) {
 	tag := mustNewTag(t, fmt.Sprintf("%s/%s:latest", u.Host, expectedRepo))
 
 	// Get should succeed even for invalid json. We don't parse the response.
-	desc, err := Get(tag)
+	desc, err := Get(tag, WithTransport(server.Client().Transport))
 	if err != nil {
 		t.Fatalf("Get(%s) = %v", tag, err)
 	}
@@ -119,7 +119,7 @@ func TestGetImageAsIndex(t *testing.T) {
 	tag := mustNewTag(t, fmt.Sprintf("%s/%s:latest", u.Host, expectedRepo))
 
 	// Get should succeed even for invalid json. We don't parse the response.
-	desc, err := Get(tag)
+	desc, err := Get(tag, WithTransport(server.Client().Transport))
 	if err != nil {
 		t.Fatalf("Get(%s) = %v", tag, err)
 	}

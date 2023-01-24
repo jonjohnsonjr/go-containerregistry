@@ -51,7 +51,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("NewTag() = %v", err)
 	}
 
-	if err := Delete(tag); err != nil {
+	if err := Delete(tag, WithTransport(server.Client().Transport)); err != nil {
 		t.Errorf("Delete() = %v", err)
 	}
 }
@@ -83,7 +83,7 @@ func TestDeleteBadStatus(t *testing.T) {
 		t.Fatalf("NewTag() = %v", err)
 	}
 
-	if err := Delete(tag); err == nil {
+	if err := Delete(tag, WithTransport(server.Client().Transport)); err == nil {
 		t.Error("Delete() = nil; wanted error")
 	}
 }

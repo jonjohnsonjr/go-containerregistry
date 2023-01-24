@@ -142,7 +142,7 @@ func TestIndexRawManifestDigests(t *testing.T) {
 			rmt := remoteIndex{
 				fetcher: fetcher{
 					Ref:     ref,
-					Client:  http.DefaultClient,
+					Client:  server.Client(),
 					context: context.Background(),
 				},
 			}
@@ -198,7 +198,7 @@ func TestIndex(t *testing.T) {
 	}
 
 	tag := mustNewTag(t, fmt.Sprintf("%s/%s:latest", u.Host, expectedRepo))
-	rmt, err := Index(tag, WithTransport(http.DefaultTransport))
+	rmt, err := Index(tag, WithTransport(server.Client().Transport))
 	if err != nil {
 		t.Errorf("Index() = %v", err)
 	}

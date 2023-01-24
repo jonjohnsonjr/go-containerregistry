@@ -54,7 +54,7 @@ func TestWriteLayer_Progress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteLayer(ref.Context(), l, WithProgress(c)); err != nil {
+	if err := WriteLayer(ref.Context(), l, WithProgress(c), WithTransport(s.Client().Transport)); err != nil {
 		t.Fatalf("WriteLayer: %v", err)
 	}
 	if err := checkUpdates(c); err != nil {
@@ -419,7 +419,7 @@ func TestWrite_Progress_WithNonDistributableLayer_AndIncludeNonDistributableLaye
 		t.Fatal(err)
 	}
 
-	if err := Write(ref, img, WithProgress(c), WithNondistributable); err != nil {
+	if err := Write(ref, img, WithProgress(c), WithNondistributable, WithTransport(s.Client().Transport)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 

@@ -69,7 +69,7 @@ func TestCheckPushPermission(t *testing.T) {
 		}
 
 		ref := mustNewTag(t, fmt.Sprintf("%s/%s:latest", u.Host, expectedRepo))
-		if err := CheckPushPermission(ref, authn.DefaultKeychain, http.DefaultTransport); (err != nil) != c.wantErr {
+		if err := CheckPushPermission(ref, authn.DefaultKeychain, server.Client().Transport); (err != nil) != c.wantErr {
 			t.Errorf("CheckPermission(%d): got error = %v, want err = %t", c.status, err, c.wantErr)
 		}
 	}

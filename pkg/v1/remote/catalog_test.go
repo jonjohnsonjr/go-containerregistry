@@ -73,7 +73,7 @@ func TestCatalogPage(t *testing.T) {
 				t.Fatalf("name.NewRegistry(%v) = %v", u.Host, err)
 			}
 
-			repos, err := CatalogPage(reg, "", 100)
+			repos, err := CatalogPage(reg, "", 100, WithTransport(server.Client().Transport))
 			if (err != nil) != tc.wantErr {
 				t.Errorf("CatalogPage() wrong error: %v, want %v: %v\n", (err != nil), tc.wantErr, err)
 			}
@@ -141,7 +141,7 @@ func TestCatalog(t *testing.T) {
 				t.Fatalf("name.NewRegistry(%v) = %v", u.Host, err)
 			}
 
-			repos, err := Catalog(context.Background(), reg)
+			repos, err := Catalog(context.Background(), reg, WithTransport(server.Client().Transport))
 			if (err != nil) != tc.wantErr {
 				t.Errorf("Catalog() wrong error: %v, want %v: %v\n", (err != nil), tc.wantErr, err)
 			}
@@ -176,7 +176,7 @@ func TestCancelledCatalog(t *testing.T) {
 		t.Fatalf("name.NewRegistry(%v) = %v", u.Host, err)
 	}
 
-	_, err = Catalog(ctx, reg)
+	_, err = Catalog(ctx, reg, WithTransport(server.Client().Transport))
 	if want, got := context.Canceled, err; !errors.Is(got, want) {
 		t.Errorf("wanted %v got %v", want, got)
 	}

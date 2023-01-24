@@ -74,7 +74,7 @@ func TestList(t *testing.T) {
 				t.Fatalf("name.NewRepository(%v) = %v", repoName, err)
 			}
 
-			tags, err := List(repo)
+			tags, err := List(repo, WithTransport(server.Client().Transport))
 			if (err != nil) != tc.wantErr {
 				t.Errorf("List() wrong error: %v, want %v: %v\n", (err != nil), tc.wantErr, err)
 			}
@@ -110,7 +110,7 @@ func TestCancelledList(t *testing.T) {
 		t.Fatalf("name.NewRepository(%v) = %v", repoName, err)
 	}
 
-	_, err = ListWithContext(ctx, repo)
+	_, err = ListWithContext(ctx, repo, WithTransport(server.Client().Transport))
 	if err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Errorf(`unexpected error; want "context canceled", got %v`, err)
 	}

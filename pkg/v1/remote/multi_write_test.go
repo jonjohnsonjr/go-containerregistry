@@ -87,13 +87,13 @@ func TestMultiWrite(t *testing.T) {
 		tag1: img1,
 		tag2: img2,
 		tag3: idx,
-	}); err != nil {
+	}, WithTransport(s.Client().Transport)); err != nil {
 		t.Error("Write:", err)
 	}
 
 	// Check that tagged images are present.
 	for _, tag := range []name.Tag{tag1, tag2} {
-		got, err := Image(tag)
+		got, err := Image(tag, WithTransport(s.Client().Transport))
 		if err != nil {
 			t.Error(err)
 			continue
@@ -104,7 +104,7 @@ func TestMultiWrite(t *testing.T) {
 	}
 
 	// Check that tagged manfest list is present and valid.
-	got, err := Index(tag3)
+	got, err := Index(tag3, WithTransport(s.Client().Transport))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,12 +140,12 @@ func TestMultiWriteWithNondistributableLayer(t *testing.T) {
 
 	// Write the image.
 	tag1 := mustNewTag(t, u.Host+"/repo:tag1")
-	if err := MultiWrite(map[name.Reference]Taggable{tag1: img}, WithNondistributable); err != nil {
+	if err := MultiWrite(map[name.Reference]Taggable{tag1: img}, WithNondistributable, WithTransport(s.Client().Transport)); err != nil {
 		t.Error("Write:", err)
 	}
 
 	// Check that tagged image is present.
-	got, err := Image(tag1)
+	got, err := Image(tag1, WithTransport(s.Client().Transport))
 	if err != nil {
 		t.Error(err)
 	}
@@ -185,7 +185,7 @@ func TestMultiWrite_Retry(t *testing.T) {
 		tag1 := mustNewTag(t, u.Host+"/repo:tag1")
 		if err := MultiWrite(map[name.Reference]Taggable{
 			tag1: img1,
-		}, WithRetryBackoff(fastBackoff)); err != nil {
+		}, WithRetryBackoff(fastBackoff), WithTransport(s.Client().Transport)); err != nil {
 			t.Error("Write:", err)
 		}
 	})
@@ -214,7 +214,7 @@ func TestMultiWrite_Retry(t *testing.T) {
 		tag1 := mustNewTag(t, u.Host+"/repo:tag1")
 		if err := MultiWrite(map[name.Reference]Taggable{
 			tag1: img1,
-		}); err == nil {
+		}, WithTransport(s.Client().Transport)); err == nil {
 			t.Fatal("Expected error:")
 		}
 
@@ -242,7 +242,7 @@ func TestMultiWrite_Retry(t *testing.T) {
 		tag1 := mustNewTag(t, u.Host+"/repo:tag1")
 
 		// using a transport.Wrapper, meaning retry logic should not be wrapped
-		doesNotRetryTransport := &countTransport{inner: http.DefaultTransport}
+		doesNotRetryTransport := &countTransport{inner: s.Client().Transport}
 		transportWrapper, err := transport.NewWithContext(context.Background(), tag1.Repository.Registry, authn.Anonymous, doesNotRetryTransport, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -285,7 +285,7 @@ func TestMultiWrite_Retry(t *testing.T) {
 
 		tag1 := mustNewTag(t, u.Host+"/repo:tag1")
 		// using a transport.Wrapper, meaning retry logic should not be wrapped
-		transportWrapper, err := transport.NewWithContext(context.Background(), tag1.Repository.Registry, authn.Anonymous, http.DefaultTransport, nil)
+		transportWrapper, err := transport.NewWithContext(context.Background(), tag1.Repository.Registry, authn.Anonymous, s.Client().Transport, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -322,12 +322,12 @@ func TestMultiWrite_Deep(t *testing.T) {
 	tag := mustNewTag(t, u.Host+"/repo:tag")
 	if err := MultiWrite(map[name.Reference]Taggable{
 		tag: idx,
-	}); err != nil {
+	}, WithTransport(s.Client().Transport)); err != nil {
 		t.Error("Write:", err)
 	}
 
 	// Check that tagged manfest list is present and valid.
-	got, err := Index(tag)
+	got, err := Index(tag, WithTransport(s.Client().Transport))
 	if err != nil {
 		t.Fatal(err)
 	}

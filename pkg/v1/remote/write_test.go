@@ -167,7 +167,7 @@ func setupWriterWithServer(server *httptest.Server, repo string) (*writer, close
 
 	return &writer{
 		repo:      tag.Context(),
-		client:    http.DefaultClient,
+		client:    server.Client(),
 		predicate: defaultRetryPredicate,
 		backoff:   defaultRetryBackoff,
 	}, server, nil
@@ -586,7 +586,7 @@ func TestDedupeLayers(t *testing.T) {
 		t.Fatalf("NewTag() = %v", err)
 	}
 
-	if err := Write(tag, img); err != nil {
+	if err := Write(tag, img, WithTransport(server.Client().Transport)); err != nil {
 		t.Errorf("Write: %v", err)
 	}
 
@@ -945,7 +945,7 @@ func TestWrite(t *testing.T) {
 		t.Fatalf("NewTag() = %v", err)
 	}
 
-	if err := Write(tag, img); err != nil {
+	if err := Write(tag, img, WithTransport(server.Client().Transport)); err != nil {
 		t.Errorf("Write() = %v", err)
 	}
 }
@@ -994,7 +994,7 @@ func TestWriteWithErrors(t *testing.T) {
 	c := make(chan v1.Update, 100)
 
 	var terr *transport.Error
-	if err := Write(tag, img, WithProgress(c)); err == nil {
+	if err := Write(tag, img, WithProgress(c), WithTransport(server.Client().Transport)); err == nil {
 		t.Error("Write() = nil; wanted error")
 	} else if !errors.As(err, &terr) {
 		t.Errorf("Write() = %T; wanted *transport.Error", err)
@@ -1333,7 +1333,7 @@ func TestWriteIndex(t *testing.T) {
 		t.Fatalf("NewTag() = %v", err)
 	}
 
-	if err := WriteIndex(tag, idx); err != nil {
+	if err := WriteIndex(tag, idx, WithTransport(server.Client().Transport)); err != nil {
 		t.Errorf("WriteIndex() = %v", err)
 	}
 }
@@ -1392,7 +1392,7 @@ func TestSkipForeignLayersByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Write(ref, img); err != nil {
+	if err := Write(ref, img, WithTransport(s.Client().Transport)); err != nil {
 		t.Errorf("failed to Write: %v", err)
 	}
 }
@@ -1458,7 +1458,7 @@ func TestWriteForeignLayerIfOptionSet(t *testing.T) {
 		t.Fatalf("NewTag() = %v", err)
 	}
 
-	if err := Write(tag, img, WithNondistributable); err != nil {
+	if err := Write(tag, img, WithNondistributable, WithTransport(server.Client().Transport)); err != nil {
 		t.Errorf("Write: %v", err)
 	}
 
@@ -1484,7 +1484,7 @@ func TestTag(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteIndex(srcRef, idx); err != nil {
+	if err := WriteIndex(srcRef, idx, WithTransport(s.Client().Transport)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1494,11 +1494,11 @@ func TestTag(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Tag(dstRef, idx); err != nil {
+	if err := Tag(dstRef, idx, WithTransport(s.Client().Transport)); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := Index(dstRef)
+	got, err := Index(dstRef, WithTransport(s.Client().Transport))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1523,7 +1523,7 @@ func TestTagDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WriteIndex(srcRef, idx); err != nil {
+	if err := WriteIndex(srcRef, idx, WithTransport(s.Client().Transport)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1538,7 +1538,7 @@ func TestTagDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Tag(dstRef, desc); err != nil {
+	if err := Tag(dstRef, desc, WithTransport(s.Client().Transport)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1577,7 +1577,7 @@ func TestNestedIndex(t *testing.T) {
 		Add: l,
 	})
 
-	if err := WriteIndex(srcRef, parent); err != nil {
+	if err := WriteIndex(srcRef, parent, WithTransport(s.Client().Transport)); err != nil {
 		t.Fatal(err)
 	}
 	pulled, err := Index(srcRef)
@@ -1635,7 +1635,7 @@ func BenchmarkWrite(b *testing.B) {
 			b.Fatalf("parsing tag (%s): %v", tagStr, err)
 		}
 
-		err = Write(tag, img)
+		err = Write(tag, img, WithTransport(s.Client().Transport))
 		if err != nil {
 			b.Fatalf("pushing tag one: %v", err)
 		}

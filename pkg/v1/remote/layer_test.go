@@ -59,11 +59,11 @@ func TestRemoteLayer(t *testing.T) {
 	}
 
 	t.Log(ref)
-	if err := WriteLayer(ref.Context(), layer); err != nil {
+	if err := WriteLayer(ref.Context(), layer, WithTransport(s.Client().Transport)); err != nil {
 		t.Fatalf("failed to WriteLayer: %v", err)
 	}
 
-	got, err := Layer(ref)
+	got, err := Layer(ref, WithTransport(s.Client().Transport))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,11 +114,11 @@ func TestRemoteLayerDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Write(ref, image); err != nil {
+	if err := Write(ref, image, WithTransport(s.Client().Transport)); err != nil {
 		t.Fatalf("failed to WriteLayer: %v", err)
 	}
 
-	pulled, err := Image(ref)
+	pulled, err := Image(ref, WithTransport(s.Client().Transport))
 	if err != nil {
 		t.Fatal(err)
 	}
