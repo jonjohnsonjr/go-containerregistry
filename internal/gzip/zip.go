@@ -20,9 +20,35 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
+	"sync"
 
 	"github.com/google/go-containerregistry/internal/and"
 )
+
+var (
+	writepool sync.Pool
+	readpool  sync.Pool
+)
+
+func getWriter(w io.Writer, level int) (*gzip.Writer, error) {
+	if p := writepool.Get(); p != nil {
+		zw := p.(*gzip.Writer)
+		zw.Reset(w)
+		return zw, nil
+	}
+
+	return gzip.NewWriterLevel(w, level)
+}
+
+func getReader(r io.Reader) (*gzip.Reader, error) {
+	if p := readpool.Get(); p != nil {
+		zr := p.(*gzip.Reader)
+		zr.Reset(r)
+		return zr, nil
+	}
+
+	return gzip.NewReader(r)
+}
 
 // MagicHeader is the start of gzip files.
 var MagicHeader = []byte{'\x1f', '\x8b'}
@@ -53,7 +79,7 @@ func ReadCloserLevel(r io.ReadCloser, level int) io.ReadCloser {
 	go func() error {
 		// TODO(go1.14): Just defer {pw,gw,r}.Close like you'd expect.
 		// Context: https://golang.org/issue/24283
-		gw, err := gzip.NewWriterLevel(bw, level)
+		gw, err := getWriter(bw, level)
 		if err != nil {
 			return pw.CloseWithError(err)
 		}
@@ -68,6 +94,7 @@ func ReadCloserLevel(r io.ReadCloser, level int) io.ReadCloser {
 		if err := gw.Close(); err != nil {
 			return pw.CloseWithError(err)
 		}
+		writepool.Put(gw)
 
 		// Flush bufio writer to ensure we write out everything.
 		if err := bw.Flush(); err != nil {
@@ -87,7 +114,7 @@ func ReadCloserLevel(r io.ReadCloser, level int) io.ReadCloser {
 // UnzipReadCloser reads compressed input data from the io.ReadCloser and
 // returns an io.ReadCloser from which uncompressed data may be read.
 func UnzipReadCloser(r io.ReadCloser) (io.ReadCloser, error) {
-	gr, err := gzip.NewReader(r)
+	gr, err := getReader(r)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +126,7 @@ func UnzipReadCloser(r io.ReadCloser) (io.ReadCloser, error) {
 			// us closing the main ReadCloser, since this could leave
 			// an open file descriptor (fails on Windows).
 			gr.Close()
+			readpool.Put(gr)
 			return r.Close()
 		},
 	}, nil

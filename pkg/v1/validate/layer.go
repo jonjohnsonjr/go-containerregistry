@@ -16,7 +16,6 @@ package validate
 
 import (
 	"archive/tar"
-	"compress/gzip"
 	"crypto"
 	"encoding/hex"
 	"errors"
@@ -24,6 +23,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/google/go-containerregistry/internal/gzip"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
 )
@@ -128,7 +128,7 @@ func computeLayer(layer v1.Layer) (*computedLayer, error) {
 	}()
 
 	// Read the bytes through gzip.Reader to compute the DiffID.
-	uncompressed, err := gzip.NewReader(pr)
+	uncompressed, err := gzip.UnzipReadCloser(pr)
 	if err != nil {
 		return nil, err
 	}
