@@ -578,6 +578,9 @@ func TestPullingForeignLayer(t *testing.T) {
 			if _, err := io.Copy(w, compressed); err != nil {
 				t.Fatal(err)
 			}
+			if err := compressed.Close(); err != nil {
+				t.Fatal(err)
+			}
 			w.WriteHeader(http.StatusOK)
 		default:
 			t.Fatalf("Unexpected path: %v", r.URL.Path)
@@ -633,6 +636,9 @@ func TestPullingForeignLayer(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := io.Copy(w, compressed); err != nil {
+				t.Fatal(err)
+			}
+			if err := compressed.Close(); err != nil {
 				t.Fatal(err)
 			}
 			w.WriteHeader(http.StatusOK)
@@ -700,6 +706,7 @@ func TestData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rc.Close()
 	lb, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal(err)
