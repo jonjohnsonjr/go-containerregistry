@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
 
 func TestDelete(t *testing.T) {
@@ -60,6 +61,8 @@ func TestDeleteBadStatus(t *testing.T) {
 	expectedRepo := "write/time"
 	manifestPath := fmt.Sprintf("/v2/%s/manifests/latest", expectedRepo)
 
+	old := transport.DefaultBackoff
+	transport.DefaultBackoff = fastBackoff
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v2/":
@@ -86,4 +89,5 @@ func TestDeleteBadStatus(t *testing.T) {
 	if err := Delete(tag, WithTransport(server.Client().Transport)); err == nil {
 		t.Error("Delete() = nil; wanted error")
 	}
+	transport.DefaultBackoff = old
 }

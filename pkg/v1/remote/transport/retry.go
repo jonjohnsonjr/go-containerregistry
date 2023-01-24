@@ -22,7 +22,7 @@ import (
 )
 
 // Sleep for 0.1 then 0.3 seconds. This should cover networking blips.
-var defaultBackoff = retry.Backoff{
+var DefaultBackoff = retry.Backoff{
 	Duration: 100 * time.Millisecond,
 	Factor:   3.0,
 	Jitter:   0.1,
@@ -75,7 +75,7 @@ func WithRetryStatusCodes(codes ...int) Option {
 // NewRetry returns a transport that retries errors.
 func NewRetry(inner http.RoundTripper, opts ...Option) http.RoundTripper {
 	o := &options{
-		backoff:   defaultBackoff,
+		backoff:   DefaultBackoff,
 		predicate: retry.IsTemporary,
 	}
 
