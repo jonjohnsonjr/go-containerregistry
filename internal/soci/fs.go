@@ -309,7 +309,7 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		fm := fm
 		name := path.Clean("/" + fm.Name)
 
-		if !strings.HasPrefix(name, prefix) {
+		if prefix != "/" && name != prefix && !strings.HasPrefix(name, prefix+"/") {
 			continue
 		}
 
@@ -581,7 +581,11 @@ func (s *sociDirEntry) Name() string {
 		return s.dir
 	}
 	trimmed := strings.TrimPrefix(s.fm.Name, "./")
-	trimmed = strings.TrimPrefix(trimmed, s.dir+"/")
+	if !strings.HasPrefix(s.dir, "/") && strings.HasPrefix(trimmed, "/") {
+		trimmed = strings.TrimPrefix(trimmed, "/"+s.dir+"/")
+	} else {
+		trimmed = strings.TrimPrefix(trimmed, s.dir+"/")
+	}
 	return path.Clean(trimmed)
 }
 
