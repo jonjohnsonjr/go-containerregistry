@@ -15,6 +15,7 @@ package explore
 
 import (
 	"crypto/ecdsa"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/asn1"
@@ -89,90 +90,118 @@ Certificate:
         60:97:f0:51:9d:22:db:d7:df:fa:32:56:b3:08:88:ed:c3:6a:
         52:d9:c8:ef:79:35:9d:30:f9:ea:d9:2d:ad
 */
+func renderDer(w io.Writer, b []byte) error {
+	cert, err := x509.ParseCertificate(b)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, "Certificate:\n")
+	fmt.Fprintf(w, "    Data:\n")
+	fmt.Fprintf(w, "        Version: %d (0x%x)\n", cert.Version, cert.Version-1)
+	fmt.Fprintf(w, "        Serial Number:\n")
+	fmt.Fprintf(w, "            ")
+	printHex(w, cert.SerialNumber.Bytes())
+	fmt.Fprintf(w, "\n")
+	fmt.Fprintf(w, "        Signature Algorithm: %s\n", cert.SignatureAlgorithm)
+	fmt.Fprintf(w, "        Issuer: %s\n", cert.Issuer)
+	fmt.Fprintf(w, "        Validity:\n")
+	fmt.Fprintf(w, "            Not Before: %s\n", cert.NotBefore)
+	fmt.Fprintf(w, "            Not After : %s\n", cert.NotAfter)
+	fmt.Fprintf(w, "        Subject: %s\n", cert.Subject)
+	fmt.Fprintf(w, "        Subject Public Key Info:\n")
+	fmt.Fprintf(w, "            Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm)
+
+	pub := cert.PublicKey
+	switch p := pub.(type) {
+	case *ecdsa.PublicKey:
+		bits := p.Params().BitSize
+		name := p.Params().Name
+
+		fmt.Fprintf(w, "                Public Key: (%d bit)\n", bits)
+		fmt.Fprintf(w, "                pub:")
+		bs := []byte{0x04} // uncompressed public keys start with 04?
+		bs = append(bs, p.X.Bytes()...)
+		bs = append(bs, p.Y.Bytes()...)
+		for i, b := range bs {
+			if i%15 == 0 {
+				fmt.Fprintf(w, "\n                    ")
+			}
+			fmt.Fprintf(w, "%02x", b)
+			if i < len(bs)-1 {
+				fmt.Fprintf(w, ":")
+			} else {
+				fmt.Fprintf(w, "\n")
+			}
+		}
+		fmt.Fprintf(w, "                NIST CURVE: %s\n", name)
+
+	case *rsa.PublicKey:
+		bits := p.N.BitLen()
+
+		fmt.Fprintf(w, "                Public Key: (%d bit)\n", bits)
+		fmt.Fprintf(w, "                Modulus:")
+		bs := []byte{0x00} // uncompressed public keys start with 04?
+		bs = append(bs, p.N.Bytes()...)
+		for i, b := range bs {
+			if i%15 == 0 {
+				fmt.Fprintf(w, "\n                    ")
+			}
+			fmt.Fprintf(w, "%02x", b)
+			if i < len(bs)-1 {
+				fmt.Fprintf(w, ":")
+			} else {
+				fmt.Fprintf(w, "\n")
+			}
+		}
+		fmt.Fprintf(w, "                Exponent: %d (%#x)\n", p.E, p.E)
+
+	default:
+		return fmt.Errorf("TODO: renderCert with %T", pub)
+	}
+
+	fmt.Fprintf(w, "        X509v3 extensions:\n")
+	for _, ext := range cert.Extensions {
+		fmt.Fprintf(w, "            %s:", oidKey(ext.Id))
+		if ext.Critical {
+			fmt.Fprintf(w, " critical")
+		}
+		fmt.Fprintf(w, "\n")
+		h := find(ext.Id)
+		if h != nil && h.format != nil {
+			for _, line := range strings.Split(h.format(cert, ext.Value), "\n") {
+				fmt.Fprintf(w, "                %s\n", line)
+			}
+		} else {
+			fmt.Fprintf(w, "                %v\n", asn1debug(cert, ext.Value))
+		}
+	}
+
+	fmt.Fprintf(w, "    Signature Algorithm: %s\n", cert.SignatureAlgorithm)
+	fmt.Fprintf(w, "    Signature Value:")
+	for i, b := range cert.Signature {
+		if i%18 == 0 {
+			fmt.Fprintf(w, "\n        ")
+		}
+		fmt.Fprintf(w, "%02x", b)
+		if i < len(cert.Signature)-1 {
+			fmt.Fprintf(w, ":")
+		} else {
+			fmt.Fprintf(w, "\n")
+		}
+
+	}
+	return nil
+}
+
 func renderCert(w io.Writer, b []byte) error {
 	block, rest := pem.Decode(b)
 	for {
 		if block == nil {
 			return fmt.Errorf("pem.Decode: %v, %d", block, len(rest))
 		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
+		if err := renderDer(w, block.Bytes); err != nil {
 			return err
-		}
-
-		fmt.Fprintf(w, "Certificate:\n")
-		fmt.Fprintf(w, "    Data:\n")
-		fmt.Fprintf(w, "        Version: %d (0x%x)\n", cert.Version, cert.Version-1)
-		fmt.Fprintf(w, "        Serial Number:\n")
-		fmt.Fprintf(w, "            ")
-		printHex(w, cert.SerialNumber.Bytes())
-		fmt.Fprintf(w, "\n")
-		fmt.Fprintf(w, "        Signature Algorithm: %s\n", cert.SignatureAlgorithm)
-		fmt.Fprintf(w, "        Issuer: %s\n", cert.Issuer)
-		fmt.Fprintf(w, "        Validity:\n")
-		fmt.Fprintf(w, "            Not Before: %s\n", cert.NotBefore)
-		fmt.Fprintf(w, "            Not After : %s\n", cert.NotAfter)
-		fmt.Fprintf(w, "        Subject:\n")
-		fmt.Fprintf(w, "        Subject Public Key Info:\n")
-		fmt.Fprintf(w, "            Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm)
-
-		pub := cert.PublicKey
-		switch p := pub.(type) {
-		case *ecdsa.PublicKey:
-			bits := p.Params().BitSize
-			name := p.Params().Name
-
-			fmt.Fprintf(w, "                Public Key: (%d bit)\n", bits)
-			fmt.Fprintf(w, "                pub:")
-			bs := []byte{0x04} // uncompressed public keys start with 04?
-			bs = append(bs, p.X.Bytes()...)
-			bs = append(bs, p.Y.Bytes()...)
-			for i, b := range bs {
-				if i%15 == 0 {
-					fmt.Fprintf(w, "\n                    ")
-				}
-				fmt.Fprintf(w, "%02x", b)
-				if i < len(bs)-1 {
-					fmt.Fprintf(w, ":")
-				} else {
-					fmt.Fprintf(w, "\n")
-				}
-			}
-			fmt.Fprintf(w, "                NIST CURVE: %s\n", name)
-		default:
-			return fmt.Errorf("TODO: renderCert with %T", pub)
-		}
-
-		fmt.Fprintf(w, "        X509v3 extensions:\n")
-		for _, ext := range cert.Extensions {
-			fmt.Fprintf(w, "            %s:", oidKey(ext.Id))
-			if ext.Critical {
-				fmt.Fprintf(w, " critical")
-			}
-			fmt.Fprintf(w, "\n")
-			h := find(ext.Id)
-			if h != nil && h.format != nil {
-				for _, line := range strings.Split(h.format(cert, ext.Value), "\n") {
-					fmt.Fprintf(w, "                %s\n", line)
-				}
-			} else {
-				fmt.Fprintf(w, "                %v\n", asn1debug(cert, ext.Value))
-			}
-		}
-
-		fmt.Fprintf(w, "    Signature Algorithm: %s\n", cert.SignatureAlgorithm)
-		fmt.Fprintf(w, "    Signature Value:")
-		for i, b := range cert.Signature {
-			if i%18 == 0 {
-				fmt.Fprintf(w, "\n        ")
-			}
-			fmt.Fprintf(w, "%02x", b)
-			if i < len(cert.Signature)-1 {
-				fmt.Fprintf(w, ":")
-			} else {
-				fmt.Fprintf(w, "\n")
-			}
-
 		}
 		if len(rest) == 0 {
 			break

@@ -48,8 +48,8 @@ func evalBytes(j string, b []byte) ([]byte, string, error) {
 			}
 			v = vv[idx]
 		case lexer.ItemSentinel:
-			switch strings.TrimSpace(item.Val) {
-			case "base64 -d":
+			val := strings.TrimSpace(item.Val)
+			if val == "base64 -d" {
 				s, err := toString(v)
 				if err != nil {
 					return nil, "", err
@@ -59,6 +59,18 @@ func evalBytes(j string, b []byte) ([]byte, string, error) {
 				if err != nil {
 					return nil, "", fmt.Errorf("base64 -d: %w", err)
 				}
+			} else if val == `awk '{print $1"="}'` {
+				s, err := toString(v)
+				if err != nil {
+					return nil, "", err
+				}
+				v = s + "="
+			} else if val == `awk '{print $1"=="}'` {
+				s, err := toString(v)
+				if err != nil {
+					return nil, "", err
+				}
+				v = s + "=="
 			}
 		}
 		item = l.NextItem()

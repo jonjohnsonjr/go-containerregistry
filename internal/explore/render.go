@@ -14,6 +14,7 @@
 package explore
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -633,24 +634,115 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 				// Don't fall through to renderRaw.
 				continue
 			}
+		case "x5c":
+			jose := strings.HasSuffix(w.mt, "jose+json")
+			if jose {
+				rawList := []json.RawMessage{}
+				if err := json.Unmarshal(v, &rawList); err != nil {
+					return err
+				}
+
+				// Handle empty lists as [].
+				if len(rawList) == 0 {
+					w.Value([]byte("[]"))
+					return nil
+				}
+
+				w.StartArray()
+				for index, vraw := range rawList {
+					w.jpush(fmt.Sprintf("[%d]", index))
+
+					var lv interface{}
+					if err := json.Unmarshal(vraw, &lv); err != nil {
+						return err
+					}
+					if href, ok := lv.(string); ok {
+						u := *w.u
+						qs := u.Query()
+						qs.Add("jq", strings.Join(w.jq, ""))
+						qs.Add("jq", "base64 -d")
+						qs.Set("render", "der")
+						u.RawQuery = qs.Encode()
+						w.BlueDoc(u.String(), href)
+					}
+
+					w.jpop()
+				}
+				w.EndArray()
+
+				continue
+			}
+		case "protected":
+			// TODO: Dedupe and use jq to append an =
+			if js, ok := o[k]; ok {
+				if href, ok := js.(string); ok {
+					jose := strings.HasSuffix(w.mt, "jose+json")
+					if jose {
+						u := *w.u
+						qs := u.Query()
+						qs.Add("jq", strings.Join(w.jq, ""))
+
+						if jose {
+							v, err := base64.RawStdEncoding.DecodeString(href)
+							if err != nil {
+								return fmt.Errorf("base64 -d: %w", err)
+							}
+							remainder := len(v) % 3
+							if remainder == 1 {
+								qs.Add("jq", `awk '{print $1"=="}'`)
+							} else if remainder == 2 {
+								qs.Add("jq", `awk '{print $1"="}'`)
+							}
+						}
+
+						qs.Add("jq", "base64 -d")
+						qs.Add("jq", "jq")
+						u.RawQuery = qs.Encode()
+						w.BlueDoc(u.String(), href)
+
+						// Don't fall through to renderRaw.
+						continue
+					}
+				}
+			}
 		case "payload":
 			if js, ok := o[k]; ok {
 				if href, ok := js.(string); ok {
+					jsonPt := false
 					if pt, ok := o["payloadType"]; ok {
 						if s, ok := pt.(string); ok {
 							if s == "application/json" || strings.HasSuffix(s, "+json") {
-								u := *w.u
-								qs := u.Query()
-								qs.Add("jq", strings.Join(w.jq, ""))
-								qs.Add("jq", "base64 -d")
-								qs.Add("jq", "jq")
-								u.RawQuery = qs.Encode()
-								w.BlueDoc(u.String(), href)
-
-								// Don't fall through to renderRaw.
-								continue
+								jsonPt = true
 							}
 						}
+					}
+
+					jose := strings.HasSuffix(w.mt, "jose+json")
+					if jsonPt || jose {
+						u := *w.u
+						qs := u.Query()
+						qs.Add("jq", strings.Join(w.jq, ""))
+
+						if jose {
+							v, err := base64.RawStdEncoding.DecodeString(href)
+							if err != nil {
+								return fmt.Errorf("base64 -d: %w", err)
+							}
+							remainder := len(v) % 3
+							if remainder == 1 {
+								qs.Add("jq", `awk '{print $1"=="}'`)
+							} else if remainder == 2 {
+								qs.Add("jq", `awk '{print $1"="}'`)
+							}
+						}
+
+						qs.Add("jq", "base64 -d")
+						qs.Add("jq", "jq")
+						u.RawQuery = qs.Encode()
+						w.BlueDoc(u.String(), href)
+
+						// Don't fall through to renderRaw.
+						continue
 					}
 				}
 			}
@@ -1238,6 +1330,8 @@ func handlerForMT(s string) string {
 		return `?image=`
 	case types.DockerManifestSchema1, types.DockerManifestSchema1Signed:
 		return `?image=`
+	case "application/vnd.oci.artifact.manifest.v1+json":
+		return `?image=`
 	}
 	if strings.HasSuffix(s, "+json") {
 		return `?blob=`
@@ -1272,6 +1366,8 @@ func getLink(s string) string {
 		return `https://github.com/in-toto/attestation/blob/60f47ad17c4eb461dc18cabbef206ebcbcd666d9/spec/README.md#statement`
 	case `spdx+json`:
 		return `https://github.com/spdx/spdx-spec/blob/7ba7bf571c0c3c3fd6a4bd780914d58f9274adcc/schemas/spdx-schema.json`
+	case "application/vnd.oci.artifact.manifest.v1+json":
+		return `https://github.com/opencontainers/image-spec/pull/999`
 	}
 	return `https://github.com/opencontainers/image-spec/blob/master/media-types.md`
 }

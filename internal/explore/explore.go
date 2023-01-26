@@ -1051,6 +1051,8 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		data.JQ = strings.TrimSuffix(data.JQ, " | jq .")
 		data.JQ += " | jq '.history[] | .created_by' -r"
 
+	} else if r.URL.Query().Get("render") == "der" {
+		data.JQ += " | openssl x509 -inform der -text -noout"
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
@@ -1063,6 +1065,13 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 			return err
 		}
 		fmt.Fprintf(w, "</pre>")
+	} else if r.URL.Query().Get("render") == "der" {
+		fmt.Fprintf(w, "<pre>")
+		if err := renderDer(w, b); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "</pre>")
+
 	} else if r.URL.Query().Get("render") == "history" {
 		fmt.Fprintf(w, "<pre>")
 		if err := renderDockerfile(w, b); err != nil {
