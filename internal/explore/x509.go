@@ -18,6 +18,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/binary"
 	"encoding/pem"
@@ -99,18 +100,24 @@ func renderDer(w io.Writer, b []byte) error {
 	fmt.Fprintf(w, "Certificate:\n")
 	fmt.Fprintf(w, "    Data:\n")
 	fmt.Fprintf(w, "        Version: %d (0x%x)\n", cert.Version, cert.Version-1)
-	fmt.Fprintf(w, "        Serial Number:\n")
-	fmt.Fprintf(w, "            ")
-	printHex(w, cert.SerialNumber.Bytes())
-	fmt.Fprintf(w, "\n")
-	fmt.Fprintf(w, "        Signature Algorithm: %s\n", cert.SignatureAlgorithm)
-	fmt.Fprintf(w, "        Issuer: %s\n", cert.Issuer)
-	fmt.Fprintf(w, "        Validity:\n")
-	fmt.Fprintf(w, "            Not Before: %s\n", cert.NotBefore)
-	fmt.Fprintf(w, "            Not After : %s\n", cert.NotAfter)
-	fmt.Fprintf(w, "        Subject: %s\n", cert.Subject)
+
+	if _, ok := cert.PublicKey.(*ecdsa.PublicKey); ok {
+		fmt.Fprintf(w, "        Serial Number:\n")
+		fmt.Fprintf(w, "            ")
+		printHex(w, cert.SerialNumber.Bytes())
+		fmt.Fprintf(w, "\n")
+	} else {
+		fmt.Fprintf(w, "        Serial Number: %d (%#x)\n", cert.SerialNumber, cert.SerialNumber)
+	}
+
+	fmt.Fprintf(w, "        Signature Algorithm: %s\n", alg(cert.SignatureAlgorithm.String()))
+	fmt.Fprintf(w, "        Issuer: %s\n", pkixname(cert.Issuer))
+	fmt.Fprintf(w, "        Validity\n")
+	fmt.Fprintf(w, "            Not Before: %s\n", cert.NotBefore.Format("Jan _2 15:04:05 2006 GMT"))
+	fmt.Fprintf(w, "            Not After : %s\n", cert.NotAfter.Format("Jan _2 15:04:05 2006 GMT"))
+	fmt.Fprintf(w, "        Subject: %s\n", pkixname(cert.Subject))
 	fmt.Fprintf(w, "        Subject Public Key Info:\n")
-	fmt.Fprintf(w, "            Public Key Algorithm: %s\n", cert.PublicKeyAlgorithm)
+	fmt.Fprintf(w, "            Public Key Algorithm: %s\n", alg(cert.PublicKeyAlgorithm.String()))
 
 	pub := cert.PublicKey
 	switch p := pub.(type) {
@@ -118,7 +125,7 @@ func renderDer(w io.Writer, b []byte) error {
 		bits := p.Params().BitSize
 		name := p.Params().Name
 
-		fmt.Fprintf(w, "                Public Key: (%d bit)\n", bits)
+		fmt.Fprintf(w, "                Public-Key: (%d bit)\n", bits)
 		fmt.Fprintf(w, "                pub:")
 		bs := []byte{0x04} // uncompressed public keys start with 04?
 		bs = append(bs, p.X.Bytes()...)
@@ -134,12 +141,15 @@ func renderDer(w io.Writer, b []byte) error {
 				fmt.Fprintf(w, "\n")
 			}
 		}
+		if name == "P-256" {
+			fmt.Fprintf(w, "                ASN1 OID: prime256v1\n")
+		}
 		fmt.Fprintf(w, "                NIST CURVE: %s\n", name)
 
 	case *rsa.PublicKey:
 		bits := p.N.BitLen()
 
-		fmt.Fprintf(w, "                Public Key: (%d bit)\n", bits)
+		fmt.Fprintf(w, "                Public-Key: (%d bit)\n", bits)
 		fmt.Fprintf(w, "                Modulus:")
 		bs := []byte{0x00} // uncompressed public keys start with 04?
 		bs = append(bs, p.N.Bytes()...)
@@ -162,9 +172,9 @@ func renderDer(w io.Writer, b []byte) error {
 
 	fmt.Fprintf(w, "        X509v3 extensions:\n")
 	for _, ext := range cert.Extensions {
-		fmt.Fprintf(w, "            %s:", oidKey(ext.Id))
+		fmt.Fprintf(w, "            %s: ", oidKey(ext.Id))
 		if ext.Critical {
-			fmt.Fprintf(w, " critical")
+			fmt.Fprintf(w, "critical")
 		}
 		fmt.Fprintf(w, "\n")
 		h := find(ext.Id)
@@ -177,7 +187,7 @@ func renderDer(w io.Writer, b []byte) error {
 		}
 	}
 
-	fmt.Fprintf(w, "    Signature Algorithm: %s\n", cert.SignatureAlgorithm)
+	fmt.Fprintf(w, "    Signature Algorithm: %s\n", alg(cert.SignatureAlgorithm.String()))
 	fmt.Fprintf(w, "    Signature Value:")
 	for i, b := range cert.Signature {
 		if i%18 == 0 {
@@ -214,6 +224,15 @@ func renderCert(w io.Writer, b []byte) error {
 func printHex(w io.Writer, bs []byte) {
 	for i, b := range bs {
 		fmt.Fprintf(w, "%02x", b)
+		if i < len(bs)-1 {
+			fmt.Fprintf(w, ":")
+		}
+	}
+}
+
+func printHEX(w io.Writer, bs []byte) {
+	for i, b := range bs {
+		fmt.Fprintf(w, "%02X", b)
 		if i < len(bs)-1 {
 			fmt.Fprintf(w, ":")
 		}
@@ -259,8 +278,8 @@ func oidKey(id asn1.ObjectIdentifier) string {
 var helpers = []oidHelper{
 	{[]int{2, 5, 29, 15}, "X509v3 Key Usage", keyUsage},
 	{[]int{2, 5, 29, 37}, "X509v3 Extended Key Usage", extKeyUsage},
-	{[]int{2, 5, 29, 14}, "X509v3 Subject Key Identifier", hexify},
-	{[]int{2, 5, 29, 35}, "X509v3 Authority Key Identifier", hexify},
+	{[]int{2, 5, 29, 14}, "X509v3 Subject Key Identifier", octet},
+	{[]int{2, 5, 29, 35}, "X509v3 Authority Key Identifier", sequence},
 	{[]int{2, 5, 29, 17}, "X509v3 Subject Alternative Name", printSan},
 	{[]int{2, 5, 29, 19}, "X509v3 Basic Constraints", constraints},
 	{[]int{1, 3, 6, 1, 4, 1, 57264, 1, 1}, "Fulcio Issuer", nil},
@@ -286,6 +305,42 @@ func constraints(cert *x509.Certificate, b []byte) string {
 		fmt.Fprintf(w, ", pathlen:%d", cert.MaxPathLen)
 	}
 	return w.String()
+}
+
+func alg(in string) string {
+	switch in {
+	case "ECDSA":
+		return "id-ecPublicKey"
+	case "ECDSA-SHA256":
+		return "ecdsa-with-SHA256"
+	case "ECDSAWithP256AndSHA256":
+		return "ecdsa-with-SHA256"
+	case "ECDSA-SHA384":
+		return "ecdsa-with-SHA384"
+	case "SHA256-RSA":
+		return "sha256WithRSAEncryption"
+	case "RSA":
+		return "rsaEncryption"
+	}
+	return in
+}
+
+// Subject: CN=sample-network.io,O=Notary,L=Seattle,ST=WA,C=US
+// Subject: C = US, ST = WA, L = Seattle, O = Notary, CN = sample-network.io
+func pkixname(name pkix.Name) string {
+	s := name.String()
+	chunks := strings.Split(s, ",")
+	reverse(chunks)
+	for i, chunk := range chunks {
+		chunks[i] = strings.Join(strings.Split(chunk, "="), " = ")
+	}
+	return strings.Join(chunks, ", ")
+}
+
+func reverse(in []string) {
+	for i, j := 0, len(in)-1; i < j; i, j = i+1, j-1 {
+		in[i], in[j] = in[j], in[i]
+	}
 }
 
 var keyUsages = []struct {
@@ -352,9 +407,39 @@ func extKeyUsage(cert *x509.Certificate, b []byte) string {
 	return "None"
 }
 
+func octet(cert *x509.Certificate, b []byte) string {
+	cb := cryptobyte.String(b)
+	var out []byte
+	if !cb.ReadASN1Bytes(&out, casn1.OCTET_STRING) {
+		return "oops"
+	}
+	return HEXIFY(cert, out)
+}
+
+func sequence(cert *x509.Certificate, b []byte) string {
+	cb := cryptobyte.String(b)
+	var out []byte
+	if !cb.ReadASN1Bytes(&out, casn1.SEQUENCE) {
+		return "oops"
+	}
+	if len(out) > 2 {
+		newlen := out[1]
+		if int(newlen) <= len(out)-2 {
+			return HEXIFY(cert, out[2:2+newlen])
+		}
+	}
+	return HEXIFY(cert, out)
+}
+
 func hexify(cert *x509.Certificate, b []byte) string {
 	w := &strings.Builder{}
 	printHex(w, b)
+	return w.String()
+}
+
+func HEXIFY(cert *x509.Certificate, b []byte) string {
+	w := &strings.Builder{}
+	printHEX(w, b)
 	return w.String()
 }
 
@@ -539,25 +624,25 @@ func (s *sct) String() string {
 		if i != 0 && i%16 == 0 {
 			fmt.Fprintf(w, "\n                ")
 		}
-		fmt.Fprintf(w, "%02x", b)
+		fmt.Fprintf(w, "%02X", b)
 		if i < len(s.LogID)-1 {
 			fmt.Fprintf(w, ":")
 		} else {
 			fmt.Fprintf(w, "\n")
 		}
 	}
-	fmt.Fprintf(w, "    Timestamp : %s\n", s.Timestamp.UTC().String())
+	fmt.Fprintf(w, "    Timestamp : %s\n", s.Timestamp.UTC().Format("Jan _2 15:04:05.999 2006 GMT"))
 	if len(s.Extensions) == 0 {
 		fmt.Fprintf(w, "    Extensions: none\n")
 	} else {
 		fmt.Fprintf(w, "    Extensions: TODO render %d extensions\n", len(s.Extensions))
 	}
-	fmt.Fprintf(w, "    Signature : %s", s.SigHashAlg)
+	fmt.Fprintf(w, "    Signature : %s", alg(s.SigHashAlg.String()))
 	for i, b := range s.Sig {
 		if i%16 == 0 {
 			fmt.Fprintf(w, "\n                ")
 		}
-		fmt.Fprintf(w, "%02x", b)
+		fmt.Fprintf(w, "%02X", b)
 		if i < len(s.Sig)-1 {
 			fmt.Fprintf(w, ":")
 		}
