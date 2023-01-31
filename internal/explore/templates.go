@@ -47,12 +47,31 @@ const (
 }
 
 .mt {
-  color: inherit;
+	color: inherit;
 	text-decoration: inherit;
+}
+
+.crane {
+	height: 1em;
+	width: 1em;
+}
+
+.top {
+	color: inherit;
+	text-decoration: inherit;
+}
+
+body {
+	font-family: monospace;
+	max-width: 1400px;
+	margin-left: auto;
+	margin-right: auto;
+	overflow-wrap: anywhere;
+	padding: 12px;
 }
 </style>
 </head>
-<h2>Registry Explorer</h2>
+<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> Registry Explorer</a></h1>
 <p>
 This beautiful tool allows you to <em>explore</em> the contents of a registry interactively.
 </p>
@@ -84,7 +103,6 @@ Enter a <strong>public</strong> repository, e.g. <tt>"ubuntu"</tt>:
   <li><a href="/?image=cgr.dev/chainguard/ko:sha256-435f610505cd96eba44dcb13987509ee1ad80030ad970bb4583880259dc21b7e.sbom">cgr.dev/chainguard/ko:sha256-435f610505cd96eba44dcb13987509ee1ad80030ad970bb4583880259dc21b7e.sbom</a></li>
 </ul>
 </p>
-<hr>
 <h3>FAQ</h3>
 <h4>How does this work?</h4>
 <p>
@@ -106,12 +124,31 @@ This service lives on <a href="https://cloud.run">Cloud Run</a> and uses <a href
 }
 
 .mt {
-  color: inherit;
+	color: inherit;
 	text-decoration: inherit;
+}
+
+.crane {
+	height: 1em;
+	width: 1em;
+}
+
+.top {
+	color: inherit;
+	text-decoration: inherit;
+}
+
+body {
+	font-family: monospace;
+	max-width: 1400px;
+	margin-left: auto;
+	margin-right: auto;
+	overflow-wrap: anywhere;
+	padding: 12px;
 }
 </style>
 </head>
-<h2>explore.<a class="mt" href="https://github.com/google/go-containerregistry">ggcr</a>.dev</h2>
+<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> Registry Explorer</a></h1>
 <p>
 It looks like we encountered an auth error:
 </p>
@@ -145,12 +182,26 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 	width: 1em;
 }
 
+.top {
+	color: inherit;
+	text-decoration: inherit;
+}
+
 body {
 	font-family: monospace;
+	max-width: 1400px;
+	margin-left: auto;
+	margin-right: auto;
+	overflow-wrap: anywhere;
+	padding: 12px;
 }
 
 .indent {
 	margin-left: 2em;
+}
+
+.noselect {
+	user-select: none;
 }
 </style>
 </head>
@@ -159,10 +210,11 @@ body {
 	bodyTemplate = `
 <body>
 <div>
+<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> Registry Explorer</a></h1>
 {{ if .Up }}
-<h2><a href="/"><img class="crane" src="/favicon.svg"/><a> <a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}{{if .Handler }}<a class="mt" href="{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{else}}{{.Up.Child}}{{end}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
+<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}{{if .Handler }}<a class="mt" href="{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{else}}{{.Up.Child}}{{end}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ else }}
-<h2><a href="/"><img class="crane" src="/favicon.svg"/><a> {{.Reference}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
+<h2>{{.Reference}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ end }}
 {{ if .Descriptor }}
 Docker-Content-Digest: <a class="mt" href="{{.Handler}}{{$.Repo}}@{{.Descriptor.Digest}}&mt={{.EscapedMediaType}}&size={{.Descriptor.Size}}">{{.Descriptor.Digest}}<a><br>
@@ -170,9 +222,9 @@ Content-Length: {{.Descriptor.Size}}<br>
 Content-Type: {{if .MediaTypeLink}}<a class="mt" href="{{.MediaTypeLink}}">{{.Descriptor.MediaType}}</a>{{else}}{{.Descriptor.MediaType}}{{end}}<br>
 {{end}}
 </div>
-<hr>{{ if .JQ }}
-<h4>{{.JQ}}</h4>
-<hr>
+{{ if .JQ }}
+<h4><span class="noselect">$ </span>{{.JQ}}</h4>
+
 {{ end }}
 `
 
