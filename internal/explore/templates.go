@@ -63,9 +63,7 @@ const (
 
 body {
 	font-family: monospace;
-	max-width: 1400px;
-	margin-left: auto;
-	margin-right: auto;
+	width: fit-content;
 	overflow-wrap: anywhere;
 	padding: 12px;
 }
@@ -140,9 +138,7 @@ This service lives on <a href="https://cloud.run">Cloud Run</a> and uses <a href
 
 body {
 	font-family: monospace;
-	max-width: 1400px;
-	margin-left: auto;
-	margin-right: auto;
+	width: fit-content;
 	overflow-wrap: anywhere;
 	padding: 12px;
 }
@@ -189,9 +185,7 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 
 body {
 	font-family: monospace;
-	max-width: 1400px;
-	margin-left: auto;
-	margin-right: auto;
+	width: fit-content;
 	overflow-wrap: anywhere;
 	padding: 12px;
 }
