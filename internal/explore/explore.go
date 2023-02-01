@@ -711,7 +711,7 @@ func (h *handler) renderDockerHub(w http.ResponseWriter, r *http.Request, repo s
 		Scheme:   "https",
 		Host:     "hub.docker.com",
 		Path:     fmt.Sprintf("/v2/repositories/%s/", path.Base(repo)),
-		RawQuery: "page_size=100&ordering=last_updated",
+		RawQuery: "page_size=25&ordering=last_updated",
 	}
 	nextUri := uri.String()
 	if next := r.URL.Query().Get("next"); next != "" {
