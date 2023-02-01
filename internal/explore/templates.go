@@ -206,7 +206,7 @@ body {
 <div>
 <h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> Registry Explorer</a></h1>
 {{ if .Up }}
-<h2><a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{.Up.Separator}}{{if .Handler }}<a class="mt" href="{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{else}}{{.Up.Child}}{{end}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
+<h2>{{ if and (ne .Up.Parent "docker.io") (ne .Up.Parent "index.docker.io") }}<a class="mt" href="?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{else}}{{.Up.Parent}}{{end}}{{.Up.Separator}}{{if .Handler }}<a class="mt" href="{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{else}}{{.Up.Child}}{{end}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ else }}
 <h2>{{.Reference}}{{ range .CosignTags }} (<a href="?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ end }}

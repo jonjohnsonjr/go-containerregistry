@@ -52,6 +52,8 @@ type jsonOutputter struct {
 	key   bool
 	root  map[string]interface{}
 	isMap bool
+
+	dockerHub bool
 }
 
 func (w *jsonOutputter) Annotation(url, text string) {
@@ -506,6 +508,15 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 				// Don't fall through to renderRaw.
 				continue
 			}
+		case "name":
+			if w.dockerHub {
+				if js, ok := o[k]; ok {
+					if s, ok := js.(string); ok {
+						w.LinkRepo(path.Join(w.repo, s), s)
+						continue
+					}
+				}
+			}
 		case "digest":
 			if mt, ok := o["mediaType"]; ok {
 				if s, ok := mt.(string); ok {
@@ -902,7 +913,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					continue
 				}
 			}
-		case "next":
+		case "next", "previous":
 			if js, ok := o[k]; ok {
 				if s, ok := js.(string); ok {
 					u := w.setQuery("next", s)
@@ -1345,21 +1356,21 @@ func handlerForMT(s string) string {
 func getLink(s string) string {
 	mt := types.MediaType(s)
 	if !mt.IsDistributable() {
-		return `https://github.com/opencontainers/image-spec/blob/master/layer.md#non-distributable-layers`
+		return `https://github.com/opencontainers/image-spec/blob/main/layer.md#non-distributable-layers`
 	}
 	if mt.IsImage() {
-		return `https://github.com/opencontainers/image-spec/blob/master/manifest.md`
+		return `https://github.com/opencontainers/image-spec/blob/main/manifest.md`
 	}
 	if mt.IsIndex() {
-		return `https://github.com/opencontainers/image-spec/blob/master/image-index.md`
+		return `https://github.com/opencontainers/image-spec/blob/main/image-index.md`
 	}
 	switch mt {
 	case types.OCIConfigJSON, types.DockerConfigJSON:
-		return `https://github.com/opencontainers/image-spec/blob/master/config.md`
+		return `https://github.com/opencontainers/image-spec/blob/main/config.md`
 	case types.OCILayer, types.OCIUncompressedLayer, types.DockerLayer, types.DockerUncompressedLayer:
-		return `https://github.com/opencontainers/image-spec/blob/master/layer.md`
+		return `https://github.com/opencontainers/image-spec/blob/main/layer.md`
 	case types.OCIContentDescriptor:
-		return `https://github.com/opencontainers/image-spec/blob/master/descriptor.md`
+		return `https://github.com/opencontainers/image-spec/blob/main/descriptor.md`
 	case `application/vnd.dev.cosign.simplesigning.v1+json`:
 		return `https://github.com/containers/image/blob/master/docs/containers-signature.5.md`
 	case `application/vnd.dsse.envelope.v1+json`:
@@ -1371,7 +1382,7 @@ func getLink(s string) string {
 	case "application/vnd.oci.artifact.manifest.v1+json":
 		return `https://github.com/opencontainers/image-spec/pull/999`
 	}
-	return `https://github.com/opencontainers/image-spec/blob/master/media-types.md`
+	return `https://github.com/opencontainers/image-spec/blob/main/media-types.md`
 }
 
 func getPredicateLink(s string) string {

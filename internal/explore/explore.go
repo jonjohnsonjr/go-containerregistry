@@ -557,6 +557,9 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 	} else if ref.RepositoryStr() == "" {
 		return h.renderCatalog(w, r, repo)
 	}
+	if (strings.HasPrefix(repo, "docker.io") || strings.HasPrefix(repo, name.DefaultRegistry)) && strings.Count(repo, "/") == 1 {
+		return h.renderDockerHub(w, r, repo)
+	}
 
 	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
 		return err
@@ -566,9 +569,10 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		Reference: repo,
 		JQ:        crane + " ls " + repo,
 	}
-	if strings.Contains(repo, "/") {
-		base := path.Base(repo)
-		dir := path.Dir(strings.TrimRight(repo, "/"))
+	if strings.Contains(repo, "/") || (ref.RegistryStr() == name.DefaultRegistry || ref.RegistryStr() == "docker.io") {
+		fullRepo := path.Join(ref.RegistryStr(), ref.RepositoryStr())
+		base := path.Base(fullRepo)
+		dir := path.Dir(strings.TrimRight(fullRepo, "/"))
 		if base != "." && dir != "." {
 			data.Up = &RepoParent{
 				Parent:    dir,
@@ -677,6 +681,82 @@ func (h *handler) renderGoogleRepo(w http.ResponseWriter, r *http.Request, repo 
 	b, err := json.Marshal(tags)
 	if err != nil {
 		return err
+	}
+	if err := renderJSON(output, b); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, footer)
+	return nil
+}
+
+// https://hub.docker.com/v2/repositories/tonistiigi/?page_size=25&page=1&ordering=last_updated
+func (h *handler) renderDockerHub(w http.ResponseWriter, r *http.Request, repo string) error {
+	t := remote.DefaultTransport
+	t = transport.NewRetry(t)
+	t = transport.NewUserAgent(t, ua)
+	if logs.Enabled(logs.Trace) {
+		t = transport.NewTracer(t)
+	}
+	t = transport.Wrap(t)
+
+	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
+		return err
+	}
+	data := HeaderData{
+		Repo:      repo,
+		Reference: repo,
+	}
+	uri := &url.URL{
+		Scheme:   "https",
+		Host:     "hub.docker.com",
+		Path:     fmt.Sprintf("/v2/repositories/%s/", path.Base(repo)),
+		RawQuery: "page_size=100&ordering=last_updated",
+	}
+	nextUri := uri.String()
+	if next := r.URL.Query().Get("next"); next != "" {
+		if strings.HasPrefix(next, "https://hub.docker.com/v2/repositories") {
+			nextUri = next
+		}
+	}
+	data.JQ = fmt.Sprintf("curl -sL %q | jq .", nextUri)
+
+	if strings.Contains(repo, "/") {
+		base := path.Base(repo)
+		dir := path.Dir(strings.TrimRight(repo, "/"))
+		if base != "." && dir != "." {
+			data.Up = &RepoParent{
+				Parent:    dir,
+				Child:     base,
+				Separator: "/",
+			}
+		}
+	}
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, nextUri, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := t.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+
+	b, err := io.ReadAll(io.LimitReader(resp.Body, tooBig))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	output := &jsonOutputter{
+		w:         w,
+		u:         r.URL,
+		fresh:     []bool{},
+		repo:      repo,
+		dockerHub: true,
 	}
 	if err := renderJSON(output, b); err != nil {
 		return err
