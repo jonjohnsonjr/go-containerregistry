@@ -476,7 +476,7 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 		}
 
 		v := rawMap[k]
-		if k == "layers" {
+		if k == "layers" && len(w.jq) == 0 {
 			image := w.u.Query().Get("image")
 			w.Layers(image, "layers")
 		} else if k == "history" && shouldHistory(w.mt) {
@@ -545,14 +545,44 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					w.name = ns // cleared by EndMap
 				}
 			}
+			if uri, ok := o["uri"]; ok {
+				// Set this for DSSE digest.name
+				if ns, ok := uri.(string); ok {
+					if strings.HasPrefix(ns, "pkg:") {
+						w.name = ns // cleared by EndMap
+					}
+				}
+			}
 		case "sha256":
 			if w.name != "" {
-				if js, ok := o["sha256"]; ok {
-					if d, ok := js.(string); ok {
-						w.LinkImage(w.name+"@"+"sha256"+":"+d, d)
+				if _, err := name.ParseReference(w.name); err == nil {
+					if js, ok := o["sha256"]; ok {
+						if d, ok := js.(string); ok {
+							w.LinkImage(w.name+"@"+"sha256"+":"+d, d)
 
-						// Don't fall through to renderRaw.
-						continue
+							// Don't fall through to renderRaw.
+							continue
+						}
+					}
+				} else if strings.HasPrefix(w.name, "pkg:") {
+					p, err := parsePurl(w.name)
+					if err == nil {
+						if js, ok := o["sha256"]; ok {
+							if d, ok := js.(string); ok {
+								p.version = "sha256:" + d
+								href, err := p.url(w.repo)
+								if err == nil {
+									w.BlueDoc(href, d)
+
+									// Don't fall through to renderRaw.
+									continue
+								} else {
+									log.Printf("p.url: %v", err)
+								}
+							}
+						}
+					} else {
+						log.Printf("purl: %v", err)
 					}
 				}
 			}
@@ -824,6 +854,26 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 
 							continue
 						}
+					}
+				}
+			}
+		case "data":
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					u := *w.u
+					qs := u.Query()
+					qs.Add("jq", strings.Join(w.jq, ""))
+
+					if _, err := base64.StdEncoding.DecodeString(s); err == nil {
+						qs.Add("jq", "base64 -d")
+						qs.Set("render", "raw")
+						u.RawQuery = qs.Encode()
+						w.BlueDoc(u.String(), s)
+
+						// Don't fall through to renderRaw.
+						continue
+					} else {
+						log.Printf("data: %v", err)
 					}
 				}
 			}
@@ -1430,6 +1480,27 @@ type purl struct {
 
 func (p *purl) url(repo string) (string, error) {
 	switch p.tipe {
+	case "docker":
+		if p.version == "" {
+			return "", fmt.Errorf("no version in purl")
+		}
+		repository := repo
+		if p.namespace == "" {
+			p.namespace = "library"
+		}
+		if p.namespace != "" && p.name != "" {
+			repository = path.Join("index.docker.io", p.namespace, p.name)
+		}
+		mt := p.qualifiers.Get("mediaType")
+		if mt == "" {
+			mt = string(types.OCIManifestSchema1)
+		}
+		h := handlerForMT(mt)
+		delim := "@"
+		if !strings.Contains(p.version, ":") {
+			delim = ":"
+		}
+		return fmt.Sprintf("/%s%s%s%s", h, repository, delim, p.version), nil
 	case "oci":
 		if p.version == "" {
 			return "", fmt.Errorf("no version in purl")
