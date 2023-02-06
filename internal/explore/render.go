@@ -923,6 +923,17 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 					}
 				}
 			}
+		case "io.buildpacks.build.metadata", "io.buildpacks.lifecycle.metadata", "io.buildpacks.project.metadata":
+			// TODO: Just check for `{"` for json.
+			// TODO: Check for `ey` for base64 json?
+			if js, ok := o[k]; ok {
+				if s, ok := js.(string); ok {
+					u := w.addQuery("jq", strings.Join(w.jq, ""))
+					w.BlueDoc(u.String(), s)
+
+					continue
+				}
+			}
 		case "predicateType":
 			if js, ok := o[k]; ok {
 				if pt, ok := js.(string); ok {
