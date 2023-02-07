@@ -370,7 +370,7 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 }
 
 func (s *SociFS) find(name string) (*TOCFile, error) {
-	logs.Debug.Printf("find(%q)", name)
+	logs.Debug.Printf("soci.find(%q)", name)
 	needle := path.Clean("/" + name)
 	for _, fm := range s.files {
 		if path.Clean("/"+fm.Name) == needle {
