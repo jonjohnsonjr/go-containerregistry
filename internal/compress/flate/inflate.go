@@ -148,7 +148,7 @@ func (e *WriteError) Error() string {
 type Resetter interface {
 	// Reset discards any buffered data and resets the Resetter as if it was
 	// newly initialized with the given reader.
-	Reset(r io.Reader, dict []byte) error
+	Reset(r io.Reader, dict []byte, roffset int64) error
 }
 
 // The data structure for decoding Huffman tables is based on that of
@@ -883,15 +883,17 @@ func fixedHuffmanDecoderInit() {
 	})
 }
 
-func (f *decompressor) Reset(r io.Reader, dict []byte) error {
+func (f *decompressor) Reset(r io.Reader, dict []byte, roffset int64) error {
 	*f = decompressor{
 		r:        makeReader(r),
-		bits:     f.bits,
-		codebits: f.codebits,
-		dict:     f.dict,
+		bits:     new([maxNumLit + maxNumDist]int),
+		codebits: new([numCodes]int),
 		step:     (*decompressor).nextBlock,
-		span:     f.span,
 		last:     f.last,
+		span:     f.span,
+		updates:  f.updates,
+		woffset:  f.woffset,
+		roffset:  roffset,
 	}
 	f.dict.init(maxMatchOffset, dict)
 	return nil

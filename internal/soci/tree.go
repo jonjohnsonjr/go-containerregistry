@@ -369,6 +369,9 @@ func (i *TreeIndexer) Next() (*tar.Header, error) {
 	header, err := i.tr.Next()
 	if errors.Is(err, io.EOF) {
 		if !i.finished {
+			if _, err := io.Copy(io.Discard, i.zr); err != nil {
+				return nil, err
+			}
 			close(i.updates)
 			i.finished = true
 		}
@@ -414,10 +417,6 @@ func (i *TreeIndexer) TOC() (*TOC, error) {
 		return i.toc, nil
 	}
 	if err := i.g.Wait(); err != nil {
-		return nil, err
-	}
-
-	if _, err := io.Copy(io.Discard, i.zr); err != nil {
 		return nil, err
 	}
 

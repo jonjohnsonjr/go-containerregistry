@@ -288,7 +288,7 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 			z.decompressor = flate.NewReaderWithSpans(z.r, z.span, z.CompressedCount(), z.updates)
 		}
 	} else {
-		z.decompressor.(flate.Resetter).Reset(z.r, nil)
+		z.decompressor.(flate.Resetter).Reset(z.r, nil, z.CompressedCount())
 	}
 	return hdr, nil
 }
@@ -317,8 +317,10 @@ func (z *Reader) Read(p []byte) (n int, err error) {
 		digest := le.Uint32(z.buf[:4])
 		size := le.Uint32(z.buf[4:8])
 		if digest != z.digest || size != z.size {
-			z.err = ErrChecksum
-			return n, z.err
+			if z.from == nil {
+				z.err = ErrChecksum
+				return n, z.err
+			}
 		}
 		z.digest, z.size = 0, 0
 
