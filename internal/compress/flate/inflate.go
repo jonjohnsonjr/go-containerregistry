@@ -151,6 +151,11 @@ type Resetter interface {
 	Reset(r io.Reader, dict []byte, roffset int64) error
 }
 
+// Gross, sorry.
+type Woffseter interface {
+	Woffset() int64
+}
+
 // The data structure for decoding Huffman tables is based on that of
 // zlib. There is a lookup table of a fixed bit width (huffmanChunkBits),
 // For codes smaller than the table width, there are multiple entries
@@ -380,10 +385,9 @@ type decompressor struct {
 	copyDist  int
 
 	// Jon's hacking
-	span           int64
-	last           int64
-	updates        chan<- *Checkpoint
-	sentOneAlready bool
+	span    int64
+	last    int64
+	updates chan<- *Checkpoint
 }
 
 func (f *decompressor) nextBlock() {
@@ -774,7 +778,7 @@ func (f *decompressor) finishBlock() {
 		}
 		f.err = io.EOF
 	}
-	if f.updates != nil && (f.woffset-f.last > f.span || (f.woffset == 0 && !f.sentOneAlready)) {
+	if f.updates != nil && (f.woffset-f.last > f.span) {
 		checkpoint := &Checkpoint{
 			Hist:  make([]byte, len(f.dict.hist)),
 			In:    f.roffset,
@@ -789,7 +793,6 @@ func (f *decompressor) finishBlock() {
 
 		f.updates <- checkpoint
 		f.last = checkpoint.Out
-		f.sentOneAlready = true
 	}
 	f.step = (*decompressor).nextBlock
 }
@@ -883,13 +886,17 @@ func fixedHuffmanDecoderInit() {
 	})
 }
 
+func (f *decompressor) Woffset() int64 {
+	return f.woffset
+}
+
 func (f *decompressor) Reset(r io.Reader, dict []byte, roffset int64) error {
 	*f = decompressor{
 		r:        makeReader(r),
 		bits:     new([maxNumLit + maxNumDist]int),
 		codebits: new([numCodes]int),
 		step:     (*decompressor).nextBlock,
-		last:     f.last,
+		last:     f.woffset, // Requires that ungzip send a checkpoint before Reset
 		span:     f.span,
 		updates:  f.updates,
 		woffset:  f.woffset,
@@ -952,6 +959,9 @@ type Checkpoint struct {
 	WrPos int  `json:"wrpos,omitempty"`
 	RdPos int  `json:"rdpos,omitempty"`
 	Full  bool `json:"full,omitempty"`
+
+	// If there is no Hist, we can avoid writing the file.
+	Empty bool `json:"empty,omitempty"`
 }
 
 func (c *Checkpoint) String() string {

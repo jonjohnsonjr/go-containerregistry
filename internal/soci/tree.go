@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/go-containerregistry/internal/and"
@@ -141,7 +142,7 @@ func (t *tree) Open(name string) (io.ReadCloser, error) {
 
 // TODO: Make things other than dict access lazy.
 func (t *tree) Dict(cp *Checkpointer) ([]byte, error) {
-	if cp.index == 0 {
+	if cp.index == 0 || cp.checkpoint.Empty {
 		return nil, nil
 	}
 	if cp.checkpoint.Hist != nil {
@@ -258,7 +259,7 @@ func (t *Leaf) init() error {
 	defer func() {
 		log.Printf("tree.init() (%s)", time.Since(start))
 	}()
-	t.dicts = [][]byte{}
+	t.dicts = map[string][]byte{}
 	rc, err := t.bs.Reader(context.TODO(), 0, -1)
 	if err != nil {
 		return err
@@ -271,9 +272,6 @@ func (t *Leaf) init() error {
 	}
 	tr := tar.NewReader(zr)
 
-	dictIndex := 0
-	dictName := dictFile(dictIndex)
-
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -281,14 +279,12 @@ func (t *Leaf) init() error {
 		} else if err != nil {
 			return err
 		}
-		if header.Name == dictName {
+		if strings.HasSuffix(header.Name, ".dict") {
 			b, err := io.ReadAll(tr)
 			if err != nil {
-				return fmt.Errorf("%s ReadAll: %w", dictName, err)
+				return fmt.Errorf("%s ReadAll: %w", header.Name, err)
 			}
-			t.dicts = append(t.dicts, b)
-			dictIndex++
-			dictName = dictFile(dictIndex)
+			t.dicts[header.Name] = b
 		} else if header.Name == tocFile {
 			if t.toc != nil {
 				break
@@ -309,7 +305,7 @@ func (t *Leaf) init() error {
 type Leaf struct {
 	bs BlobSeeker
 
-	dicts [][]byte
+	dicts map[string][]byte
 	toc   *TOC
 }
 
@@ -323,11 +319,12 @@ func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {
 		}
 	}
 
-	if cp.index >= len(t.dicts) {
-		return nil, fmt.Errorf("Dict(%d) vs len(t.dicts) = %d", cp.index, len(t.dicts))
+	dictName := dictFile(cp.index)
+	hist, ok := t.dicts[dictName]
+	if !ok {
+		return nil, fmt.Errorf("Dict(%d), %q not found", cp.index, dictName)
 	}
 
-	hist := t.dicts[cp.index]
 	cp.checkpoint.Hist = hist
 
 	return hist, nil
@@ -455,20 +452,22 @@ func (i *TreeIndexer) processUpdates() error {
 	for update := range i.updates {
 		u := update
 
-		b := u.Hist
-		f := dictFile(len(i.toc.Checkpoints))
+		if !u.Empty {
+			b := u.Hist
+			f := dictFile(len(i.toc.Checkpoints))
 
-		if err := i.tw.WriteHeader(&tar.Header{
-			Name: f,
-			Size: int64(len(b)),
-		}); err != nil {
-			return err
-		}
-		if _, err := i.tw.Write(b); err != nil {
-			return err
+			if err := i.tw.WriteHeader(&tar.Header{
+				Name: f,
+				Size: int64(len(b)),
+			}); err != nil {
+				return err
+			}
+			if _, err := i.tw.Write(b); err != nil {
+				return err
+			}
+			u.Hist = nil
 		}
 
-		u.Hist = nil
 		i.toc.Checkpoints = append(i.toc.Checkpoints, u)
 	}
 	return nil
@@ -501,8 +500,6 @@ func NewTreeIndexer(rc io.ReadCloser, w io.WriteCloser, span int64) (*TreeIndexe
 		w:       w,
 	}
 	i.g.Go(i.processUpdates)
-
-	updates <- &flate.Checkpoint{In: zr.CompressedCount()}
 
 	return i, nil
 }

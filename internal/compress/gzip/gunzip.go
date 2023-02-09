@@ -285,9 +285,26 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 		if z.from != nil {
 			z.decompressor = flate.Continue(z.r, z.from, z.span, z.updates)
 		} else {
+			if z.updates != nil {
+				checkpoint := &flate.Checkpoint{
+					In:    z.CompressedCount(),
+					Empty: true,
+				}
+				z.updates <- checkpoint
+			}
+
 			z.decompressor = flate.NewReaderWithSpans(z.r, z.span, z.CompressedCount(), z.updates)
 		}
 	} else {
+		if z.updates != nil {
+			checkpoint := &flate.Checkpoint{
+				In:    z.CompressedCount(),
+				Out:   z.decompressor.(flate.Woffseter).Woffset(),
+				Empty: true,
+			}
+			z.updates <- checkpoint
+		}
+
 		z.decompressor.(flate.Resetter).Reset(z.r, nil, z.CompressedCount())
 	}
 	return hdr, nil

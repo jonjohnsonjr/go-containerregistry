@@ -1408,7 +1408,8 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		if tree != nil {
-			opts = append(opts, remote.WithSize(tree.TOC().Csize))
+			toc := tree.TOC()
+			opts = append(opts, remote.WithSize(toc.Csize))
 		}
 
 		cachedUrl := ""
