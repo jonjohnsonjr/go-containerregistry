@@ -310,6 +310,9 @@ type Leaf struct {
 }
 
 func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {
+	if cp.checkpoint.Empty {
+		return nil, nil
+	}
 	if cp.checkpoint.Hist != nil {
 		return cp.checkpoint.Hist, nil
 	}

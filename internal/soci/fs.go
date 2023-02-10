@@ -331,6 +331,9 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		// TODO: Undo this to keep permissions?
 		if fm.Typeflag == tar.TypeDir {
 			dirname := s.dirEntry(dir, &fm).Name()
+			if dirname[0] == '/' {
+				dirname = dirname[1:]
+			}
 			dirs[dirname] = struct{}{}
 			continue
 		}
