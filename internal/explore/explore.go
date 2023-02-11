@@ -44,6 +44,7 @@ import (
 	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/internal/verify"
+	"github.com/google/go-containerregistry/internal/zstd"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -1514,44 +1515,53 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	ok, pr, err := gztarPeek(blob)
 	if err != nil {
-		log.Printf("render(%q): %v", ref, err)
+		log.Printf("gztarPeek(%q): %v", ref, err)
 	}
 
 	if ok {
-		if debug {
-			// TODO: Clean this up.
-			// We are letting this fall through later so that in reset() we start indexing.
-			log.Printf("it is targz")
-		}
+		// TODO: Clean this up.
+		// We are letting this fall through later so that in reset() we start indexing.
+		logs.Debug.Printf("it is targz")
 	} else {
 		log.Printf("Peeking gzip")
 		ok, pr, err = gzip.Peek(pr)
 		if err != nil {
-			log.Printf("render(%q): %v", ref, err)
+			log.Printf("gzip.Peek(%q): %v", ref, err)
 		}
 
 		rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
 		if ok {
-			if debug {
-				log.Printf("it is gzip")
-			}
+			logs.Debug.Printf("it is gzip")
 			rc, err = gzip.UnzipReadCloser(rc)
 			if err != nil {
 				return err
+			}
+		} else {
+			rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
+			log.Printf("Peeking zstd")
+			ok, pr, err = zstdPeek(pr)
+			if err != nil {
+				log.Printf("zstdPeek(%q): %v", ref, err)
+			}
+			if ok {
+				shouldIndex = false
+				logs.Debug.Printf("it is zstd")
+				rc, err = zstd.UnzipReadCloser(rc)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		log.Printf("Peeking tar")
 		ok, pr, err = tarPeek(rc)
 	}
 	if ok {
-		if debug {
-			log.Printf("it is tar")
-		}
+		logs.Debug.Printf("it is tar")
 		// Cache this for layerFS.reset() so we don't have to re-fetch it.
 		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
 
 		var cw io.WriteCloser
-		if shouldIndex && true {
+		if shouldIndex {
 			ocw, err := h.treeCache.Writer(r.Context(), treeKey(dig.Identifier(), 0))
 			if err != nil {
 				logs.Debug.Printf("treeCache.Writer: %v", err)
