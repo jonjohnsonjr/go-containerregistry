@@ -1523,7 +1523,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		// We are letting this fall through later so that in reset() we start indexing.
 		logs.Debug.Printf("it is targz")
 	} else {
-		log.Printf("Peeking gzip")
+		logs.Debug.Printf("Peeking gzip")
 		ok, pr, err = gzip.Peek(pr)
 		if err != nil {
 			log.Printf("gzip.Peek(%q): %v", ref, err)
@@ -1538,7 +1538,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			}
 		} else {
 			rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
-			log.Printf("Peeking zstd")
+			logs.Debug.Printf("Peeking zstd")
 			ok, pr, err = zstdPeek(pr)
 			if err != nil {
 				log.Printf("zstdPeek(%q): %v", ref, err)
@@ -1552,7 +1552,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				}
 			}
 		}
-		log.Printf("Peeking tar")
+		logs.Debug.Printf("Peeking tar")
 		ok, pr, err = tarPeek(rc)
 	}
 	if ok {
@@ -1773,11 +1773,13 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 
 func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, prefix string, idx int) (soci.Tree, error) {
 	key := treeKey(prefix, idx)
-	logs.Debug.Printf("createTree(%q)", key, idx)
-	start := time.Now()
-	defer func() {
-		log.Printf("createTree(%q) (%s)", key, time.Since(start))
-	}()
+	if debug {
+		logs.Debug.Printf("createTree(%q)", key, idx)
+		start := time.Now()
+		defer func() {
+			log.Printf("createTree(%q) (%s)", key, time.Since(start))
+		}()
+	}
 	ok, pr, err := gztarPeek(bufio.NewReaderSize(rc, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("peek: %w", err)

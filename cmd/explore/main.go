@@ -41,10 +41,10 @@ func init() {
 func main() {
 	flag.Parse()
 
-	logs.Trace.SetOutput(os.Stderr)
-	logs.Trace.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-
 	if *verbose {
+		logs.Trace.SetOutput(os.Stderr)
+		logs.Trace.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+
 		logs.Debug.SetOutput(os.Stderr)
 		logs.Debug.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	}

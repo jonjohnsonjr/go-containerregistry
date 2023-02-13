@@ -99,10 +99,12 @@ func (g *gcsCache) object(key string) *storage.ObjectHandle {
 
 // TODO: Use lifecycle with bumping timestamps to evict old data.
 func (g *gcsCache) Get(ctx context.Context, key string) (*soci.TOC, error) {
-	start := time.Now()
-	defer func() {
-		log.Printf("bucket.Get(%q) (%s)", key, time.Since(start))
-	}()
+	if debug {
+		start := time.Now()
+		defer func() {
+			log.Printf("bucket.Get(%q) (%s)", key, time.Since(start))
+		}()
+	}
 	rc, err := g.object(key).NewReader(ctx)
 	if err != nil {
 		return nil, err
@@ -122,10 +124,12 @@ func (g *gcsCache) Get(ctx context.Context, key string) (*soci.TOC, error) {
 }
 
 func (g *gcsCache) Put(ctx context.Context, key string, toc *soci.TOC) error {
-	start := time.Now()
-	defer func() {
-		log.Printf("bucket.Put(%q) (%s)", key, time.Since(start))
-	}()
+	if debug {
+		start := time.Now()
+		defer func() {
+			log.Printf("bucket.Put(%q) (%s)", key, time.Since(start))
+		}()
+	}
 	w := g.object(key).NewWriter(ctx)
 
 	// TODO: Ideally, we could fork gzip.Writer and flush at checkpoints
@@ -160,10 +164,12 @@ func (g *gcsCache) RangeReader(ctx context.Context, key string, offset, length i
 }
 
 func (g *gcsCache) Size(ctx context.Context, key string) (int64, error) {
-	start := time.Now()
-	defer func() {
-		log.Printf("bucket.Size(%q) (%s)", key, time.Since(start))
-	}()
+	if debug {
+		start := time.Now()
+		defer func() {
+			log.Printf("bucket.Size(%q) (%s)", key, time.Since(start))
+		}()
+	}
 	attrs, err := g.bucket.Object(g.treePath(key)).Attrs(ctx)
 	if err != nil {
 		return -1, err
