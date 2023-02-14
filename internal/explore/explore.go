@@ -1439,7 +1439,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 		if tree != nil {
 			toc := tree.TOC()
-			opts = append(opts, remote.WithSize(toc.Csize))
+			if toc != nil {
+				opts = append(opts, remote.WithSize(toc.Csize))
+			}
 		}
 
 		cachedUrl := ""
@@ -1552,6 +1554,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		// We are letting this fall through later so that in reset() we start indexing.
 		logs.Debug.Printf("it is targz")
 	} else {
+		shouldIndex = false
 		logs.Debug.Printf("Peeking gzip")
 		ok, pr, err = gzip.Peek(pr)
 		if err != nil {
@@ -1573,7 +1576,6 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				log.Printf("zstdPeek(%q): %v", ref, err)
 			}
 			if ok {
-				shouldIndex = false
 				logs.Debug.Printf("it is zstd")
 				rc, err = zstd.UnzipReadCloser(rc)
 				if err != nil {
@@ -1648,6 +1650,8 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 					}
 				}
 				logs.Debug.Printf("tree size: %d", indexer.Size())
+			} else {
+				logs.Debug.Printf("not tree indexer, got: %T", fs.tr)
 			}
 		}
 		return nil
