@@ -1430,19 +1430,14 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	foreign := strings.HasPrefix(ref, "/http/") || strings.HasPrefix(ref, "/https/")
 	shouldIndex := tree == nil
-	if tree != nil {
+	if tree != nil && tree.TOC() != nil {
 		opts := []remote.Option{}
 		if !foreign {
 			// Skip the ping for foreign layers.
 			opts = h.remoteOptions(w, r, dig.Context().Name())
 		}
 
-		if tree != nil {
-			toc := tree.TOC()
-			if toc != nil {
-				opts = append(opts, remote.WithSize(toc.Csize))
-			}
-		}
+		opts = append(opts, remote.WithSize(tree.TOC().Csize))
 
 		cachedUrl := ""
 		cookie, err := r.Cookie("redirect")
