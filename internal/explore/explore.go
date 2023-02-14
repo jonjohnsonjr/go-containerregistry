@@ -858,11 +858,40 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 			opts = append(opts, remote.WithMaxSize(tooBig))
 		}
 
-		desc, err = remote.Get(ref, opts...)
-		if err != nil {
+		var g errgroup.Group
+		g.Go(func() error {
+			desc, err = remote.Get(ref, opts...)
+			if err != nil {
+				return err
+			}
+			h.manifests[desc.Digest.String()] = desc
+			return nil
+		})
+		if dig, ok := ref.(name.Digest); ok {
+			g.Go(func() error {
+				if _, ok := h.getTags(ref.Context()); ok {
+					return nil
+				}
+				fallback := strings.ReplaceAll(dig.Identifier(), ":", "-")
+				ref := ref.Context().Tag(fallback)
+				if _, err := remote.Head(ref, opts...); err != nil {
+					log.Printf("fallback check: %v", err)
+					return nil
+				}
+
+				h.Lock()
+				defer h.Unlock()
+				if _, ok := h.sawTags[ref.Context().String()]; ok {
+					return nil
+				}
+				h.sawTags[ref.Context().String()] = []string{fallback}
+
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
 			return err
 		}
-		h.manifests[desc.Digest.String()] = desc
 	}
 
 	jqref, err := url.PathUnescape(ref.String())
