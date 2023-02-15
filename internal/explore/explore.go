@@ -1549,7 +1549,6 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		// We are letting this fall through later so that in reset() we start indexing.
 		logs.Debug.Printf("it is targz")
 	} else {
-		shouldIndex = false
 		logs.Debug.Printf("Peeking gzip")
 		ok, pr, err = gzip.Peek(pr)
 		if err != nil {
@@ -1571,6 +1570,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				log.Printf("zstdPeek(%q): %v", ref, err)
 			}
 			if ok {
+				shouldIndex = false
 				logs.Debug.Printf("it is zstd")
 				rc, err = zstd.UnzipReadCloser(rc)
 				if err != nil {
@@ -1814,7 +1814,12 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 	}
 	if !ok {
 		logs.Debug.Printf("not targz")
-		return nil, nil
+
+		ok, pr, err = tarPeek(pr)
+		if !ok {
+			logs.Debug.Printf("not tar either")
+			return nil, nil
+		}
 	}
 
 	blob := &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}

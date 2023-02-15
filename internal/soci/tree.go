@@ -2,6 +2,7 @@ package soci
 
 import (
 	"archive/tar"
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/compress/flate"
 	"github.com/google/go-containerregistry/internal/compress/gzip"
+	igzip "github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"golang.org/x/sync/errgroup"
 )
@@ -34,9 +36,21 @@ type TOC struct {
 
 	ArchiveSize int64 `json:"asize,omitempty"`
 	Size        int64 `json:"size,omitempty"`
+
+	Type string `json:"type,omitempty"`
 }
 
 func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {
+	if len(toc.Checkpoints) == 0 {
+		return &Checkpointer{
+			checkpoint: &flate.Checkpoint{
+				Empty: true,
+			},
+			tf:    tf,
+			start: tf.Offset,
+			end:   tf.Offset + tf.Size,
+		}
+	}
 	from := toc.Checkpoints[0]
 	discard := int64(0)
 	index := 0
@@ -183,6 +197,13 @@ func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (i
 
 	from := cp.checkpoint
 	from.Hist = dict
+
+	if t.TOC().Type == "tar" {
+		logs.Debug.Printf("Type = tar")
+		logs.Debug.Printf("Tree: Returning LimitedReader of size %d", cp.tf.Size)
+		lr := io.LimitedReader{rc, cp.tf.Size}
+		return &and.ReadCloser{&lr, rc.Close}, nil
+	}
 
 	logs.Debug.Printf("Tree: ETF: Calling gzip.Continue")
 	r, err := gzip.Continue(rc, 1<<22, from, nil)
@@ -351,12 +372,18 @@ func (t *Leaf) TOC() *TOC {
 	return t.toc
 }
 
+type checkpointReader interface {
+	io.Reader
+	CompressedCount() int64
+	UncompressedCount() int64
+}
+
 type TreeIndexer struct {
 	toc      *TOC
 	updates  chan *flate.Checkpoint
 	g        errgroup.Group
 	in       io.ReadCloser
-	zr       *gzip.Reader
+	zr       checkpointReader
 	tr       *tar.Reader
 	w        io.WriteCloser
 	tw       *tar.Writer
@@ -381,6 +408,7 @@ func (i *TreeIndexer) Next() (*tar.Header, error) {
 	}
 	f := fromTar(header)
 	f.Offset = i.zr.UncompressedCount()
+	logs.Debug.Printf("file: %q, read: %d", header.Name, f.Offset)
 	i.toc.Files = append(i.toc.Files, *f)
 	return header, err
 }
@@ -480,31 +508,71 @@ func (i *TreeIndexer) processUpdates() error {
 func NewTreeIndexer(rc io.ReadCloser, w io.WriteCloser, span int64) (*TreeIndexer, error) {
 	updates := make(chan *flate.Checkpoint, 10)
 
+	// TODO: toc.MediaType
 	toc := &TOC{
 		Files:       []TOCFile{},
 		Checkpoints: []*flate.Checkpoint{},
 		Ssize:       span,
 	}
 
-	zr, err := gzip.NewReaderWithSpans(rc, span, updates)
-	if err != nil {
-		return nil, err
-	}
-	cw := &countWriter{w, 0}
-
 	i := &TreeIndexer{
 		updates: updates,
 		toc:     toc,
 		in:      rc,
-		zr:      zr,
-		tr:      tar.NewReader(zr),
-		tw:      tar.NewWriter(cw),
-		cw:      cw,
 		w:       w,
 	}
+
+	ok, pr, err := igzip.Peek(rc)
+	if err != nil {
+		return nil, err
+	}
+	rc = &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}
+	if ok {
+		zr, err := gzip.NewReaderWithSpans(rc, span, updates)
+		if err != nil {
+			return nil, err
+		}
+
+		i.zr = zr
+		i.tr = tar.NewReader(zr)
+	} else {
+		ok, pr, err = tarPeek(rc)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("not tar or targz")
+		}
+		i.zr = &countReader{pr, 0}
+		i.tr = tar.NewReader(i.zr)
+		i.toc.Type = "tar"
+	}
+
+	i.cw = &countWriter{w, 0}
+	i.tw = tar.NewWriter(i.cw)
+
 	i.g.Go(i.processUpdates)
 
 	return i, nil
+}
+
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (n int, err error) {
+	n, err = c.r.Read(p)
+	c.n += int64(n)
+	return
+}
+
+func (c *countReader) CompressedCount() int64 {
+	return 0
+}
+
+func (c *countReader) UncompressedCount() int64 {
+	return c.n
 }
 
 type countWriter struct {
@@ -516,4 +584,33 @@ func (c *countWriter) Write(p []byte) (n int, err error) {
 	n, err = c.w.Write(p)
 	c.n += int64(n)
 	return
+}
+
+const (
+	magicGNU, versionGNU     = "ustar ", " \x00"
+	magicUSTAR, versionUSTAR = "ustar\x00", "00"
+)
+
+func tarPeek(r io.Reader) (bool, igzip.PeekReader, error) {
+	// Make sure it's more than 512
+	var pr igzip.PeekReader
+	if p, ok := r.(igzip.PeekReader); ok {
+		pr = p
+	} else {
+		// For tar peek.
+		pr = bufio.NewReaderSize(r, 1<<16)
+	}
+
+	block, err := pr.Peek(512)
+	if err != nil {
+		// https://github.com/google/go-containerregistry/issues/367
+		if err == io.EOF {
+			return false, pr, nil
+		}
+		return false, pr, err
+	}
+
+	magic := string(block[257:][:6])
+	isTar := magic == magicGNU || magic == magicUSTAR
+	return isTar, pr, nil
 }

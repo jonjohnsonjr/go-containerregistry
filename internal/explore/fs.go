@@ -118,6 +118,20 @@ func (fs *layerFS) reset() error {
 		if err != nil {
 			return err
 		}
+	} else {
+		ok, pr, err := tarPeek(rc)
+		rc = &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}
+		if err != nil {
+			log.Printf("tarPeek(%q) = %v", ref, err)
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("tarPeek(%q): not a tar file", ref)
+		}
+		if fs.iw != nil {
+			rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
+		}
+
 	}
 
 	if fs.rc != nil {
