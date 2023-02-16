@@ -1542,6 +1542,8 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	size := blob.size
 	var rc io.ReadCloser = blob
 
+	tarzstd := false
+
 	ok, pr, err := gztarPeek(blob)
 	if err != nil {
 		log.Printf("gztarPeek(%q): %v", ref, err)
@@ -1574,6 +1576,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			}
 			if ok {
 				shouldIndex = false
+				tarzstd = true
 				logs.Debug.Printf("it is zstd")
 				rc, err = zstd.UnzipReadCloser(rc)
 				if err != nil {
@@ -1614,6 +1617,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
 			return err
+		}
+		if tarzstd {
+			fs.kind = "tarzstd"
 		}
 		fs.blobRef = dig.String()
 		defer fs.Close()

@@ -145,7 +145,6 @@ func (fs *layerFS) reset() error {
 		}
 		logs.Debug.Printf("it is tar!")
 
-		// TODO: tarzstd
 		if fs.kind == "gzip" {
 			fs.kind = "targz"
 		} else {
