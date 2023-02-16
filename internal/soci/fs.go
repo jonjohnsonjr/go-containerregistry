@@ -590,7 +590,7 @@ func (s *sociDirEntry) Name() string {
 		return s.dir
 	}
 	trimmed := strings.TrimPrefix(s.fm.Name, "./")
-	if !strings.HasPrefix(s.dir, "/") && strings.HasPrefix(trimmed, "/") {
+	if s.dir != "" && !strings.HasPrefix(s.dir, "/") && strings.HasPrefix(trimmed, "/") {
 		trimmed = strings.TrimPrefix(trimmed, "/"+s.dir+"/")
 	} else {
 		trimmed = strings.TrimPrefix(trimmed, s.dir+"/")
