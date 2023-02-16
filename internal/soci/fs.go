@@ -303,6 +303,9 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	// Implicit directories.
 	dirs := map[string]struct{}{}
 
+	// Implicit directories.
+	realDirs := map[string]struct{}{}
+
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
 	for _, fm := range s.files {
@@ -334,7 +337,8 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 			if dirname[0] == '/' {
 				dirname = dirname[1:]
 			}
-			dirs[dirname] = struct{}{}
+			realDirs[dirname] = struct{}{}
+			de = append(de, s.dirEntry(dir, &fm))
 			continue
 		}
 
@@ -364,8 +368,10 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	}
 
 	for dir := range dirs {
-		logs.Debug.Printf("Adding implicit dir: %s", dir)
-		de = append(de, s.dirEntry(dir, nil))
+		if _, ok := realDirs[dir]; !ok {
+			logs.Debug.Printf("Adding implicit dir: %s", dir)
+			de = append(de, s.dirEntry(dir, nil))
+		}
 	}
 
 	logs.Debug.Printf("len(ReadDir(%q)) = %d", dir, len(de))
@@ -694,6 +700,7 @@ func TarHeader(header *TOCFile) *tar.Header {
 		Linkname: header.Linkname,
 		Size:     header.Size,
 		Mode:     header.Mode,
+		ModTime:  header.ModTime,
 	}
 }
 

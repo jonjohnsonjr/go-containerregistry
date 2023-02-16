@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/google/go-containerregistry/internal/compress/flate"
 	"github.com/google/go-containerregistry/internal/compress/gzip"
@@ -17,11 +18,12 @@ import (
 
 type TOCFile struct {
 	// The tar stuff we care about for explore.ggcr.dev.
-	Typeflag byte   `json:"typeflag,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Linkname string `json:"linkname,omitempty"`
-	Size     int64  `json:"size,omitempty"`
-	Mode     int64  `json:"mode,omitempty"`
+	Typeflag byte      `json:"typeflag,omitempty"`
+	Name     string    `json:"name,omitempty"`
+	Linkname string    `json:"linkname,omitempty"`
+	Size     int64     `json:"size,omitempty"`
+	Mode     int64     `json:"mode,omitempty"`
+	ModTime  time.Time `json:"mod,omitempty"`
 
 	// Our uncompressed offset so we can seek ahead.
 	Offset int64
@@ -164,6 +166,7 @@ func fromTar(header *tar.Header) *TOCFile {
 		Linkname: header.Linkname,
 		Size:     header.Size,
 		Mode:     header.Mode,
+		ModTime:  header.ModTime,
 	}
 }
 

@@ -7,10 +7,12 @@
 package httpserve
 
 import (
+	"archive/tar"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -115,19 +117,22 @@ type anyDirs interface {
 	len() int
 	name(i int) string
 	isDir(i int) bool
+	info(i int) (fs.FileInfo, error)
 }
 
 type fileInfoDirs []fs.FileInfo
 
-func (d fileInfoDirs) len() int          { return len(d) }
-func (d fileInfoDirs) isDir(i int) bool  { return d[i].IsDir() }
-func (d fileInfoDirs) name(i int) string { return d[i].Name() }
+func (d fileInfoDirs) len() int                        { return len(d) }
+func (d fileInfoDirs) isDir(i int) bool                { return d[i].IsDir() }
+func (d fileInfoDirs) name(i int) string               { return d[i].Name() }
+func (d fileInfoDirs) info(i int) (fs.FileInfo, error) { return d[i], nil }
 
 type dirEntryDirs []fs.DirEntry
 
-func (d dirEntryDirs) len() int          { return len(d) }
-func (d dirEntryDirs) isDir(i int) bool  { return d[i].IsDir() }
-func (d dirEntryDirs) name(i int) string { return d[i].Name() }
+func (d dirEntryDirs) len() int                        { return len(d) }
+func (d dirEntryDirs) isDir(i int) bool                { return d[i].IsDir() }
+func (d dirEntryDirs) name(i int) string               { return d[i].Name() }
+func (d dirEntryDirs) info(i int) (fs.FileInfo, error) { return d[i].Info() }
 
 func dirList(w http.ResponseWriter, r *http.Request, f File) {
 	// Prefer to use ReadDir instead of Readdir,
@@ -158,13 +163,97 @@ func dirList(w http.ResponseWriter, r *http.Request, f File) {
 		if dirs.isDir(i) {
 			name += "/"
 		}
+		info, err := dirs.info(i)
+		if err != nil {
+			log.Printf("(%q).info(): %v", err)
+		}
 		// name may contain '?' or '#', which must be escaped to remain
 		// part of the URL path, and not indicate the start of a query
 		// string or fragment.
 		url := url.URL{Path: name}
-		fmt.Fprintf(w, "<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
+		if info == nil {
+			fmt.Fprintf(w, "<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
+		} else {
+			fmt.Fprint(w, tarList(info, url))
+		}
 	}
 	fmt.Fprintf(w, "</pre>\n")
+}
+
+func tarList(fi fs.FileInfo, url url.URL) string {
+	header, ok := fi.Sys().(*tar.Header)
+	if !ok {
+		// TODO
+		return fmt.Sprintf("<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(fi.Name()))
+	}
+	ts := header.ModTime.Format("2006-01-02 15:04")
+	ug := fmt.Sprintf("%d/%d", header.Uid, header.Gid)
+	mode := modeStr(header)
+	padding := 18 - len(ug)
+	s := fmt.Sprintf("%s %s %*d %s", mode, ug, padding, header.Size, ts)
+	name := fi.Name()
+	// TODO: Figure out why layerFs and soci fs are different here
+	if header.Linkname != "" && !strings.Contains(name, " -> ") {
+		if header.Typeflag == tar.TypeLink {
+			name += " link to " + header.Linkname
+		} else {
+			name += " -> " + header.Linkname
+		}
+	}
+	s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
+	return s
+}
+
+func modeStr(hdr *tar.Header) string {
+	fi := hdr.FileInfo()
+	mm := fi.Mode()
+
+	mode := []byte(fs.FileMode(hdr.Mode).String())
+	mode[0] = typeStr(hdr.Typeflag)
+
+	if mm&fs.ModeSetuid != 0 {
+		if mm&0100 != 0 {
+			mode[3] = 's'
+		} else {
+			mode[3] = 'S'
+		}
+	}
+	if mm&fs.ModeSetgid != 0 {
+		if mm&0010 != 0 {
+			mode[6] = 's'
+		} else {
+			mode[6] = 'S'
+		}
+	}
+	if mm&fs.ModeSticky != 0 {
+		if mm&0001 != 0 {
+			mode[9] = 't'
+		} else {
+			mode[9] = 'T'
+		}
+	}
+	return string(mode)
+}
+
+func typeStr(t byte) byte {
+	switch t {
+	case tar.TypeReg:
+		return '-'
+	case tar.TypeLink:
+		return 'h'
+	case tar.TypeSymlink:
+		return 'l'
+	case tar.TypeDir:
+		return 'd'
+	case tar.TypeChar:
+		return 'c'
+	case tar.TypeBlock:
+		return 'b'
+	case tar.TypeFifo:
+		return 'p'
+	}
+
+	return '?'
 }
 
 // ServeContent replies to the request using the content in the

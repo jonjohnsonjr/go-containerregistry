@@ -42,6 +42,7 @@ import (
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
+	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/internal/verify"
 	"github.com/google/go-containerregistry/internal/zstd"
@@ -1381,7 +1382,7 @@ func (h *handler) renderTree(w http.ResponseWriter, r *http.Request) error {
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
-	http.FileServer(fs).ServeHTTP(w, r)
+	httpserve.FileServer(fs).ServeHTTP(w, r)
 	return nil
 }
 
@@ -1526,7 +1527,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		prefix := strings.TrimPrefix(ref, "/")
 		logs.Debug.Printf("prefix = %s", prefix)
 		fs := soci.FS(tree, blob, prefix, dig.String(), respTooBig)
-		http.FileServer(http.FS(fs)).ServeHTTP(w, r)
+		httpserve.FileServer(httpserve.FS(fs)).ServeHTTP(w, r)
 
 		return nil
 	}
@@ -1618,7 +1619,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		// Allow this to be cached for an hour.
 		w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
-		http.FileServer(fs).ServeHTTP(w, r)
+		httpserve.FileServer(fs).ServeHTTP(w, r)
 
 		// TODO: Make it so we can do this incrementally.
 		if shouldIndex {
@@ -1675,7 +1676,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
 	seek := &sizeSeeker{pr, size, ref, nil, false}
-	http.ServeContent(w, r, "", time.Time{}, seek)
+	httpserve.ServeContent(w, r, "", time.Time{}, seek)
 
 	return nil
 }
@@ -1794,7 +1795,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
-	http.FileServer(http.FS(mfs)).ServeHTTP(w, r)
+	httpserve.FileServer(httpserve.FS(mfs)).ServeHTTP(w, r)
 
 	return nil
 }

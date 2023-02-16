@@ -32,6 +32,7 @@ import (
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/gzip"
+	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/logs"
 )
@@ -174,7 +175,7 @@ func (fs *layerFS) Close() error {
 }
 
 // TODO: Check to see if we hit tr or rc EOF and reset.
-func (fs *layerFS) Open(original string) (http.File, error) {
+func (fs *layerFS) Open(original string) (httpserve.File, error) {
 	name := strings.TrimPrefix(original, fs.ref)
 
 	// This is a bit nasty. For symlinks and hardlinks, we have to handle:
