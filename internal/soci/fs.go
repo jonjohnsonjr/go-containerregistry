@@ -701,6 +701,8 @@ func TarHeader(header *TOCFile) *tar.Header {
 		Size:     header.Size,
 		Mode:     header.Mode,
 		ModTime:  header.ModTime,
+		Uid:      header.Uid,
+		Gid:      header.Gid,
 	}
 }
 

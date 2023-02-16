@@ -24,6 +24,8 @@ type TOCFile struct {
 	Size     int64     `json:"size,omitempty"`
 	Mode     int64     `json:"mode,omitempty"`
 	ModTime  time.Time `json:"mod,omitempty"`
+	Uid      int       `json:"uid,omitempty"`
+	Gid      int       `json:"gid,omitempty"`
 
 	// Our uncompressed offset so we can seek ahead.
 	Offset int64
@@ -167,6 +169,8 @@ func fromTar(header *tar.Header) *TOCFile {
 		Size:     header.Size,
 		Mode:     header.Mode,
 		ModTime:  header.ModTime,
+		Gid:      header.Gid,
+		Uid:      header.Uid,
 	}
 }
 
