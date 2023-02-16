@@ -184,7 +184,14 @@ func tarList(fi fs.FileInfo, url url.URL) string {
 	header, ok := fi.Sys().(*tar.Header)
 	if !ok {
 		// TODO
-		return fmt.Sprintf("<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(fi.Name()))
+		name := fi.Name()
+		ts := "????-??-?? ??:??"
+		ug := "?/?"
+		mode := "d?????????"
+		padding := 18 - len(ug)
+		s := fmt.Sprintf("%s %s %*d %s", mode, ug, padding, 0, ts)
+		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
+		return s
 	}
 	ts := header.ModTime.Format("2006-01-02 15:04")
 	ug := fmt.Sprintf("%d/%d", header.Uid, header.Gid)
