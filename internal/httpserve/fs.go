@@ -461,19 +461,19 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		}()
 	}
 
-	if render != nil {
+	//if render != nil && r.URL.Query().Get("dl") == "" {
+	if render != nil && r.URL.Query().Get("dl") == "" {
 		if err := render(w); err != nil {
 			logs.Debug.Printf("render(w): %v", err)
 		} else {
 			fmt.Fprintf(w, "<pre>")
 		}
+	} else {
+		w.Header().Set("Accept-Ranges", "bytes")
+		if w.Header().Get("Content-Encoding") == "" {
+			w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
+		}
 	}
-
-	// TODO: Make this kinda work?
-	// w.Header().Set("Accept-Ranges", "bytes")
-	// if w.Header().Get("Content-Encoding") == "" {
-	// 	w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
-	// }
 
 	w.WriteHeader(code)
 
