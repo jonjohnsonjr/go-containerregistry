@@ -1831,7 +1831,7 @@ func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType typ
 		logs.Debug.Printf("sys: %T", sys)
 	}
 
-	tarflags := "tar -tvf - "
+	tarflags := "tar -tv "
 
 	hash, err := v1.NewHash(ref.Identifier())
 	if err != nil {

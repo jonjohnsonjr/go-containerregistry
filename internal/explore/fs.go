@@ -212,12 +212,12 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 	}
 
 	mediaType := types.DockerUncompressedLayer
-	tarflags := "tar -Oxf - "
+	tarflags := "tar -Ox "
 	if kind == "targz" {
-		tarflags = "tar -Oxzf - "
+		tarflags = "tar -Oxz "
 		mediaType = types.DockerLayer
 	} else if kind == "tarzstd" {
-		tarflags = "tar --zstd -Oxf - "
+		tarflags = "tar --zstd -Ox "
 		mediaType = types.MediaType("application/vnd.oci.image.layer.v1.tar+zstd")
 	}
 
@@ -246,11 +246,11 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 	}
 
 	if stat.IsDir() {
-		tarflags = "tar -tvf - "
+		tarflags = "tar -tv "
 		if kind == "targz" {
-			tarflags = "tar -tvzf - "
+			tarflags = "tar -tvz "
 		} else if kind == "tarzstd" {
-			tarflags = "tar --zstd -tvf - "
+			tarflags = "tar --zstd -tv "
 		}
 
 		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + filename
