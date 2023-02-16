@@ -14,6 +14,7 @@
 package explore
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -1527,6 +1528,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		prefix := strings.TrimPrefix(ref, "/")
 		logs.Debug.Printf("prefix = %s", prefix)
 		fs := soci.FS(tree, blob, prefix, dig.String(), respTooBig)
+		fs.Render = renderHeader
 		httpserve.FileServer(httpserve.FS(fs)).ServeHTTP(w, r)
 
 		return nil
@@ -1790,13 +1792,74 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	prefix := strings.TrimPrefix(ref, "/")
-	mfs := soci.MultiFS(fss, prefix)
+	mfs := soci.NewMultiFS(fss, prefix, dig)
+	mfs.Render = renderDir
+	mfs.Size = desc.Size
+	mfs.MediaType = desc.MediaType
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
 	httpserve.FileServer(httpserve.FS(mfs)).ServeHTTP(w, r)
 
+	return nil
+}
+
+func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType types.MediaType, size int64, ref name.Reference, f httpserve.File) error {
+	// This must be a directory because it wasn't part of a filesystem
+	stat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !stat.IsDir() {
+		return fmt.Errorf("file was not a directory")
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
+		return err
+	}
+
+	// TODO: Make filename clickable to go up a directory.
+	filename := strings.TrimPrefix(fname, "/"+prefix)
+	filename = strings.TrimPrefix(filename, "/")
+
+	sys := stat.Sys()
+	header, ok := sys.(*tar.Header)
+	if ok {
+		filename = header.Name
+	} else {
+		logs.Debug.Printf("sys: %T", sys)
+	}
+
+	tarflags := "tar -tvf - "
+
+	hash, err := v1.NewHash(ref.Identifier())
+	if err != nil {
+		return err
+	}
+
+	data := HeaderData{
+		Repo:      ref.Context().String(),
+		Reference: ref.String(),
+		Descriptor: &v1.Descriptor{
+			Size:      size,
+			Digest:    hash,
+			MediaType: mediaType,
+		},
+		Handler: handlerForMT(string(mediaType)),
+		//EscapedMediaType: url.QueryEscape(string(mediaType)),
+		MediaTypeLink: getLink(string(mediaType)),
+		Up: &RepoParent{
+			Parent:    ref.Context().String(),
+			Separator: "@",
+			Child:     ref.Identifier(),
+		},
+		JQ: crane + " export " + ref.String() + " | " + tarflags + " " + filename,
+	}
+
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1892,6 +1955,7 @@ func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, d
 	// We never saw a non-nil Body, we can do the range.
 	prefix := strings.TrimPrefix(ref, "/")
 	fs := soci.FS(tree, blob, prefix, dig.String(), respTooBig)
+	fs.Render = renderHeader
 	return fs, nil
 }
 

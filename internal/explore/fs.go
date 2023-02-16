@@ -35,6 +35,9 @@ import (
 	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/logs"
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
 // Lots of debugging that we don't want to compile into the binary.
@@ -52,6 +55,10 @@ const bufferLen = 2 << 16
 type tarReader interface {
 	io.Reader
 	Next() (*tar.Header, error)
+}
+
+type withSize interface {
+	Size() (int64, error)
 }
 
 // Implements http.FileSystem.
@@ -72,6 +79,8 @@ type layerFS struct {
 	complete bool
 
 	blobRef string
+	size    int64
+	kind    string
 }
 
 func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request, index bool, iw io.WriteCloser) (*layerFS, error) {
@@ -98,6 +107,10 @@ func (fs *layerFS) reset() error {
 		return err
 	}
 
+	if fs.size, err = blob.Size(); err != nil {
+		logs.Debug.Printf("reset(): Size(): %v", err)
+	}
+
 	logs.Debug.Printf("blob %T", blob)
 	ok, pr, err := gzip.Peek(blob)
 	var rc io.ReadCloser
@@ -107,6 +120,7 @@ func (fs *layerFS) reset() error {
 	}
 	if ok {
 		logs.Debug.Printf("it is gzip!")
+		fs.kind = "gzip"
 		if fs.index {
 			if fs.iw != nil {
 				rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
@@ -128,6 +142,14 @@ func (fs *layerFS) reset() error {
 		}
 		if !ok {
 			return fmt.Errorf("tarPeek(%q): not a tar file", ref)
+		}
+		logs.Debug.Printf("it is tar!")
+
+		// TODO: tarzstd
+		if fs.kind == "gzip" {
+			fs.kind = "targz"
+		} else {
+			fs.kind = "tar"
 		}
 		if fs.iw != nil {
 			rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
@@ -165,6 +187,87 @@ func (fs *layerFS) reset() error {
 	}
 
 	return nil
+}
+
+func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, size int64, f httpserve.File) error {
+	stat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
+		return err
+	}
+
+	// TODO: Make filename clickable to go up a directory.
+	filename := strings.TrimPrefix(fname, "/"+prefix)
+	filename = strings.TrimPrefix(filename, "/")
+
+	header, ok := stat.Sys().(*tar.Header)
+	if ok {
+		filename = header.Name
+	} else {
+		// TODO: it's probably a dir, actually
+		logs.Debug.Printf("i got here!!!")
+	}
+
+	mediaType := types.DockerUncompressedLayer
+	tarflags := "tar -Oxf - "
+	if kind == "targz" {
+		tarflags = "tar -Oxzf - "
+		mediaType = types.DockerLayer
+	} else if kind == "tarzstd" {
+		tarflags = "tar --zstd -Oxf - "
+		mediaType = types.MediaType("application/vnd.oci.image.layer.v1.tar+zstd")
+	}
+
+	hash, err := v1.NewHash(ref.Identifier())
+	if err != nil {
+		return err
+	}
+
+	data := HeaderData{
+		Repo:      ref.Context().String(),
+		Reference: ref.String(),
+		Descriptor: &v1.Descriptor{
+			Size:      size,
+			Digest:    hash,
+			MediaType: mediaType,
+		},
+		Handler: handlerForMT(string(mediaType)),
+		//EscapedMediaType: url.QueryEscape(string(mediaType)),
+		MediaTypeLink: getLink(string(mediaType)),
+		Up: &RepoParent{
+			Parent:    ref.Context().String(),
+			Separator: "@",
+			Child:     ref.Identifier(),
+		},
+		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filename,
+	}
+
+	if stat.IsDir() {
+		tarflags = "tar -tvf - "
+		if kind == "targz" {
+			tarflags = "tar -tvzf - "
+		} else if kind == "tarzstd" {
+			tarflags = "tar --zstd -tvf - "
+		}
+
+		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + filename
+	}
+
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+	ref, err := name.ParseReference(fs.blobRef)
+	if err != nil {
+		return err
+	}
+	return renderHeader(w, fname, strings.Trim(fs.ref, "/"), ref, fs.kind, fs.size, f)
 }
 
 func (fs *layerFS) Close() error {

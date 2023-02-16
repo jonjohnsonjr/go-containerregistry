@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,38 +18,70 @@ import (
 
 	"github.com/google/go-containerregistry/internal/and"
 	"github.com/google/go-containerregistry/internal/compress/gzip"
+	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/pkg/logs"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
 // More than enough for FileServer to Peek at file contents.
 const bufferLen = 2 << 16
 
-type multifs struct {
+type RenderDir func(w http.ResponseWriter, fname string, prefix string, mediaType types.MediaType, size int64, ref name.Reference, f httpserve.File) error
+
+type MultiFS struct {
 	fss    []*SociFS
 	prefix string
+
+	lastFs   *SociFS
+	lastFile string
+
+	ref name.Reference
+
+	Render    RenderDir
+	MediaType types.MediaType
+	Size      int64
 }
 
-func MultiFS(fss []*SociFS, prefix string) fs.FS {
+func NewMultiFS(fss []*SociFS, prefix string, ref name.Reference) *MultiFS {
 	filtered := []*SociFS{}
 	for _, fs := range fss {
 		if fs != nil {
 			filtered = append(filtered, fs)
 		}
 	}
-	return &multifs{
+	return &MultiFS{
 		fss:    filtered,
 		prefix: prefix,
+		ref:    ref,
 	}
 }
 
-func (s *multifs) err(name string) fs.File {
+func (s *MultiFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+	logs.Debug.Printf("s.lastFile=%q, s.lastFs=%v, fname=%q", s.lastFile, s.lastFs == nil, fname)
+	stat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if stat.IsDir() {
+		return s.Render(w, fname, s.prefix, s.MediaType, s.Size, s.ref, f)
+	}
+
+	if s.lastFs == nil {
+		return fmt.Errorf("something went wrong")
+	}
+	return s.lastFs.RenderHeader(w, fname, f)
+
+}
+
+func (s *MultiFS) err(name string) fs.File {
 	return &multiFile{
 		fs:   s,
 		name: name,
 	}
 }
 
-func (s *multifs) chase(original string, gen int) (*TOCFile, *SociFS, error) {
+func (s *MultiFS) chase(original string, gen int) (*TOCFile, *SociFS, error) {
 	logs.Debug.Printf("multifs.chase(%q, %d)", original, gen)
 	if original == "" {
 		return nil, nil, fmt.Errorf("empty string")
@@ -71,7 +104,7 @@ func (s *multifs) chase(original string, gen int) (*TOCFile, *SociFS, error) {
 	return nil, nil, fs.ErrNotExist
 }
 
-func (s *multifs) find(name string) (*TOCFile, *SociFS, error) {
+func (s *MultiFS) find(name string) (*TOCFile, *SociFS, error) {
 	logs.Debug.Printf("multifs.find(%q)", name)
 	needle := path.Clean("/" + name)
 	for _, sfs := range s.fss {
@@ -86,7 +119,8 @@ func (s *multifs) find(name string) (*TOCFile, *SociFS, error) {
 	return nil, nil, fs.ErrNotExist
 }
 
-func (s *multifs) Open(original string) (fs.File, error) {
+func (s *MultiFS) Open(original string) (fs.File, error) {
+	s.lastFile = original
 	logs.Debug.Printf("multifs.Open(%q)", original)
 	name := strings.TrimPrefix(original, s.prefix)
 
@@ -110,15 +144,18 @@ func (s *multifs) Open(original string) (fs.File, error) {
 				// Possibly a directory?
 				return s.err(name), nil
 			}
+			s.lastFs = sfs
 			return sfs.err(name), nil
 		}
 
 		if fm.Typeflag == tar.TypeDir {
+			logs.Debug.Printf("dir for %q = %q", name, fm.Name)
 			return sfs.dir(fm), nil
 		}
 
 		name = path.Clean("/" + fm.Name)
 	}
+	s.lastFs = sfs
 
 	if int64(fm.Size) > sfs.maxSize {
 		logs.Debug.Printf("multifs.Open(%q): too big: %d", name, fm.Size)
@@ -127,19 +164,36 @@ func (s *multifs) Open(original string) (fs.File, error) {
 
 	if fm.Typeflag == tar.TypeDir {
 		// Return a multifs dir file so we search everything
-		return s.err(name), nil
+		logs.Debug.Printf("multifs dir for %q = %q", name, fm.Name)
+		return s.dir(fm), nil
 	}
 
 	return &sociFile{fs: sfs, name: name, fm: fm}, nil
 }
 
+func (s *MultiFS) dir(fm *TOCFile) fs.File {
+	return &multiFile{
+		fs:   s,
+		name: fm.Name,
+		fm:   fm,
+	}
+}
+
 type multiFile struct {
-	fs   *multifs
+	fs   *MultiFS
 	name string
+	fm   *TOCFile
 }
 
 func (s *multiFile) Stat() (fs.FileInfo, error) {
 	logs.Debug.Printf("multifs.Stat(%q)", s.name)
+	if s.fm != nil {
+		s.fm.Name = strings.TrimPrefix(s.fm.Name, "./")
+		s.fm.Name = strings.TrimPrefix(s.fm.Name, "/")
+		logs.Debug.Printf("s.fm.Name = %q", s.fm.Name)
+		return TarHeader(s.fm).FileInfo(), nil
+	}
+
 	// We don't have an entry, so we need to synthesize one.
 	return &dirInfo{s.name}, nil
 }
@@ -209,6 +263,8 @@ func FS(tree Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *Soc
 	}
 }
 
+type RenderFunc func(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, size int64, f httpserve.File) error
+
 type SociFS struct {
 	files []TOCFile
 
@@ -219,6 +275,24 @@ type SociFS struct {
 	prefix  string
 	ref     string
 	maxSize int64
+
+	Render RenderFunc
+}
+
+func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+	logs.Debug.Printf("soci.RenderHeader: %v", s.Render)
+	if s.Render != nil {
+		ref, err := name.ParseReference(s.ref)
+		if err != nil {
+			return err
+		}
+		kind := "targz"
+		if toc := s.tree.TOC(); toc != nil && toc.Type != "" {
+			kind = toc.Type
+		}
+		return s.Render(w, fname, s.prefix, ref, kind, s.tree.TOC().Csize, f)
+	}
+	return nil
 }
 
 func (s *SociFS) extractFile(ctx context.Context, tf *TOCFile) (io.ReadCloser, error) {
@@ -331,7 +405,6 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		}
 
 		// Only do implicit dirs
-		// TODO: Undo this to keep permissions?
 		if fm.Typeflag == tar.TypeDir {
 			dirname := s.dirEntry(dir, &fm).Name()
 			if dirname[0] == '/' {

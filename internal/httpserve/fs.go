@@ -27,7 +27,13 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/internal/safefilepath"
+	"github.com/google/go-containerregistry/pkg/logs"
 )
+
+// HeaderRenderer renders a header for a FileSystem.
+type HeaderRenderer interface {
+	RenderHeader(w http.ResponseWriter, name string, f File) error
+}
 
 // A Dir implements FileSystem using the native file system restricted to a
 // specific directory tree.
@@ -46,6 +52,12 @@ import (
 //
 // An empty Dir is treated as ".".
 type Dir string
+
+// RenderHeader is unused.
+func (d Dir) RenderHeader(w http.ResponseWriter, name string, f File) error {
+	// We don't use this.
+	return nil
+}
 
 // mapOpenError maps the provided non-nil error from opening name
 // to a possibly better non-nil error. In particular, it turns OS-specific errors
@@ -99,6 +111,7 @@ func (d Dir) Open(name string) (File, error) {
 // the FS adapter function converts an fs.FS to a FileSystem.
 type FileSystem interface {
 	Open(name string) (File, error)
+	HeaderRenderer
 }
 
 // A File is returned by a FileSystem's Open method and can be
@@ -134,7 +147,7 @@ func (d dirEntryDirs) isDir(i int) bool                { return d[i].IsDir() }
 func (d dirEntryDirs) name(i int) string               { return d[i].Name() }
 func (d dirEntryDirs) info(i int) (fs.FileInfo, error) { return d[i].Info() }
 
-func dirList(w http.ResponseWriter, r *http.Request, f File) {
+func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) {
 	// Prefer to use ReadDir instead of Readdir,
 	// because the former doesn't require calling
 	// Stat on every entry of a directory on Unix.
@@ -157,6 +170,13 @@ func dirList(w http.ResponseWriter, r *http.Request, f File) {
 	sort.Slice(dirs, func(i, j int) bool { return dirs.name(i) < dirs.name(j) })
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if render != nil {
+		if err := render(w); err != nil {
+			logs.Debug.Printf("render(w): %v", err)
+		}
+	}
+
 	fmt.Fprintf(w, "<pre>\n")
 	for i, n := 0, dirs.len(); i < n; i++ {
 		name := dirs.name(i)
@@ -170,7 +190,7 @@ func dirList(w http.ResponseWriter, r *http.Request, f File) {
 		// name may contain '?' or '#', which must be escaped to remain
 		// part of the URL path, and not indicate the start of a query
 		// string or fragment.
-		url := url.URL{Path: name}
+		url := url.URL{Path: strings.TrimPrefix(name, "/")}
 		if info == nil {
 			fmt.Fprintf(w, "<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
 		} else {
@@ -313,11 +333,13 @@ var errSeeker = errors.New("seeker can't seek")
 // all of the byte-range-spec values is greater than the content size.
 var errNoOverlap = errors.New("invalid range: failed to overlap")
 
+type renderFunc func(w http.ResponseWriter) error
+
 // if name is empty, filename is unknown. (used for mime type, before sniffing)
 // if modtime.IsZero(), modtime is unknown.
 // content must be seeked to the beginning of the file.
 // The sizeFunc is called at most once. Its error, if any, is sent in the HTTP response.
-func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime time.Time, sizeFunc func() (int64, error), content io.ReadSeeker, prefix []byte) {
+func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime time.Time, sizeFunc func() (int64, error), content io.ReadSeeker, render renderFunc) {
 	setLastModified(w, modtime)
 	done, rangeReq := checkPreconditions(w, r, modtime)
 	if done {
@@ -439,10 +461,19 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		}()
 	}
 
-	w.Header().Set("Accept-Ranges", "bytes")
-	if w.Header().Get("Content-Encoding") == "" {
-		w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
+	if render != nil {
+		if err := render(w); err != nil {
+			logs.Debug.Printf("render(w): %v", err)
+		} else {
+			fmt.Fprintf(w, "<pre>")
+		}
 	}
+
+	// TODO: Make this kinda work?
+	// w.Header().Set("Accept-Ranges", "bytes")
+	// if w.Header().Get("Content-Encoding") == "" {
+	// 	w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
+	// }
 
 	w.WriteHeader(code)
 
@@ -761,6 +792,12 @@ func serveFile(w http.ResponseWriter, r *http.Request, fs FileSystem, name strin
 		}
 	}
 
+	render := func(w http.ResponseWriter) error {
+		logs.Debug.Printf("render: %v", f)
+		logs.Debug.Printf("name: %s", name)
+		return fs.RenderHeader(w, name, f)
+	}
+
 	// Still a directory? (we didn't find an index.html file)
 	if d.IsDir() {
 		if checkIfModifiedSince(r, d.ModTime()) == condFalse {
@@ -768,13 +805,13 @@ func serveFile(w http.ResponseWriter, r *http.Request, fs FileSystem, name strin
 			return
 		}
 		setLastModified(w, d.ModTime())
-		dirList(w, r, f)
+		dirList(w, r, f, render)
 		return
 	}
 
 	// serveContent will check modification time
 	sizeFunc := func() (int64, error) { return d.Size(), nil }
-	serveContent(w, r, d.Name(), d.ModTime(), sizeFunc, f, nil)
+	serveContent(w, r, d.Name(), d.ModTime(), sizeFunc, f, render)
 }
 
 // toHTTPError returns a non-specific HTTP error message and status code
@@ -858,6 +895,15 @@ type fileHandler struct {
 
 type ioFS struct {
 	fsys fs.FS
+}
+
+func (i ioFS) RenderHeader(w http.ResponseWriter, name string, f File) error {
+	if hr, ok := i.fsys.(HeaderRenderer); ok {
+		logs.Debug.Printf("ok RenderHeader: %v", f)
+		return hr.RenderHeader(w, name, f)
+	}
+	logs.Debug.Printf("RenderHeader nope")
+	return nil
 }
 
 type ioFile struct {
