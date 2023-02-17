@@ -486,7 +486,7 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 	}
 
 	if render != nil && r.URL.Query().Get("dl") == "" {
-		fmt.Fprintf(w, "</pre>")
+		fmt.Fprintf(w, "</pre>\n</body>\n</html>\n")
 	}
 }
 

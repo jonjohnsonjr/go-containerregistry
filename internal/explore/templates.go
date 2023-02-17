@@ -195,6 +195,10 @@ body {
 	padding: 12px;
 }
 
+pre {
+	white-space: pre-wrap;
+}
+
 .indent {
 	margin-left: 2em;
 }
