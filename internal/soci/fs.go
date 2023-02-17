@@ -213,7 +213,7 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	have := map[string]struct{}{}
 	de := []fs.DirEntry{}
 	for i, sfs := range s.fs.fss {
-		des, err := sfs.ReadDir(s.name)
+		des, err := sfs.ReadDir(strings.TrimSuffix(strings.TrimPrefix(s.name, "./"), "/"))
 		if err != nil {
 			return nil, err
 		}
@@ -660,6 +660,7 @@ func (s *sociFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (s *sociFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	logs.Debug.Printf("sociFile.ReadDir")
 	if s.fm != nil && s.fm.Typeflag == tar.TypeSymlink {
 		fm := *s.fm
 		fm.Name = "."
