@@ -728,7 +728,12 @@ type linkEntry struct {
 }
 
 func (s *linkEntry) Name() string {
-	trimmed := strings.TrimPrefix(s.fm.Name, s.dir+"/")
+	trimmed := strings.TrimPrefix(s.fm.Name, "./")
+	if s.dir != "" && !strings.HasPrefix(s.dir, "/") && strings.HasPrefix(trimmed, "/") {
+		trimmed = strings.TrimPrefix(trimmed, "/"+s.dir+"/")
+	} else {
+		trimmed = strings.TrimPrefix(trimmed, s.dir+"/")
+	}
 	name := path.Clean(trimmed)
 	return fmt.Sprintf("%s -> %s", name, s.link)
 }

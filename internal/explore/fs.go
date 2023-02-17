@@ -247,6 +247,21 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 		}
 
 		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + filename
+	} else {
+		fprefix := ""
+		if strings.HasPrefix(filename, "./") {
+			fprefix = "./"
+		}
+		dir := path.Dir(filename)
+		base := path.Base(filename)
+		sep := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(filename, fprefix), dir), base)
+
+		logs.Debug.Printf("dir=%q, sep=%q, base=%q, together=%q", dir, sep, base, fprefix+dir+sep+base)
+
+		href := path.Join(prefix, dir)
+		dirlink := fmt.Sprintf(`<a class="mt" href="/%s">%s</a>`, href, fprefix+dir+sep)
+		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + dirlink + base
+
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
@@ -646,6 +661,9 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 		prefix = "/"
 	}
 	fis := []os.FileInfo{}
+	if !f.Root() {
+		fis = append(fis, fileInfo{".."})
+	}
 	for _, hdr := range f.fs.headers {
 		name := path.Clean("/" + hdr.Name)
 		dir := path.Dir(strings.TrimPrefix(name, prefix))
