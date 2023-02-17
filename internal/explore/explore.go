@@ -1542,7 +1542,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	size := blob.size
 	var rc io.ReadCloser = blob
 
-	tarzstd := false
+	kind := "tar"
 
 	ok, pr, err := gztarPeek(blob)
 	if err != nil {
@@ -1553,6 +1553,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		// TODO: Clean this up.
 		// We are letting this fall through later so that in reset() we start indexing.
 		logs.Debug.Printf("it is targz")
+		kind = "targz"
 	} else {
 		logs.Debug.Printf("Peeking gzip")
 		ok, pr, err = gzip.Peek(pr)
@@ -1576,7 +1577,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			}
 			if ok {
 				shouldIndex = false
-				tarzstd = true
+				kind = "zstd"
 				logs.Debug.Printf("it is zstd")
 				rc, err = zstd.UnzipReadCloser(rc)
 				if err != nil {
@@ -1589,6 +1590,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 	if ok {
 		logs.Debug.Printf("it is tar")
+		if kind == "zstd" {
+			kind = "tarzstd"
+		}
 		// Cache this for layerFS.reset() so we don't have to re-fetch it.
 		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
 
@@ -1618,9 +1622,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
 			return err
 		}
-		if tarzstd {
-			fs.kind = "tarzstd"
-		}
+		fs.kind = kind
 		fs.blobRef = dig.String()
 		defer fs.Close()
 

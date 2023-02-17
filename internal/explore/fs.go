@@ -120,7 +120,6 @@ func (fs *layerFS) reset() error {
 	}
 	if ok {
 		logs.Debug.Printf("it is gzip!")
-		fs.kind = "gzip"
 		if fs.index {
 			if fs.iw != nil {
 				rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
@@ -145,11 +144,6 @@ func (fs *layerFS) reset() error {
 		}
 		logs.Debug.Printf("it is tar!")
 
-		if fs.kind == "gzip" {
-			fs.kind = "targz"
-		} else {
-			fs.kind = "tar"
-		}
 		if fs.iw != nil {
 			rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
 		}
@@ -262,6 +256,9 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 }
 
 func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+	if fs.kind == "" {
+		// TODO: Do something better for indices.
+	}
 	ref, err := name.ParseReference(fs.blobRef)
 	if err != nil {
 		return err
