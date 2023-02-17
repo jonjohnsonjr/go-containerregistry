@@ -166,13 +166,13 @@ func (t *tree) Dict(cp *Checkpointer) ([]byte, error) {
 	filename := dictFile(cp.index)
 	rc, err := t.Open(filename)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Open(%q): %w", filename, err)
 	}
 	defer rc.Close()
 
 	b, err := io.ReadAll(rc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Open(%q).ReadAll(): %w", filename, err)
 	}
 	cp.checkpoint.Hist = b
 
@@ -187,12 +187,12 @@ func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (i
 	cp := t.TOC().Checkpoint(tf)
 	dict, err := t.Dict(cp)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Dict(): %w", err)
 	}
 
 	rc, err := bs.Reader(ctx, cp.start, cp.end)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Reader(): %w", err)
 	}
 
 	from := cp.checkpoint
@@ -283,7 +283,7 @@ func (t *Leaf) init() error {
 	t.dicts = map[string][]byte{}
 	rc, err := t.bs.Reader(context.TODO(), 0, -1)
 	if err != nil {
-		return err
+		return fmt.Errorf("Reader(): %w", err)
 	}
 	defer rc.Close()
 
@@ -339,7 +339,7 @@ func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {
 	}
 	if t.dicts == nil {
 		if err := t.init(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("init(): %w", err)
 		}
 	}
 

@@ -478,7 +478,15 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 	w.WriteHeader(code)
 
 	if r.Method != "HEAD" {
-		io.CopyN(w, sendContent, sendSize)
+		if render != nil && r.URL.Query().Get("dl") == "" {
+			io.Copy(w, &dumbEscaper{in: sendContent, size: sendSize})
+		} else {
+			io.CopyN(w, sendContent, sendSize)
+		}
+	}
+
+	if render != nil && r.URL.Query().Get("dl") == "" {
+		fmt.Fprintf(w, "</pre>")
 	}
 }
 
@@ -1153,4 +1161,116 @@ var htmlReplacer = strings.NewReplacer(
 
 func htmlEscape(s string) string {
 	return htmlReplacer.Replace(s)
+}
+
+type dumbEscaper struct {
+	in        io.Reader
+	size      int64
+	tiny      []byte
+	leftover  []byte
+	total     int64
+	leftovers int64
+}
+
+var (
+	amp = []byte("&amp;")
+	lt  = []byte("&lt;")
+	gt  = []byte("&gt;")
+	dq  = []byte("&#34;")
+	sq  = []byte("&#39;")
+)
+
+func (d *dumbEscaper) Read(p []byte) (n int, err error) {
+	defer func() {
+		d.total += int64(n)
+		//logs.Debug.Printf("Read() = (%d, %v)", n, err)
+		//logs.Debug.Printf("total = %d", d.total)
+	}()
+	if d.tiny != nil {
+		//logs.Debug.Printf("tiny: %s", string(d.tiny))
+		n = copy(p, d.tiny)
+		d.tiny = nil
+		return n, nil
+	}
+	//logs.Debug.Printf("Read (total=%d, leftovers=%d)", d.total, d.leftovers)
+	var buf []byte
+	if d.leftover != nil {
+		//logs.Debug.Printf("leftover not nil")
+		buf = d.leftover
+	} else {
+		// logs.Debug.Printf("leftover nil")
+		buf = make([]byte, len(p))
+		n, err = d.in.Read(buf)
+		//logs.Debug.Printf("Read = %d %v", n, err)
+		if err == io.EOF && n == 0 {
+			//logs.Debug.Printf("returning eof")
+			return n, err
+		}
+		if err != nil && err != io.EOF {
+			//logs.Debug.Printf("Read failed: %v", err)
+			return n, err
+		}
+	}
+
+	idx := 0
+	for i, b := range buf {
+		//logs.Debug.Printf("i = %d", i)
+		//logs.Debug.Printf("idx = %d", idx)
+		var next []byte
+		switch b {
+		case '&':
+			next = amp
+		case '<':
+			next = lt
+		case '>':
+			next = gt
+		case '"':
+			next = dq
+		case '\'':
+			next = sq
+		default:
+			p[idx] = b
+			idx++
+		}
+		if next != nil {
+			d.size = d.size + int64(len(next)) - 1
+			//logs.Debug.Printf("next = %v", next)
+			if idx+len(next) < len(p) {
+				// logs.Debug.Printf("%d < %d", idx+len(next), len(p))
+				for i, c := range next {
+					p[idx+i] = c
+				}
+				idx += len(next)
+			} else {
+				left := len(p) - idx
+				if left < len(next) && left > 0 {
+					d.tiny = next[left:]
+					//logs.Debug.Printf("next[:left]: %s", string(next[:left]))
+					for i, c := range next[:left] {
+						p[idx+i] = c
+					}
+					d.leftover = buf[i+1:]
+					//logs.Debug.Printf("leftover: %s", string(d.leftover))
+					//logs.Debug.Printf("idx == 0, left = %d, len(p) = %d, len(d.tiny) = %d, n = %d, len(d.leftover) = %d", left, len(p), len(d.tiny), n, len(d.leftover))
+					idx += left
+					//logs.Debug.Printf("foo: %d", idx)
+					return idx, nil
+				}
+				//logs.Debug.Printf("%d >= %d", idx+len(next), len(p))
+				d.leftover = buf[i:]
+				d.leftovers++
+				//logs.Debug.Printf("bar")
+				return idx, nil
+			}
+		}
+
+		if idx+1 > len(p) || d.total+int64(idx)+1 > d.size {
+			//logs.Debug.Printf("baz")
+			return idx, nil
+		}
+	}
+
+	d.leftover = nil
+	//logs.Debug.Printf("quux")
+	return idx, err
 }

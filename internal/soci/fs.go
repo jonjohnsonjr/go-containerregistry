@@ -591,6 +591,8 @@ func (s *sociFile) Read(p []byte) (int, error) {
 			return bytes.NewReader(b).Read(p)
 		}
 	}
+	logs.Debug.Printf("soci.Read(%q) at the end", s.name)
+	// TODO: Only read s.fm.Size ever
 	return s.buf.Read(p)
 }
 
