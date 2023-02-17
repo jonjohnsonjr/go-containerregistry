@@ -382,6 +382,14 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
+
+	if dir == "." || dir == "/" || dir == "" || dir == "./" {
+		logs.Debug.Printf("I think this is root")
+	} else {
+		de = append(de, s.dirEntry("..", nil))
+
+	}
+
 	for _, fm := range s.files {
 		fm := fm
 		name := path.Clean("/" + fm.Name)
