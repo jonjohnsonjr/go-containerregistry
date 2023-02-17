@@ -219,6 +219,27 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 		return err
 	}
 
+	filelink := filename
+
+	// Compute links for JQ
+	fprefix := ""
+	if strings.HasPrefix(filename, "./") {
+		fprefix = "./"
+	}
+	filename = strings.TrimSuffix(filename, "/")
+	dir := path.Dir(filename)
+	if dir != "." {
+		base := path.Base(filename)
+		sep := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(filename, fprefix), dir), base)
+
+		href := path.Join(prefix, dir)
+		htext := fprefix + dir + sep
+
+		logs.Debug.Printf("dir=%q, sep=%q, base=%q, href=%q, htext=%q", dir, sep, base, href, htext)
+		dirlink := fmt.Sprintf(`<a class="mt" href="/%s">%s</a>`, href, htext)
+		filelink = dirlink + base
+	}
+
 	data := HeaderData{
 		Repo:      ref.Context().String(),
 		Reference: ref.String(),
@@ -235,7 +256,7 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 			Separator: "@",
 			Child:     ref.Identifier(),
 		},
-		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filename,
+		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filelink,
 	}
 
 	if stat.IsDir() {
@@ -246,22 +267,7 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 			tarflags = "tar --zstd -tv "
 		}
 
-		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + filename
-	} else {
-		fprefix := ""
-		if strings.HasPrefix(filename, "./") {
-			fprefix = "./"
-		}
-		dir := path.Dir(filename)
-		base := path.Base(filename)
-		sep := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(filename, fprefix), dir), base)
-
-		logs.Debug.Printf("dir=%q, sep=%q, base=%q, together=%q", dir, sep, base, fprefix+dir+sep+base)
-
-		href := path.Join(prefix, dir)
-		dirlink := fmt.Sprintf(`<a class="mt" href="/%s">%s</a>`, href, fprefix+dir+sep)
-		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + dirlink + base
-
+		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + filelink
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
