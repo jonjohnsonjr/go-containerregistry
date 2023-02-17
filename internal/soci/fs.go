@@ -530,6 +530,11 @@ type sociFile struct {
 
 func (s *sociFile) Stat() (fs.FileInfo, error) {
 	if s.fm != nil {
+		if s.fm.Typeflag == tar.TypeSymlink {
+			hdr := TarHeader(s.fm)
+			hdr.Typeflag = tar.TypeDir
+			return hdr.FileInfo(), nil
+		}
 		return TarHeader(s.fm).FileInfo(), nil
 	}
 
@@ -538,6 +543,9 @@ func (s *sociFile) Stat() (fs.FileInfo, error) {
 }
 
 func (s *sociFile) Read(p []byte) (int, error) {
+	if s.fm != nil && s.fm.Size == 0 {
+		return 0, io.EOF
+	}
 	logs.Debug.Printf("soci.Read(%q): len(p) = %d", s.name, len(p))
 	if s.buf == nil {
 		logs.Debug.Printf("buf is nil")
@@ -644,6 +652,16 @@ func (s *sociFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (s *sociFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	if s.fm != nil && s.fm.Typeflag == tar.TypeSymlink {
+		fm := *s.fm
+		fm.Name = "."
+
+		return []fs.DirEntry{&linkEntry{
+			fs:   s.fs,
+			fm:   &fm,
+			link: fm.Linkname,
+		}}, nil
+	}
 	return s.fs.ReadDir(s.name)
 }
 
