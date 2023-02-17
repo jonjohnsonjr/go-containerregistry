@@ -211,11 +211,25 @@ func (s *multiFile) Seek(offset int64, whence int) (int64, error) {
 func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	logs.Debug.Printf("multifs.ReadDir(%q)", s.name)
 	have := map[string]struct{}{}
+	realDirs := map[string]struct{}{}
+	implicitDirs := map[string]struct{}{}
 	de := []fs.DirEntry{}
+	if s.name == "." || s.name == "/" || s.name == "" || s.name == "./" {
+		logs.Debug.Printf("I think this is root")
+	} else {
+		de = append(de, &sociDirEntry{nil, "..", nil})
+	}
+	subdir := strings.TrimSuffix(strings.TrimPrefix(s.name, "./"), "/")
 	for i, sfs := range s.fs.fss {
-		des, err := sfs.ReadDir(strings.TrimSuffix(strings.TrimPrefix(s.name, "./"), "/"))
+		des, reald, implicitd, err := sfs.readDir(subdir)
 		if err != nil {
 			return nil, err
+		}
+		for i := range reald {
+			realDirs[i] = struct{}{}
+		}
+		for i := range implicitd {
+			implicitDirs[i] = struct{}{}
 		}
 		sawOpaque := false
 		for _, got := range des {
@@ -240,6 +254,14 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 			break
 		}
 	}
+
+	for dir := range implicitDirs {
+		if _, ok := realDirs[dir]; !ok {
+			logs.Debug.Printf("Adding implicit dir: %s", dir)
+			de = append(de, &sociDirEntry{nil, dir, nil})
+		}
+	}
+
 	logs.Debug.Printf("len(multifs.ReadDir(%q)) = %d", s.name, len(de))
 	return de, nil
 }
@@ -375,20 +397,43 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	}
 
 	// Implicit directories.
-	dirs := map[string]struct{}{}
+	de, realDirs, implicitDirs, err := s.readDir(original)
+	if err != nil {
+		return nil, err
+	}
+
+	if dir == "." || dir == "/" || dir == "" || dir == "./" {
+		logs.Debug.Printf("I think this is root")
+	} else {
+		de = append(de, s.dirEntry("..", nil))
+	}
+
+	for dir := range implicitDirs {
+		if _, ok := realDirs[dir]; !ok {
+			logs.Debug.Printf("Adding implicit dir: %s", dir)
+			de = append(de, s.dirEntry(dir, nil))
+		}
+	}
+
+	logs.Debug.Printf("len(ReadDir(%q)) = %d", dir, len(de))
+	return de, nil
+}
+
+func (s *SociFS) readDir(original string) ([]fs.DirEntry, map[string]struct{}, map[string]struct{}, error) {
+	logs.Debug.Printf("soci.ReadDir(%q)", original)
+	dir := strings.TrimPrefix(original, s.prefix)
+	if dir != original {
+		logs.Debug.Printf("soci.ReadDir(%q)", dir)
+	}
+
+	// Implicit directories.
+	implicitDirs := map[string]struct{}{}
 
 	// Implicit directories.
 	realDirs := map[string]struct{}{}
 
 	prefix := path.Clean("/" + dir)
 	de := []fs.DirEntry{}
-
-	if dir == "." || dir == "/" || dir == "" || dir == "./" {
-		logs.Debug.Printf("I think this is root")
-	} else {
-		de = append(de, s.dirEntry("..", nil))
-
-	}
 
 	for _, fm := range s.files {
 		fm := fm
@@ -406,13 +451,12 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 				}
 				implicit := strings.Split(fdir, "/")[0]
 				if implicit != "" {
-					dirs[implicit] = struct{}{}
+					implicitDirs[implicit] = struct{}{}
 				}
 			}
 			continue
 		}
 
-		// Only do implicit dirs
 		if fm.Typeflag == tar.TypeDir {
 			dirname := s.dirEntry(dir, &fm).Name()
 			if dirname[0] == '/' {
@@ -448,15 +492,7 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		de = append(de, &le)
 	}
 
-	for dir := range dirs {
-		if _, ok := realDirs[dir]; !ok {
-			logs.Debug.Printf("Adding implicit dir: %s", dir)
-			de = append(de, s.dirEntry(dir, nil))
-		}
-	}
-
-	logs.Debug.Printf("len(ReadDir(%q)) = %d", dir, len(de))
-	return de, nil
+	return de, realDirs, implicitDirs, nil
 }
 
 func (s *SociFS) find(name string) (*TOCFile, error) {
