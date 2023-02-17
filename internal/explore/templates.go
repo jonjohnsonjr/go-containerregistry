@@ -51,6 +51,11 @@ const (
 	text-decoration: inherit;
 }
 
+.link {
+	position: relative;
+	bottom: .125em;
+}
+
 .crane {
 	height: 1em;
 	width: 1em;
@@ -69,7 +74,7 @@ body {
 }
 </style>
 </head>
-<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> Registry Explorer</a></h1>
+<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> <span class="link">Registry Explorer</span></a></h1>
 <p>
 This beautiful tool allows you to <em>explore</em> the contents of a registry interactively.
 </p>
@@ -131,6 +136,11 @@ This service lives on <a href="https://cloud.run">Cloud Run</a> and uses <a href
 	text-decoration: inherit;
 }
 
+.link {
+	position: relative;
+	bottom: .125em;
+}
+
 .crane {
 	height: 1em;
 	width: 1em;
@@ -149,7 +159,7 @@ body {
 }
 </style>
 </head>
-<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> Registry Explorer</a></h1>
+<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> <span class="link">Registry Explorer</span></a></h1>
 <p>
 It looks like we encountered an auth error:
 </p>
@@ -176,6 +186,11 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 .mt {
 	color: inherit;
 	text-decoration: inherit;
+}
+
+.link {
+	position: relative;
+	bottom: .125em;
 }
 
 .crane {
@@ -213,7 +228,7 @@ pre {
 	bodyTemplate = `
 <body>
 <div>
-<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> Registry Explorer</a></h1>
+<h1><a class="top" href="/"><img class="crane" src="/favicon.svg"/> <span class="link">Registry Explorer</span></a></h1>
 {{ if .Up }}
 <h2>{{ if and (ne .Up.Parent "docker.io") (ne .Up.Parent "index.docker.io") }}<a class="mt" href="/?repo={{.Up.Parent}}">{{.Up.Parent}}</a>{{else}}{{.Up.Parent}}{{end}}{{.Up.Separator}}{{if .Handler }}<a class="mt" href="/{{.Handler}}{{.Reference}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}">{{.Up.Child}}</a>{{else}}{{.Up.Child}}{{end}}{{ range .CosignTags }} (<a href="/?image={{$.Repo}}:{{.Tag}}">{{.Short}}</a>){{end}}</h2>
 {{ else }}

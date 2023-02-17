@@ -473,9 +473,9 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		if w.Header().Get("Content-Encoding") == "" {
 			w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
 		}
-	}
 
-	w.WriteHeader(code)
+		w.WriteHeader(code)
+	}
 
 	if r.Method != "HEAD" {
 		if render != nil && r.URL.Query().Get("dl") == "" {
