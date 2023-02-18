@@ -156,7 +156,7 @@ func (h *handler) googleOptions(w http.ResponseWriter, r *http.Request, repo str
 		t := remote.DefaultTransport
 		t = transport.NewRetry(t)
 		t = transport.NewUserAgent(t, ua)
-		if logs.Enabled(logs.Trace) {
+		if r.URL.Query().Get("trace") != "" {
 			t = transport.NewTracer(t)
 		}
 		t = transport.Wrap(t)
@@ -437,7 +437,7 @@ func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, re
 	t := remote.DefaultTransport
 	t = transport.NewRetry(t)
 	t = transport.NewUserAgent(t, ua)
-	if logs.Enabled(logs.Trace) {
+	if r.URL.Query().Get("trace") != "" {
 		t = transport.NewTracer(t)
 	}
 
@@ -698,7 +698,7 @@ func (h *handler) renderDockerHub(w http.ResponseWriter, r *http.Request, repo s
 	t := remote.DefaultTransport
 	t = transport.NewRetry(t)
 	t = transport.NewUserAgent(t, ua)
-	if logs.Enabled(logs.Trace) {
+	if r.URL.Query().Get("trace") != "" {
 		t = transport.NewTracer(t)
 	}
 	t = transport.Wrap(t)
@@ -1487,7 +1487,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 				t := remote.DefaultTransport
 				t = transport.NewRetry(t)
 				t = transport.NewUserAgent(t, ua)
-				if logs.Enabled(logs.Trace) {
+				if r.URL.Query().Get("trace") != "" {
 					t = transport.NewTracer(t)
 				}
 				t = transport.Wrap(t)
