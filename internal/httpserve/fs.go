@@ -8,6 +8,7 @@ package httpserve
 
 import (
 	"archive/tar"
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -32,7 +33,7 @@ import (
 
 // HeaderRenderer renders a header for a FileSystem.
 type HeaderRenderer interface {
-	RenderHeader(w http.ResponseWriter, name string, f File) error
+	RenderHeader(w http.ResponseWriter, name string, f File, ctype string) error
 }
 
 // A Dir implements FileSystem using the native file system restricted to a
@@ -54,7 +55,7 @@ type HeaderRenderer interface {
 type Dir string
 
 // RenderHeader is unused.
-func (d Dir) RenderHeader(w http.ResponseWriter, name string, f File) error {
+func (d Dir) RenderHeader(w http.ResponseWriter, name string, f File, ctype string) error {
 	// We don't use this.
 	return nil
 }
@@ -172,7 +173,7 @@ func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	if render != nil {
-		if err := render(w); err != nil {
+		if err := render(w, ""); err != nil {
 			logs.Debug.Printf("render(w): %v", err)
 		}
 	}
@@ -203,7 +204,6 @@ func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) 
 func tarList(fi fs.FileInfo, url url.URL) string {
 	header, ok := fi.Sys().(*tar.Header)
 	if !ok {
-		// TODO
 		name := fi.Name()
 		ts := "????-??-?? ??:??"
 		ug := "?/?"
@@ -333,7 +333,7 @@ var errSeeker = errors.New("seeker can't seek")
 // all of the byte-range-spec values is greater than the content size.
 var errNoOverlap = errors.New("invalid range: failed to overlap")
 
-type renderFunc func(w http.ResponseWriter) error
+type renderFunc func(w http.ResponseWriter, ctype string) error
 
 // if name is empty, filename is unknown. (used for mime type, before sniffing)
 // if modtime.IsZero(), modtime is unknown.
@@ -364,6 +364,9 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 				http.Error(w, "seeker can't seek", http.StatusInternalServerError)
 				return
 			}
+			logs.Debug.Printf("DetectContentType = %s", ctype)
+		} else {
+			logs.Debug.Printf("ByExtension = %s", ctype)
 		}
 		w.Header().Set("Content-Type", ctype)
 	} else if len(ctypes) > 0 {
@@ -464,7 +467,7 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 	logs.Debug.Printf("got here...")
 	//if render != nil && r.URL.Query().Get("dl") == "" {
 	if render != nil && r.URL.Query().Get("dl") == "" {
-		if err := render(w); err != nil {
+		if err := render(w, ctype); err != nil {
 			logs.Debug.Printf("render(w): %v", err)
 		} else {
 			fmt.Fprintf(w, "<pre>")
@@ -481,7 +484,17 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 	if r.Method != "HEAD" {
 		if render != nil && r.URL.Query().Get("dl") == "" {
 			logs.Debug.Printf("calling Copy")
-			io.Copy(w, &dumbEscaper{in: sendContent, size: sendSize})
+			logs.Debug.Printf("ctype=%q", ctype)
+			if ctype == "application/octet-stream" {
+				logs.Debug.Printf("octetPrinter")
+				if _, err := io.Copy(&octetPrinter{buf: bufio.NewWriter(w), size: sendSize}, sendContent); err != nil {
+					logs.Debug.Printf("octet: %v", err)
+				}
+			} else {
+				if _, err := io.Copy(w, &dumbEscaper{in: sendContent, size: sendSize}); err != nil {
+					logs.Debug.Printf("escaper: %v", err)
+				}
+			}
 		} else {
 			io.CopyN(w, sendContent, sendSize)
 		}
@@ -802,10 +815,10 @@ func serveFile(w http.ResponseWriter, r *http.Request, fs FileSystem, name strin
 		}
 	}
 
-	render := func(w http.ResponseWriter) error {
+	render := func(w http.ResponseWriter, ctype string) error {
 		logs.Debug.Printf("render: %v", f)
 		logs.Debug.Printf("name: %s", name)
-		return fs.RenderHeader(w, name, f)
+		return fs.RenderHeader(w, name, f, ctype)
 	}
 
 	// Still a directory? (we didn't find an index.html file)
@@ -907,10 +920,10 @@ type ioFS struct {
 	fsys fs.FS
 }
 
-func (i ioFS) RenderHeader(w http.ResponseWriter, name string, f File) error {
+func (i ioFS) RenderHeader(w http.ResponseWriter, name string, f File, ctype string) error {
 	if hr, ok := i.fsys.(HeaderRenderer); ok {
 		logs.Debug.Printf("ok RenderHeader: %v", f)
-		return hr.RenderHeader(w, name, f)
+		return hr.RenderHeader(w, name, f, ctype)
 	}
 	logs.Debug.Printf("RenderHeader nope")
 	return nil
@@ -1306,4 +1319,79 @@ func (d *dumbEscaper) Read(p []byte) (n int, err error) {
 	d.leftover = nil
 	logs.Debug.Printf("quux")
 	return idx, err
+}
+
+// 00000000: 7f45 4c46 0201 0100 0000 0000 0000 0000  .ELF............
+// 00000010: 0200 3e00 0100 0000 7800 4000 0000 0000  ..>.....x.@.....
+// 00000020: 4000 0000 0000 0000 0000 0000 0000 0000  @...............
+// 00000030: 0000 0000 4000 3800 0100 0000 0000 0000  ....@.8.........
+// 00000040: 0100 0000 0500 0000 0000 0000 0000 0000  ................
+// 00000050: 0000 4000 0000 0000 0000 4000 0000 0000  ..@.......@.....
+// 00000060: 7c00 0000 0000 0000 7c00 0000 0000 0000  |.......|.......
+// 00000070: 0000 2000 0000 0000 b03c 0f05            .. ......<..
+
+type octetPrinter struct {
+	buf   *bufio.Writer
+	size  int64
+	total int64
+}
+
+// TODO: restrict to some reasonable number
+func (o *octetPrinter) Write(p []byte) (n int, err error) {
+	defer func() {
+		o.total += int64(n)
+	}()
+
+	left := o.total % 16
+	if left != 0 {
+		return 0, fmt.Errorf("TODO: implement chunking")
+	}
+	chunks := len(p) / 16
+	remain := len(p) % 16
+
+	if remain != 0 && int64(len(p))+o.total != o.size {
+		return 0, fmt.Errorf("TODO: implement chunking")
+	}
+
+	logs.Debug.Printf("left: %d, len(p): %d, chunks: %d, remain: %d", left, len(p), chunks, remain)
+
+	for chunk := 0; chunk <= chunks+(remain/15); chunk++ {
+		start := chunk * 16
+		cur := o.total + int64(start)
+
+		ascii := []byte{' ', ' '}
+		for i := 0; i < 16; i++ {
+			if i == 0 {
+				line := fmt.Sprintf("%08x:", cur)
+				if _, err := o.buf.WriteString(line); err != nil {
+					return i, err
+				}
+			}
+			if i%2 == 0 {
+				if err := o.buf.WriteByte(' '); err != nil {
+					return i, err
+				}
+			}
+			line := "  "
+			pos := int64(start) + int64(i) + o.total
+			if start+i < len(p) && pos < o.size {
+				r := p[start+i]
+				if r < 32 || r > 126 {
+					ascii = append(ascii, '.')
+				} else {
+					ascii = append(ascii, r)
+				}
+				line = fmt.Sprintf("%02x", r)
+			}
+			if _, err := o.buf.WriteString(line); err != nil {
+				return i, err
+			}
+		}
+		ascii = append(ascii, '\n')
+		if _, err := o.buf.Write(ascii); err != nil {
+			return start, err
+		}
+	}
+
+	return len(p), o.buf.Flush()
 }

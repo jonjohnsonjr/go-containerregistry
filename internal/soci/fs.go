@@ -27,7 +27,7 @@ import (
 // More than enough for FileServer to Peek at file contents.
 const bufferLen = 2 << 16
 
-type RenderDir func(w http.ResponseWriter, fname string, prefix string, mediaType types.MediaType, size int64, ref name.Reference, f httpserve.File) error
+type RenderDir func(w http.ResponseWriter, fname string, prefix string, mediaType types.MediaType, size int64, ref name.Reference, f httpserve.File, ctype string) error
 
 type MultiFS struct {
 	fss    []*SociFS
@@ -57,20 +57,20 @@ func NewMultiFS(fss []*SociFS, prefix string, ref name.Reference) *MultiFS {
 	}
 }
 
-func (s *MultiFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+func (s *MultiFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File, ctype string) error {
 	logs.Debug.Printf("s.lastFile=%q, s.lastFs=%v, fname=%q", s.lastFile, s.lastFs == nil, fname)
 	stat, err := f.Stat()
 	if err != nil {
 		return err
 	}
 	if stat.IsDir() {
-		return s.Render(w, fname, s.prefix, s.MediaType, s.Size, s.ref, f)
+		return s.Render(w, fname, s.prefix, s.MediaType, s.Size, s.ref, f, ctype)
 	}
 
 	if s.lastFs == nil {
 		return fmt.Errorf("something went wrong")
 	}
-	return s.lastFs.RenderHeader(w, fname, f)
+	return s.lastFs.RenderHeader(w, fname, f, ctype)
 
 }
 
@@ -285,7 +285,7 @@ func FS(tree Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *Soc
 	}
 }
 
-type RenderFunc func(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, size int64, f httpserve.File) error
+type RenderFunc func(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, size int64, f httpserve.File, ctype string) error
 
 type SociFS struct {
 	files []TOCFile
@@ -301,8 +301,7 @@ type SociFS struct {
 	Render RenderFunc
 }
 
-func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
-	logs.Debug.Printf("soci.RenderHeader: %v", s.Render)
+func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File, ctype string) error {
 	if s.Render != nil {
 		ref, err := name.ParseReference(s.ref)
 		if err != nil {
@@ -312,7 +311,7 @@ func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.F
 		if toc := s.tree.TOC(); toc != nil && toc.Type != "" {
 			kind = toc.Type
 		}
-		return s.Render(w, fname, s.prefix, ref, kind, s.tree.TOC().Csize, f)
+		return s.Render(w, fname, s.prefix, ref, kind, s.tree.TOC().Csize, f, ctype)
 	}
 	return nil
 }

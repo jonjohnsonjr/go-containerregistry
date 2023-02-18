@@ -1813,7 +1813,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType types.MediaType, size int64, ref name.Reference, f httpserve.File) error {
+func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType types.MediaType, size int64, ref name.Reference, f httpserve.File, ctype string) error {
 	// This must be a directory because it wasn't part of a filesystem
 	stat, err := f.Stat()
 	if err != nil {

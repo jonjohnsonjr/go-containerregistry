@@ -182,7 +182,7 @@ func (fs *layerFS) reset() error {
 	return nil
 }
 
-func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, size int64, f httpserve.File) error {
+func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, size int64, f httpserve.File, ctype string) error {
 	stat, err := f.Stat()
 	if err != nil {
 		return err
@@ -258,6 +258,9 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 		},
 		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filelink,
 	}
+	if ctype == "application/octet-stream" {
+		data.JQ = data.JQ + " | xxd"
+	}
 
 	if stat.IsDir() {
 		tarflags = "tar -tv "
@@ -276,7 +279,7 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 	return nil
 }
 
-func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File) error {
+func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File, ctype string) error {
 	if fs.kind == "" {
 		// TODO: Do something better for indices.
 	}
@@ -284,7 +287,7 @@ func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve
 	if err != nil {
 		return err
 	}
-	return renderHeader(w, fname, strings.Trim(fs.ref, "/"), ref, fs.kind, fs.size, f)
+	return renderHeader(w, fname, strings.Trim(fs.ref, "/"), ref, fs.kind, fs.size, f, ctype)
 }
 
 func (fs *layerFS) Close() error {
