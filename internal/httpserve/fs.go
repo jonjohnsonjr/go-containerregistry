@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/google/go-containerregistry/internal/safefilepath"
 	"github.com/google/go-containerregistry/pkg/logs"
 )
@@ -237,7 +238,7 @@ func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL) string {
 	ug := fmt.Sprintf("%d/%d", header.Uid, header.Gid)
 	mode := modeStr(header)
 	padding := 18 - len(ug)
-	s := fmt.Sprintf("%s %s %*d %s", mode, ug, padding, header.Size, ts)
+	s := fmt.Sprintf("%s %s <span title=%q>%*d</span> %s", mode, ug, humanize.Bytes(uint64(header.Size)), padding, header.Size, ts)
 	if showlayer {
 		if _, after, ok := strings.Cut(layer, "@"); ok {
 			if _, after, ok := strings.Cut(after, ":"); ok {
