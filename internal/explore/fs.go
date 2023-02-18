@@ -192,7 +192,6 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 		return err
 	}
 
-	// TODO: Make filename clickable to go up a directory.
 	filename := strings.TrimPrefix(fname, "/"+prefix)
 	filename = strings.TrimPrefix(filename, "/")
 
@@ -200,8 +199,9 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 	if ok {
 		filename = header.Name
 	} else {
-		// TODO: it's probably a dir, actually
-		logs.Debug.Printf("i got here!!!")
+		if !stat.IsDir() {
+			logs.Debug.Printf("not a tar header or directory")
+		}
 	}
 
 	mediaType := types.DockerUncompressedLayer
@@ -259,6 +259,10 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filelink,
 	}
 	if ctype == "application/octet-stream" {
+		truncate := int64(1 << 15)
+		if stat.Size() > truncate {
+			data.JQ = data.JQ + fmt.Sprintf(" | head -c %d", truncate)
+		}
 		data.JQ = data.JQ + " | xxd"
 	}
 

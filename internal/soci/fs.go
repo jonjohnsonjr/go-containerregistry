@@ -756,11 +756,25 @@ func (s *sociDirEntry) Info() (fs.FileInfo, error) {
 	return TarHeader(s.fm).FileInfo(), nil
 }
 
+func (s *sociDirEntry) Layer() string {
+	if s.fs != nil {
+		return s.fs.ref
+	}
+	return ""
+}
+
 type linkEntry struct {
 	fs   *SociFS
 	fm   *TOCFile
 	dir  string
 	link string
+}
+
+func (s *linkEntry) Layer() string {
+	if s.fs != nil {
+		return s.fs.ref
+	}
+	return ""
 }
 
 func (s *linkEntry) Name() string {

@@ -31,6 +31,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/logs"
 )
 
+const tooBig = 1 << 15
+
 // HeaderRenderer renders a header for a FileSystem.
 type HeaderRenderer interface {
 	RenderHeader(w http.ResponseWriter, name string, f File, ctype string) error
@@ -132,6 +134,7 @@ type anyDirs interface {
 	name(i int) string
 	isDir(i int) bool
 	info(i int) (fs.FileInfo, error)
+	layer(i int) string
 }
 
 type fileInfoDirs []fs.FileInfo
@@ -140,6 +143,7 @@ func (d fileInfoDirs) len() int                        { return len(d) }
 func (d fileInfoDirs) isDir(i int) bool                { return d[i].IsDir() }
 func (d fileInfoDirs) name(i int) string               { return d[i].Name() }
 func (d fileInfoDirs) info(i int) (fs.FileInfo, error) { return d[i], nil }
+func (d fileInfoDirs) layer(i int) string              { return "" }
 
 type dirEntryDirs []fs.DirEntry
 
@@ -147,6 +151,16 @@ func (d dirEntryDirs) len() int                        { return len(d) }
 func (d dirEntryDirs) isDir(i int) bool                { return d[i].IsDir() }
 func (d dirEntryDirs) name(i int) string               { return d[i].Name() }
 func (d dirEntryDirs) info(i int) (fs.FileInfo, error) { return d[i].Info() }
+func (d dirEntryDirs) layer(i int) string {
+	if wl, ok := d[i].(withLayer); ok {
+		return wl.Layer()
+	}
+	return ""
+}
+
+type withLayer interface {
+	Layer() string
+}
 
 func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) {
 	// Prefer to use ReadDir instead of Readdir,
@@ -177,6 +191,7 @@ func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) 
 			logs.Debug.Printf("render(w): %v", err)
 		}
 	}
+	showlayer := strings.HasPrefix(r.URL.Path, "/layers")
 
 	fmt.Fprintf(w, "<pre>\n")
 	for i, n := 0, dirs.len(); i < n; i++ {
@@ -195,13 +210,15 @@ func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) 
 		if info == nil {
 			fmt.Fprintf(w, "<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
 		} else {
-			fmt.Fprint(w, tarList(info, url))
+			fmt.Fprint(w, tarList(dirs.layer(i), showlayer, info, url))
 		}
 	}
 	fmt.Fprintf(w, "</pre>\n")
 }
 
-func tarList(fi fs.FileInfo, url url.URL) string {
+func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL) string {
+	prefix := "        "
+
 	header, ok := fi.Sys().(*tar.Header)
 	if !ok {
 		name := fi.Name()
@@ -210,7 +227,10 @@ func tarList(fi fs.FileInfo, url url.URL) string {
 		mode := "d?????????"
 		padding := 18 - len(ug)
 		s := fmt.Sprintf("%s %s %*d %s", mode, ug, padding, 0, ts)
-		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
+		if showlayer {
+			s = prefix + " " + s
+		}
+		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
 		return s
 	}
 	ts := header.ModTime.Format("2006-01-02 15:04")
@@ -218,6 +238,18 @@ func tarList(fi fs.FileInfo, url url.URL) string {
 	mode := modeStr(header)
 	padding := 18 - len(ug)
 	s := fmt.Sprintf("%s %s %*d %s", mode, ug, padding, header.Size, ts)
+	if showlayer {
+		if _, after, ok := strings.Cut(layer, "@"); ok {
+			if _, after, ok := strings.Cut(after, ":"); ok {
+				if len(after) > 8 {
+					href := after[:8]
+					u := url.URL{Path: "/fs/" + strings.TrimPrefix(layer, "/")}
+					prefix = fmt.Sprintf("<a class=\"fade\" href=%q>%s</a>", u.String(), href)
+				}
+			}
+		}
+		s = prefix + " " + s
+	}
 	name := fi.Name()
 	// TODO: Figure out why layerFs and soci fs are different here
 	if header.Linkname != "" && !strings.Contains(name, " -> ") {
@@ -227,7 +259,7 @@ func tarList(fi fs.FileInfo, url url.URL) string {
 			name += " -> " + header.Linkname
 		}
 	}
-	s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
+	s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
 	return s
 }
 
@@ -464,7 +496,6 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		}()
 	}
 
-	logs.Debug.Printf("got here...")
 	//if render != nil && r.URL.Query().Get("dl") == "" {
 	if render != nil && r.URL.Query().Get("dl") == "" {
 		if err := render(w, ctype); err != nil {
@@ -485,13 +516,20 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		if render != nil && r.URL.Query().Get("dl") == "" {
 			logs.Debug.Printf("calling Copy")
 			logs.Debug.Printf("ctype=%q", ctype)
+			buf := bufio.NewWriter(w)
 			if ctype == "application/octet-stream" {
 				logs.Debug.Printf("octetPrinter")
-				if _, err := io.Copy(&octetPrinter{buf: bufio.NewWriter(w), size: sendSize}, sendContent); err != nil {
+				if sendSize > tooBig {
+					sendSize = tooBig
+				}
+				if _, err := io.CopyN(&octetPrinter{buf: buf, size: sendSize}, sendContent, sendSize); err != nil {
 					logs.Debug.Printf("octet: %v", err)
 				}
 			} else {
-				if _, err := io.Copy(w, &dumbEscaper{in: sendContent, size: sendSize}); err != nil {
+				if sendSize > tooBig {
+					sendSize = tooBig
+				}
+				if _, err := io.CopyN(&dumbEscaper{buf: buf}, sendContent, sendSize); err != nil {
 					logs.Debug.Printf("escaper: %v", err)
 				}
 			}
@@ -816,8 +854,6 @@ func serveFile(w http.ResponseWriter, r *http.Request, fs FileSystem, name strin
 	}
 
 	render := func(w http.ResponseWriter, ctype string) error {
-		logs.Debug.Printf("render: %v", f)
-		logs.Debug.Printf("name: %s", name)
 		return fs.RenderHeader(w, name, f, ctype)
 	}
 
@@ -1179,12 +1215,7 @@ func htmlEscape(s string) string {
 }
 
 type dumbEscaper struct {
-	in        io.Reader
-	size      int64
-	tiny      []byte
-	leftover  []byte
-	total     int64
-	leftovers int64
+	buf *bufio.Writer
 }
 
 var (
@@ -1195,140 +1226,28 @@ var (
 	sq  = []byte("&#39;")
 )
 
-const debug = false
-
-func (d *dumbEscaper) Read(p []byte) (n int, err error) {
-	defer func() {
-		d.total += int64(n)
-		if debug {
-			logs.Debug.Printf("Read() = (%d, %v)", n, err)
-			logs.Debug.Printf("total = %d", d.total)
-			time.Sleep(1 * time.Second)
-		}
-	}()
-	if d.tiny != nil {
-		if debug {
-			logs.Debug.Printf("tiny: %s", string(d.tiny))
-		}
-		n = copy(p, d.tiny)
-		d.tiny = nil
-		return n, nil
-	}
-	if debug {
-		logs.Debug.Printf("Read (total=%d, leftovers=%d)", d.total, d.leftovers)
-	}
-	var buf []byte
-	if d.leftover != nil {
-		if debug {
-			logs.Debug.Printf("leftover not nil")
-		}
-		buf = d.leftover
-	} else {
-		if debug {
-			logs.Debug.Printf("leftover nil")
-		}
-		buf = make([]byte, len(p))
-		n, err = d.in.Read(buf)
-		if debug {
-			logs.Debug.Printf("Read = %d %v", n, err)
-		}
-		if err == io.EOF && n == 0 {
-			if debug {
-				logs.Debug.Printf("returning eof")
-			}
-			return n, err
-		}
-		if err != nil && err != io.EOF {
-			if debug {
-				logs.Debug.Printf("Read failed: %v", err)
-			}
-			return n, err
-		}
-	}
-
-	idx := 0
-	for i, b := range buf {
-		if debug {
-			logs.Debug.Printf("i = %d", i)
-			logs.Debug.Printf("idx = %d", idx)
-		}
-		var next []byte
+func (d *dumbEscaper) Write(p []byte) (n int, err error) {
+	for i, b := range p {
 		switch b {
 		case '&':
-			next = amp
+			_, err = d.buf.Write(amp)
 		case '<':
-			next = lt
+			_, err = d.buf.Write(lt)
 		case '>':
-			next = gt
+			_, err = d.buf.Write(gt)
 		case '"':
-			next = dq
+			_, err = d.buf.Write(dq)
 		case '\'':
-			next = sq
+			_, err = d.buf.Write(sq)
 		default:
-			p[idx] = b
-			idx++
+			err = d.buf.WriteByte(b)
 		}
-		if next != nil {
-			d.size = d.size + int64(len(next)) - 1
-			if debug {
-				logs.Debug.Printf("next = %v", next)
-			}
-			if idx+len(next) <= len(p) {
-				if debug {
-					logs.Debug.Printf("%d <= %d", idx+len(next), len(p))
-				}
-				for i, c := range next {
-					p[idx+i] = c
-				}
-				idx += len(next)
-			} else {
-				left := len(p) - idx
-				if left < len(next) && left > 0 {
-					d.tiny = next[left:]
-					if debug {
-						logs.Debug.Printf("next[:left]: %s", string(next[:left]))
-					}
-					for i, c := range next[:left] {
-						p[idx+i] = c
-					}
-					d.leftover = buf[i+1:]
-					idx += left
-					if debug {
-						logs.Debug.Printf("leftover: %s", string(d.leftover))
-						logs.Debug.Printf("idx == 0, left = %d, len(p) = %d, len(d.tiny) = %d, n = %d, len(d.leftover) = %d", left, len(p), len(d.tiny), n, len(d.leftover))
-						logs.Debug.Printf("foo: %d", idx)
-					}
-					return idx, nil
-				}
-				if debug {
-					logs.Debug.Printf("%d > %d", idx+len(next), len(p))
-					logs.Debug.Printf("bar")
-				}
-				d.leftover = buf[i:]
-				d.leftovers++
-				return idx, nil
-			}
-		}
-
-		if idx+1 > len(p) || d.total+int64(idx)+1 > d.size {
-			logs.Debug.Printf("baz")
-			return idx, nil
+		if err != nil {
+			return i, err
 		}
 	}
-
-	d.leftover = nil
-	logs.Debug.Printf("quux")
-	return idx, err
+	return len(p), d.buf.Flush()
 }
-
-// 00000000: 7f45 4c46 0201 0100 0000 0000 0000 0000  .ELF............
-// 00000010: 0200 3e00 0100 0000 7800 4000 0000 0000  ..>.....x.@.....
-// 00000020: 4000 0000 0000 0000 0000 0000 0000 0000  @...............
-// 00000030: 0000 0000 4000 3800 0100 0000 0000 0000  ....@.8.........
-// 00000040: 0100 0000 0500 0000 0000 0000 0000 0000  ................
-// 00000050: 0000 4000 0000 0000 0000 4000 0000 0000  ..@.......@.....
-// 00000060: 7c00 0000 0000 0000 7c00 0000 0000 0000  |.......|.......
-// 00000070: 0000 2000 0000 0000 b03c 0f05            .. ......<..
 
 type octetPrinter struct {
 	buf   *bufio.Writer
@@ -1355,12 +1274,17 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 
 	logs.Debug.Printf("left: %d, len(p): %d, chunks: %d, remain: %d", left, len(p), chunks, remain)
 
-	for chunk := 0; chunk <= chunks+(remain/15); chunk++ {
+	for chunk := 0; chunk <= chunks; chunk++ {
 		start := chunk * 16
 		cur := o.total + int64(start)
 
+		if start >= len(p) || cur >= o.size {
+			break
+		}
+
 		ascii := []byte{' ', ' '}
 		for i := 0; i < 16; i++ {
+			pos := cur + int64(i)
 			if i == 0 {
 				line := fmt.Sprintf("%08x:", cur)
 				if _, err := o.buf.WriteString(line); err != nil {
@@ -1373,13 +1297,25 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 				}
 			}
 			line := "  "
-			pos := int64(start) + int64(i) + o.total
 			if start+i < len(p) && pos < o.size {
 				r := p[start+i]
 				if r < 32 || r > 126 {
 					ascii = append(ascii, '.')
 				} else {
-					ascii = append(ascii, r)
+					switch r {
+					case '&':
+						ascii = append(ascii, amp...)
+					case '<':
+						ascii = append(ascii, lt...)
+					case '>':
+						ascii = append(ascii, gt...)
+					case '"':
+						ascii = append(ascii, dq...)
+					case '\'':
+						ascii = append(ascii, sq...)
+					default:
+						ascii = append(ascii, r)
+					}
 				}
 				line = fmt.Sprintf("%02x", r)
 			}

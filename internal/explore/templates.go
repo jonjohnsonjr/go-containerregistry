@@ -193,6 +193,10 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 	bottom: .125em;
 }
 
+.fade {
+	opacity: .75;
+}
+
 .crane {
 	height: 1em;
 	width: 1em;
