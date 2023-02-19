@@ -136,6 +136,8 @@ type anyDirs interface {
 	isDir(i int) bool
 	info(i int) (fs.FileInfo, error)
 	layer(i int) string
+	whiteout(i int) string
+	overwritten(i int) string
 }
 
 type fileInfoDirs []fs.FileInfo
@@ -145,6 +147,8 @@ func (d fileInfoDirs) isDir(i int) bool                { return d[i].IsDir() }
 func (d fileInfoDirs) name(i int) string               { return d[i].Name() }
 func (d fileInfoDirs) info(i int) (fs.FileInfo, error) { return d[i], nil }
 func (d fileInfoDirs) layer(i int) string              { return "" }
+func (d fileInfoDirs) whiteout(i int) string           { return "" }
+func (d fileInfoDirs) overwritten(i int) string        { return "" }
 
 type dirEntryDirs []fs.DirEntry
 
@@ -158,13 +162,30 @@ func (d dirEntryDirs) layer(i int) string {
 	}
 	return ""
 }
+func (d dirEntryDirs) whiteout(i int) string {
+	if se, ok := d[i].(sociEntry); ok {
+		return se.Whiteout()
+	}
+	return ""
+}
+func (d dirEntryDirs) overwritten(i int) string {
+	if se, ok := d[i].(sociEntry); ok {
+		return se.Overwritten()
+	}
+	return ""
+}
 
 type withLayer interface {
 	Layer() string
 }
 
+type sociEntry interface {
+	Whiteout() string
+	Overwritten() string
+}
+
 func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, render renderFunc) {
-	logs.Debug.Printf("fname: %q", fname)
+	logs.Debug.Printf("dirList: %q", fname)
 	prefix := fname
 	// Prefer to use ReadDir instead of Readdir,
 	// because the former doesn't require calling
@@ -193,6 +214,13 @@ func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, rende
 			return false
 		}
 
+		if in == jn {
+			iw, jw := dirs.whiteout(i), dirs.whiteout(j)
+			io, jo := dirs.overwritten(i), dirs.overwritten(j)
+
+			return (iw == "" && jw != "") || (io == "" && jo != "")
+		}
+
 		return in < jn
 	}
 	sort.Slice(dirs, less)
@@ -210,15 +238,11 @@ func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, rende
 	if err != nil {
 		logs.Debug.Printf("fstat: %v", err)
 	} else {
-		logs.Debug.Printf("fstat.Name: %q", fstat.Name())
 		header, ok := fstat.Sys().(*tar.Header)
 		if ok {
-			logs.Debug.Printf("need to trim %q", header.Name)
 			prefix = strings.TrimSuffix(prefix, strings.TrimSuffix(header.Name, "/"))
 		}
 	}
-
-	logs.Debug.Printf("prefix: %q", prefix)
 
 	fmt.Fprintf(w, "<pre>\n")
 	for i, n := 0, dirs.len(); i < n; i++ {
@@ -237,13 +261,17 @@ func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, rende
 		if info == nil {
 			fmt.Fprintf(w, "<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
 		} else {
-			fmt.Fprint(w, tarList(dirs.layer(i), showlayer, info, url, prefix))
+			fmt.Fprint(w, tarList(i, dirs, showlayer, info, url, prefix))
 		}
 	}
 	fmt.Fprintf(w, "</pre>\n")
 }
 
-func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL, uprefix string) string {
+func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, uprefix string) string {
+	layer := dirs.layer(i)
+	whiteout := dirs.whiteout(i)
+	overwritten := dirs.overwritten(i)
+
 	prefix := "        "
 
 	header, ok := fi.Sys().(*tar.Header)
@@ -280,7 +308,7 @@ func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL, uprefix st
 	name := fi.Name()
 	// TODO: Figure out why layerFs and soci fs are different here
 	if header.Linkname != "" {
-		logs.Debug.Printf("name=%q, linkname=%q, uprefix: %q", name, header.Linkname, uprefix)
+		// logs.Debug.Printf("name=%q, linkname=%q, uprefix: %q", name, header.Linkname, uprefix)
 		if header.Linkname == "." {
 			u.Path = path.Dir(u.Path)
 		} else if containsDotDot(header.Linkname) {
@@ -296,7 +324,26 @@ func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL, uprefix st
 			name += " -> " + header.Linkname
 		}
 	}
-	s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
+
+	if whiteout != "" {
+		if _, after, ok := strings.Cut(whiteout, "@"); ok {
+			if _, after, ok := strings.Cut(after, ":"); ok && len(after) > 8 {
+				whiteout = after[:8]
+			}
+		}
+		title := fmt.Sprintf("deleted by %s", whiteout)
+		s += fmt.Sprintf(" <a href=\"%s\"><strike title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+	} else if overwritten != "" {
+		if _, after, ok := strings.Cut(overwritten, "@"); ok {
+			if _, after, ok := strings.Cut(after, ":"); ok && len(after) > 8 {
+				overwritten = after[:8]
+			}
+		}
+		title := fmt.Sprintf("overwritten by %s", overwritten)
+		s += fmt.Sprintf(" <a href=\"%s\"><strike title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+	} else {
+		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
+	}
 	return s
 }
 
@@ -557,11 +604,9 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 
 	if r.Method != "HEAD" {
 		if render != nil && r.URL.Query().Get("dl") == "" {
-			logs.Debug.Printf("calling Copy")
 			logs.Debug.Printf("ctype=%q", ctype)
 			buf := bufio.NewWriter(w)
 			if ctype == "application/octet-stream" {
-				logs.Debug.Printf("octetPrinter")
 				if sendSize > tooBig {
 					sendSize = tooBig
 				}
@@ -1003,10 +1048,9 @@ type ioFS struct {
 
 func (i ioFS) RenderHeader(w http.ResponseWriter, name string, f File, ctype string) error {
 	if hr, ok := i.fsys.(HeaderRenderer); ok {
-		logs.Debug.Printf("ok RenderHeader: %v", f)
 		return hr.RenderHeader(w, name, f, ctype)
 	}
-	logs.Debug.Printf("RenderHeader nope")
+	logs.Debug.Printf("i.fsys (%T) does not implement RenderHeader", i.fsys)
 	return nil
 }
 
@@ -1022,7 +1066,6 @@ func (f ioFS) Open(name string) (File, error) {
 	}
 	file, err := f.fsys.Open(name)
 	if err != nil {
-		logs.Debug.Printf("serveFile: %v", err)
 		return nil, mapOpenError(err, name, '/', func(path string) (fs.FileInfo, error) {
 			return fs.Stat(f.fsys, path)
 		})
@@ -1317,8 +1360,6 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 	if remain != 0 && int64(len(p))+o.total != o.size {
 		return 0, fmt.Errorf("TODO: implement chunking")
 	}
-
-	logs.Debug.Printf("left: %d, len(p): %d, chunks: %d, remain: %d", left, len(p), chunks, remain)
 
 	for chunk := 0; chunk <= chunks; chunk++ {
 		start := chunk * 16

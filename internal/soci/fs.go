@@ -25,6 +25,8 @@ import (
 // More than enough for FileServer to Peek at file contents.
 const bufferLen = 2 << 16
 
+var up *sociDirEntry = &sociDirEntry{nil, "..", nil, "", ""}
+
 type RenderDir func(w http.ResponseWriter, fname string, prefix string, mediaType types.MediaType, size int64, ref name.Reference, f httpserve.File, ctype string) error
 
 type MultiFS struct {
@@ -206,55 +208,65 @@ func (s *multiFile) Read(p []byte) (int, error) {
 
 func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	logs.Debug.Printf("multifs.ReadDir(%q)", s.name)
-	have := map[string]struct{}{}
+	have := map[string]string{}
 	realDirs := map[string]struct{}{}
-	implicitDirs := map[string]struct{}{}
+	implicitDirs := map[string]*SociFS{}
+	whiteouts := map[string]string{}
 	de := []fs.DirEntry{}
 	if s.name == "." || s.name == "/" || s.name == "" || s.name == "./" {
 		logs.Debug.Printf("I think this is root")
 	} else {
-		de = append(de, &sociDirEntry{nil, "..", nil})
+		de = append(de, up)
 	}
 	subdir := strings.TrimSuffix(strings.TrimPrefix(s.name, "./"), "/")
-	for i, sfs := range s.fs.fss {
-		des, reald, implicitd, err := sfs.readDir(subdir)
-		if err != nil {
-			return nil, err
-		}
-		for i := range reald {
+	for _, sfs := range s.fs.fss {
+		dc := sfs.readDir(subdir)
+		for i := range dc.realDirs {
 			realDirs[i] = struct{}{}
 		}
-		for i := range implicitd {
-			implicitDirs[i] = struct{}{}
+		for i := range dc.implicitDirs {
+			implicitDirs[i] = sfs
 		}
-		sawOpaque := false
-		for _, got := range des {
+		for _, got := range dc.entries {
 			name := got.Name()
+			if strings.HasPrefix(name, ".wh.") {
+				logs.Debug.Printf("do not return whiteout %q", name)
+				continue
+			}
 
-			if name == ".wh..wh..opq" {
-				logs.Debug.Printf("multifs.ReadDir(%q): saw opaque whiteout in layer[%d]", s.name, i)
-				sawOpaque = true
+			sde, ok := got.(*sociDirEntry)
+			if !ok {
+				return nil, fmt.Errorf("this shouldn't happen: %q", name)
 			}
-			if _, ok := have[name]; !ok {
-				have[name] = struct{}{}
-				if _, ok := have[".wh."+name]; ok {
-					logs.Debug.Printf("saw whiteout for %q, skipping", name)
-				} else if strings.HasPrefix(name, ".wh.") {
-					logs.Debug.Printf("do not return whiteout %q", name)
-				} else {
-					de = append(de, got)
+			opq, sawOpaque := whiteouts[".wh..wh..opq"]
+			if sawOpaque {
+				logs.Debug.Printf("multifs.ReadDir(%q): saw opaque whiteout %q", opq)
+				sde.whiteout = opq
+			} else if wh, ok := whiteouts[".wh."+name]; ok {
+				logs.Debug.Printf("saw whiteout for %q from %q , skipping", name, wh)
+				sde.whiteout = wh
+			} else if source, ok := have[name]; ok {
+				if sde.IsDir() {
+					continue
 				}
+				logs.Debug.Printf("%q was overwritten by %q", name, source)
+				sde.overwritten = source
+			} else {
+				have[name] = sfs.ref
 			}
+
+			de = append(de, sde)
 		}
-		if sawOpaque {
-			break
+		// Add whiteouts at the end because they don't apply to the current layer.
+		for k, v := range dc.whiteouts {
+			whiteouts[k] = v
 		}
 	}
 
-	for dir := range implicitDirs {
+	for dir, sfs := range implicitDirs {
 		if _, ok := realDirs[dir]; !ok {
 			logs.Debug.Printf("Adding implicit dir: %s", dir)
-			de = append(de, &sociDirEntry{nil, dir, nil})
+			de = append(de, sfs.dirEntry(dir, nil))
 		}
 	}
 
@@ -397,44 +409,65 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		logs.Debug.Printf("soci.ReadDir(%q)", dir)
 	}
 
-	de, realDirs, implicitDirs, err := s.readDir(original)
-	if err != nil {
-		return nil, err
-	}
-
+	dc := s.readDir(original)
 	if dir == "." || dir == "/" || dir == "" || dir == "./" {
 		logs.Debug.Printf("I think this is root")
 	} else {
-		de = append(de, s.dirEntry("..", nil))
+		dc.entries = append(dc.entries, s.dirEntry("..", nil))
 	}
 
-	for dir := range implicitDirs {
-		if _, ok := realDirs[dir]; !ok {
+	for dir := range dc.implicitDirs {
+		if _, ok := dc.realDirs[dir]; !ok {
 			logs.Debug.Printf("Adding implicit dir: %s", dir)
-			de = append(de, s.dirEntry(dir, nil))
+			dc.entries = append(dc.entries, s.dirEntry(dir, nil))
 		}
 	}
 
-	logs.Debug.Printf("len(ReadDir(%q)) = %d", dir, len(de))
-	return de, nil
+	logs.Debug.Printf("len(ReadDir(%q)) = %d", dir, len(dc.entries))
+	return dc.entries, nil
 }
 
-func (s *SociFS) readDir(original string) ([]fs.DirEntry, map[string]struct{}, map[string]struct{}, error) {
+type dirContent struct {
+	entries      []fs.DirEntry
+	realDirs     map[string]struct{}
+	implicitDirs map[string]struct{}
+	whiteouts    map[string]string
+}
+
+func (s *SociFS) readDir(original string) *dirContent {
 	logs.Debug.Printf("soci.ReadDir(%q)", original)
 	dir := strings.TrimPrefix(original, s.prefix)
 	if dir != original {
 		logs.Debug.Printf("soci.ReadDir(%q)", dir)
 	}
 
-	implicitDirs := map[string]struct{}{}
-	realDirs := map[string]struct{}{}
+	dc := &dirContent{
+		entries:      []fs.DirEntry{},
+		implicitDirs: map[string]struct{}{},
+		realDirs:     map[string]struct{}{},
+		whiteouts:    map[string]string{},
+	}
 
 	prefix := path.Clean("/" + dir)
-	de := []fs.DirEntry{}
 
 	for _, fm := range s.files {
 		fm := fm
 		name := path.Clean("/" + fm.Name)
+
+		base := path.Base(name)
+		if base == ".wh..wh..opq" {
+			// logs.Debug.Printf("OPAQUE: name=%q, base=%q, prefix=%q, dir=%q", name, path.Base(name), prefix, dir)
+			if strings.HasPrefix(prefix, path.Dir(name)) {
+				logs.Debug.Printf("adding opaque %q -> %q", base, name)
+				dc.whiteouts[base] = name
+			}
+		} else if strings.HasPrefix(base, ".wh.") {
+			// logs.Debug.Printf("WHITEOUT: name=%q, base=%q, prefix=%q, dir=%q", name, path.Base(name), prefix, dir)
+			if prefix == path.Dir(name) {
+				logs.Debug.Printf("adding whiteout %q -> %q", base, name)
+				dc.whiteouts[base] = name
+			}
+		}
 
 		if prefix != "/" && name != prefix && !strings.HasPrefix(name, prefix+"/") {
 			continue
@@ -448,7 +481,7 @@ func (s *SociFS) readDir(original string) ([]fs.DirEntry, map[string]struct{}, m
 				}
 				implicit := strings.Split(fdir, "/")[0]
 				if implicit != "" {
-					implicitDirs[implicit] = struct{}{}
+					dc.implicitDirs[implicit] = struct{}{}
 				}
 			}
 			continue
@@ -459,14 +492,12 @@ func (s *SociFS) readDir(original string) ([]fs.DirEntry, map[string]struct{}, m
 			if dirname[0] == '/' {
 				dirname = dirname[1:]
 			}
-			realDirs[dirname] = struct{}{}
-			de = append(de, s.dirEntry(dir, &fm))
-			continue
+			dc.realDirs[dirname] = struct{}{}
 		}
-		de = append(de, s.dirEntry(dir, &fm))
+		dc.entries = append(dc.entries, s.dirEntry(dir, &fm))
 	}
 
-	return de, realDirs, implicitDirs, nil
+	return dc
 }
 
 func (s *SociFS) find(name string) (*TOCFile, error) {
@@ -605,13 +636,22 @@ func (s *sociFile) Close() error {
 }
 
 func (s *SociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
-	return &sociDirEntry{s, dir, fm}
+	return &sociDirEntry{
+		fs:  s,
+		dir: dir,
+		fm:  fm,
+	}
 }
 
 type sociDirEntry struct {
 	fs  *SociFS
 	dir string
 	fm  *TOCFile
+
+	// If set, the whiteout file that deleted this.
+	whiteout string
+	// If set, the file that overwrote this file.
+	overwritten string
 }
 
 func (s *sociDirEntry) Name() string {
@@ -653,6 +693,14 @@ func (s *sociDirEntry) Layer() string {
 		return ""
 	}
 	return s.fs.ref
+}
+
+func (s *sociDirEntry) Whiteout() string {
+	return s.whiteout
+}
+
+func (s *sociDirEntry) Overwritten() string {
+	return s.overwritten
 }
 
 // If we don't have a file, make up a dir.

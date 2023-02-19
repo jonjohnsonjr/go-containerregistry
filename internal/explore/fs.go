@@ -32,7 +32,7 @@ import (
 )
 
 // Lots of debugging that we don't want to compile into the binary.
-const debug = true
+const debug = false
 
 func debugf(s string, i ...interface{}) {
 	if debug {
@@ -221,13 +221,13 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 		}
 
 		if hdr.Typeflag == tar.TypeDir {
-			dirname := path.Dir(strings.TrimPrefix(hdr.Name, prefix))
-			if dirname[0] == '/' {
-				dirname = dirname[1:]
+			dirname := strings.TrimPrefix(name, prefix)
+			if dirname != "" && dirname != "." {
+				if dirname[0] == '/' {
+					dirname = dirname[1:]
+				}
+				realDirs[dirname] = struct{}{}
 			}
-			realDirs[dirname] = struct{}{}
-			fis = append(fis, hdr.FileInfo())
-			continue
 		}
 		fis = append(fis, hdr.FileInfo())
 	}
