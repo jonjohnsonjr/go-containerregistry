@@ -332,7 +332,7 @@ func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, upr
 			}
 		}
 		title := fmt.Sprintf("deleted by %s", whiteout)
-		s += fmt.Sprintf(" <a href=\"%s\"><strike title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
 	} else if overwritten != "" {
 		if _, after, ok := strings.Cut(overwritten, "@"); ok {
 			if _, after, ok := strings.Cut(after, ":"); ok && len(after) > 8 {
@@ -340,7 +340,7 @@ func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, upr
 			}
 		}
 		title := fmt.Sprintf("overwritten by %s", overwritten)
-		s += fmt.Sprintf(" <a href=\"%s\"><strike title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
 	} else {
 		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
 	}

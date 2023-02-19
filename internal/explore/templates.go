@@ -194,7 +194,7 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 }
 
 .fade {
-	opacity: .75;
+	opacity: .65;
 }
 
 .crane {
