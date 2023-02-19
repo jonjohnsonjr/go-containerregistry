@@ -307,9 +307,9 @@ func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.F
 			return err
 		}
 		kind := "tar+gzip"
-		if s.mt == "" {
-			if toc := s.index.TOC(); toc != nil && toc.Type != "" {
-				kind = toc.Type
+		if toc := s.index.TOC(); toc != nil && toc.Type != "" {
+			kind = toc.Type
+			if s.mt == "" {
 				s.mt = types.MediaType(toc.MediaType)
 			}
 		}

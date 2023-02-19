@@ -1484,7 +1484,7 @@ func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType typ
 func (h *handler) createIndex(ctx context.Context, rc io.ReadCloser, size int64, prefix string, idx int, mediaType string) (soci.Index, error) {
 	key := indexKey(prefix, idx)
 	if debug {
-		logs.Debug.Printf("createIndex(%q)", key, idx)
+		logs.Debug.Printf("createIndex(%q)", key)
 		start := time.Now()
 		defer func() {
 			log.Printf("createIndex(%q) (%s)", key, time.Since(start))
