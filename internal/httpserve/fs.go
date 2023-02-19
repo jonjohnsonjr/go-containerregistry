@@ -306,9 +306,7 @@ func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, upr
 		s = prefix + " " + s
 	}
 	name := fi.Name()
-	// TODO: Figure out why layerFs and soci fs are different here
 	if header.Linkname != "" {
-		// logs.Debug.Printf("name=%q, linkname=%q, uprefix: %q", name, header.Linkname, uprefix)
 		if header.Linkname == "." {
 			u.Path = path.Dir(u.Path)
 		} else if containsDotDot(header.Linkname) {
@@ -326,20 +324,22 @@ func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, upr
 	}
 
 	if whiteout != "" {
+		u.Path = path.Join("/fs/", layer, header.Name)
+		title := fmt.Sprintf("deleted by %s", whiteout)
 		if _, after, ok := strings.Cut(whiteout, "@"); ok {
 			if _, after, ok := strings.Cut(after, ":"); ok && len(after) > 8 {
-				whiteout = after[:8]
+				title = fmt.Sprintf("deleted by %s", after[:8])
 			}
 		}
-		title := fmt.Sprintf("deleted by %s", whiteout)
 		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
 	} else if overwritten != "" {
+		u.Path = path.Join("/fs/", layer, header.Name)
+		title := fmt.Sprintf("overwritten by %s", overwritten)
 		if _, after, ok := strings.Cut(overwritten, "@"); ok {
 			if _, after, ok := strings.Cut(after, ":"); ok && len(after) > 8 {
-				overwritten = after[:8]
+				title = fmt.Sprintf("overwritten by %s", after[:8])
 			}
 		}
-		title := fmt.Sprintf("overwritten by %s", overwritten)
 		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
 	} else {
 		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
