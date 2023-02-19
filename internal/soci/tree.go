@@ -18,7 +18,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-type Tree interface {
+type Index interface {
 	Dict(cp *Checkpointer) ([]byte, error)
 	Locate(name string) (*TOCFile, error)
 	TOC() *TOC
@@ -30,12 +30,12 @@ type tree struct {
 	// BlobSeeker for _index_ files.
 	bs BlobSeeker
 
-	sub Tree
+	sub Index
 }
 
-func NewTree(bs BlobSeeker, toc *TOC, sub Tree) (Tree, error) {
+func NewIndex(bs BlobSeeker, toc *TOC, sub Index) (Index, error) {
 	if sub == nil {
-		return NewLeaf(bs, toc)
+		return newLeaf(bs, toc)
 	}
 
 	t := &tree{
@@ -87,7 +87,7 @@ func (t *tree) Open(name string) (io.ReadCloser, error) {
 		return nil, err
 	}
 
-	return ExtractTreeFile(context.TODO(), t.sub, t.bs, tf)
+	return ExtractFile(context.TODO(), t.sub, t.bs, tf)
 }
 
 // TODO: Make things other than dict access lazy.
@@ -115,10 +115,10 @@ func (t *tree) Dict(cp *Checkpointer) ([]byte, error) {
 	return b, nil
 }
 
-func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (io.ReadCloser, error) {
+func ExtractFile(ctx context.Context, t Index, bs BlobSeeker, tf *TOCFile) (io.ReadCloser, error) {
 	start := time.Now()
 	defer func() {
-		log.Printf("ExtractTreeFile(%q) (%s)", tf.Name, time.Since(start))
+		log.Printf("ExtractFile(%q) (%s)", tf.Name, time.Since(start))
 	}()
 	if tf.Size == 0 {
 		return io.NopCloser(bytes.NewReader([]byte{})), nil
@@ -138,9 +138,9 @@ func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (i
 	from.SetHistory(dict)
 
 	kind := t.TOC().Type
+	logs.Debug.Printf("Type = %q", kind)
 	if kind == "tar" {
-		logs.Debug.Printf("Type = tar")
-		logs.Debug.Printf("Tree: Returning LimitedReader of size %d", cp.tf.Size)
+		logs.Debug.Printf("ExtractFile: Returning LimitedReader of size %d", cp.tf.Size)
 		lr := io.LimitedReader{rc, cp.tf.Size}
 		return &and.ReadCloser{&lr, rc.Close}, nil
 	}
@@ -148,14 +148,14 @@ func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (i
 	var r io.ReadCloser
 	if kind == "tar+zstd" {
 		// TODO: zstd.Continue
-		logs.Debug.Printf("Tree: ETF: zstd+tar")
+		logs.Debug.Printf("ExtractFile: zstd+tar")
 		zr, err := zstd.NewReader(rc)
 		if err != nil {
 			return nil, err
 		}
 		r = zr.IOReadCloser()
 	} else {
-		logs.Debug.Printf("Tree: ETF: Calling gzip.Continue")
+		logs.Debug.Printf("ExtractFile: Calling gzip.Continue")
 		r, err = gzip.Continue(rc, 1<<22, from, nil)
 		if err != nil {
 			return nil, err
@@ -163,14 +163,14 @@ func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (i
 	}
 
 	start2 := time.Now()
-	logs.Debug.Printf("Tree: Discarding %d bytes", cp.discard)
+	logs.Debug.Printf("ExtractFile: Discarding %d bytes", cp.discard)
 	n, err := io.CopyN(io.Discard, r, cp.discard)
 	if err != nil {
 		return nil, err
 	}
 	log.Printf("Discarded %d bytes before %q (%s)", n, tf.Name, time.Since(start2))
 
-	logs.Debug.Printf("Tree: Returning LimitedReader of size %d", cp.tf.Size)
+	logs.Debug.Printf("ExtractFile: Returning LimitedReader of size %d", cp.tf.Size)
 	lr := io.LimitedReader{r, cp.tf.Size}
 	return &and.ReadCloser{&lr, rc.Close}, nil
 }
@@ -185,15 +185,15 @@ func (t *tree) Locate(name string) (*TOCFile, error) {
 	return nil, fs.ErrNotExist
 }
 
-type Leaf struct {
+type leaf struct {
 	bs BlobSeeker
 
 	dicts map[string][]byte
 	toc   *TOC
 }
 
-func NewLeaf(bs BlobSeeker, toc *TOC) (*Leaf, error) {
-	t := &Leaf{
+func newLeaf(bs BlobSeeker, toc *TOC) (*leaf, error) {
+	t := &leaf{
 		bs:  bs,
 		toc: toc,
 	}
@@ -203,10 +203,10 @@ func NewLeaf(bs BlobSeeker, toc *TOC) (*Leaf, error) {
 	return t, nil
 }
 
-func (t *Leaf) init() error {
+func (t *leaf) init() error {
 	start := time.Now()
 	defer func() {
-		log.Printf("tree.init() (%s)", time.Since(start))
+		log.Printf("leaf.init() (%s)", time.Since(start))
 	}()
 	t.dicts = map[string][]byte{}
 	rc, err := t.bs.Reader(context.TODO(), 0, -1)
@@ -254,7 +254,7 @@ func (t *Leaf) init() error {
 	return nil
 }
 
-func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {
+func (t *leaf) Dict(cp *Checkpointer) ([]byte, error) {
 	if cp.checkpoint.IsEmpty() {
 		return nil, nil
 	}
@@ -278,7 +278,7 @@ func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {
 	return hist, nil
 }
 
-func (t *Leaf) Locate(name string) (*TOCFile, error) {
+func (t *leaf) Locate(name string) (*TOCFile, error) {
 	if t.toc == nil {
 		if err := t.init(); err != nil {
 			return nil, err
@@ -293,6 +293,6 @@ func (t *Leaf) Locate(name string) (*TOCFile, error) {
 	return nil, fs.ErrNotExist
 }
 
-func (t *Leaf) TOC() *TOC {
+func (t *leaf) TOC() *TOC {
 	return t.toc
 }

@@ -15,7 +15,6 @@ package explore
 
 import (
 	"archive/tar"
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -23,15 +22,12 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
@@ -52,10 +48,6 @@ type tarReader interface {
 	Next() (*tar.Header, error)
 }
 
-type withSize interface {
-	Size() (int64, error)
-}
-
 // Implements http.FileSystem.
 type layerFS struct {
 	prefix  string
@@ -65,200 +57,66 @@ type layerFS struct {
 	ref  string
 	size int64
 	kind string
+	mt   types.MediaType
 }
 
-func (h *handler) newLayerFS(tr tarReader, size int64, prefix, ref, kind string) (*layerFS, error) {
-	fs := &layerFS{
-		tr:     tr,
-		size:   size,
-		prefix: prefix,
-		ref:    ref,
+func (h *handler) newLayerFS(tr tarReader, size int64, prefix, ref, kind string, mt types.MediaType) *layerFS {
+	return &layerFS{
+		tr:      tr,
+		size:    size,
+		prefix:  prefix,
+		ref:     ref,
+		kind:    kind,
+		mt:      mt,
+		headers: []*tar.Header{},
 	}
-
-	fs.headers = []*tar.Header{}
-
-	return fs, nil
-}
-
-func (fs *layerFS) reset() error {
-	return nil
-}
-
-func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, size int64, f httpserve.File, ctype string) error {
-	stat, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
-		return err
-	}
-
-	filename := strings.TrimPrefix(fname, "/"+prefix)
-	filename = strings.TrimPrefix(filename, "/")
-
-	header, ok := stat.Sys().(*tar.Header)
-	if ok {
-		filename = header.Name
-	} else {
-		if !stat.IsDir() {
-			logs.Debug.Printf("not a tar header or directory")
-		}
-	}
-
-	mediaType := types.DockerUncompressedLayer
-	tarflags := "tar -Ox "
-	if kind == "tar+gzip" {
-		tarflags = "tar -Oxz "
-		mediaType = types.DockerLayer
-	} else if kind == "tar+zstd" {
-		tarflags = "tar --zstd -Ox "
-		mediaType = types.MediaType("application/vnd.oci.image.layer.v1.tar+zstd")
-	}
-
-	hash, err := v1.NewHash(ref.Identifier())
-	if err != nil {
-		return err
-	}
-
-	filelink := filename
-
-	// Compute links for JQ
-	fprefix := ""
-	if strings.HasPrefix(filename, "./") {
-		fprefix = "./"
-	}
-	filename = strings.TrimSuffix(filename, "/")
-	dir := path.Dir(filename)
-	if dir != "." {
-		base := path.Base(filename)
-		sep := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(filename, fprefix), dir), base)
-
-		href := path.Join(prefix, dir)
-		htext := fprefix + dir + sep
-
-		logs.Debug.Printf("dir=%q, sep=%q, base=%q, href=%q, htext=%q", dir, sep, base, href, htext)
-		dirlink := fmt.Sprintf(`<a class="mt" href="/%s">%s</a>`, href, htext)
-		filelink = dirlink + base
-	}
-
-	data := HeaderData{
-		Repo:      ref.Context().String(),
-		Reference: ref.String(),
-		Descriptor: &v1.Descriptor{
-			Size:      size,
-			Digest:    hash,
-			MediaType: mediaType,
-		},
-		Handler: handlerForMT(string(mediaType)),
-		//EscapedMediaType: url.QueryEscape(string(mediaType)),
-		MediaTypeLink: getLink(string(mediaType)),
-		Up: &RepoParent{
-			Parent:    ref.Context().String(),
-			Separator: "@",
-			Child:     ref.Identifier(),
-		},
-		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filelink,
-	}
-	if ctype == "application/octet-stream" {
-		truncate := int64(1 << 15)
-		if stat.Size() > truncate {
-			data.JQ = data.JQ + fmt.Sprintf(" | head -c %d", truncate)
-		}
-		data.JQ = data.JQ + " | xxd"
-	}
-
-	if stat.IsDir() {
-		tarflags = "tar -tv "
-		if kind == "tar+gzip" {
-			tarflags = "tar -tvz "
-		} else if kind == "tar+zstd" {
-			tarflags = "tar --zstd -tv "
-		}
-
-		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + filelink
-	}
-
-	if err := bodyTmpl.Execute(w, data); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File, ctype string) error {
-	if fs.kind == "" {
-		// TODO: Do something better for indices.
-	}
 	ref, err := name.ParseReference(fs.ref)
 	if err != nil {
 		return err
 	}
-	return renderHeader(w, fname, strings.Trim(fs.prefix, "/"), ref, fs.kind, fs.size, f, ctype)
+	return renderHeader(w, fname, strings.Trim(fs.prefix, "/"), ref, fs.kind, fs.mt, fs.size, f, ctype)
 }
 
-// TODO: Check to see if we hit tr or rc EOF and reset.
 func (fs *layerFS) Open(original string) (httpserve.File, error) {
 	name := strings.TrimPrefix(original, fs.prefix)
 
-	// This is a bit nasty. For symlinks and hardlinks, we have to handle:
-	//   "source -> target"
-	//
-	// So we need to parse target out of that string to get the filename
-	// that we actually need to open.
-	chunks := strings.Split(name, " -> ")
-	name = chunks[len(chunks)-1]
-
-	debugf("Open(%q) -> Open(%q)", original, name)
-
-	size := 0
+	var found httpserve.File
 	// Scan through the layer, looking for a matching tar.Header.Name.
 	for {
 		header, err := fs.tr.Next()
 		if err == io.EOF {
-			debugf("Open(%q): EOF", name)
-
-			// Don't bother chasing this.
-			if path.Base(name) == "index.html" {
-				break
-			}
-
-			chased, err := fs.chase(name, 0)
-			if err == nil {
-				debugf("chase(%s) -> %s, resetting", name, chased.Name)
-				name = path.Clean("/" + chased.Name)
-				size = 0
-				if err := fs.reset(); err != nil {
-					return nil, err
-				}
-				continue
-			}
-
 			break
 		}
 		if err != nil {
-			log.Printf("Open(%q): %v", name, err)
-			return nil, err
+			return nil, fmt.Errorf("Open(%q): %w", original, err)
 		}
-		// debugf("Open(%q): header.Name = %q, header.Size = %d", name, header.Name, header.Size)
 
 		// Cache the headers, so we don't have to re-fetch the blob. This comes
 		// into play mostly for ReadDir() at the top level, where we already scan
 		// the entire layer to tell FileServer "/" and "index.html" don't exist.
 		fs.headers = append(fs.headers, header)
-		size += int(unsafe.Sizeof(*header))
 		if path.Clean("/"+header.Name) == name {
-			debugf("Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
-
-			return &layerFile{
+			found = &layerFile{
 				name:   name,
 				header: header,
 				fs:     fs,
-			}, nil
+			}
+			// For directories, we need to keep listing everything to populate
+			// fs.headers. For other files, we can return immediately.
+			if header.Typeflag != tar.TypeDir {
+				return found, nil
+			}
 		}
 	}
 
+	if found != nil {
+		return found, nil
+	}
+
 	// FileServer is trying to find index.html, but it doesn't exist in the image.
-	// TODO: What if there _is_ an index.html in the root FS?
 	if path.Base(name) == "index.html" {
 		return nil, fmt.Errorf("nope: %s", name)
 	}
@@ -271,136 +129,25 @@ func (fs *layerFS) Open(original string) (httpserve.File, error) {
 	}, nil
 }
 
-func (fs *layerFS) chase(original string, gen int) (*tar.Header, error) {
-	if original == "" {
-		return nil, fmt.Errorf("empty string")
-	}
-	if gen > 64 {
-		log.Printf("chase(%q) aborting at gen=%d", original, gen)
-		return nil, fmt.Errorf("too many symlinks")
-	}
-	debugf("chase(%q)", original)
-	name := path.Clean("/" + original)
-	dir := path.Dir(name)
-	dirs := []string{dir}
-	if dir != "" && dir != "." {
-		prev := dir
-		// Walk up to the first directory.
-		for next := prev; next != "." && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
-			debugf("chase(%q): dir: %q, prev: %q, next: %q", name, dir, prev, next)
-			dirs = append(dirs, strings.TrimPrefix(next, "/"))
-		}
-	}
-
-	for _, header := range fs.headers {
-		if header.Name == original {
-			if header.Typeflag == tar.TypeSymlink {
-				return fs.chase(header.Linkname, gen+1)
-			}
-			return header, nil
-		}
-		if header.Typeflag == tar.TypeSymlink {
-			for _, dir := range dirs {
-				if header.Name == dir {
-					// todo: re-fetch header.Linkname/<rest>
-					prefix := path.Clean("/" + header.Name)
-					next := path.Join(header.Linkname, strings.TrimPrefix(name, prefix))
-					return fs.chase(next, gen+1)
-				}
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("could not find: %s", original)
-}
-
-type peek struct {
-	cursor int64
-	remain int
-}
-
 // Implements http.File.
 type layerFile struct {
 	name   string
 	header *tar.Header
 	fs     *layerFS
-
-	buf *bufio.Reader
-
-	// The real cursor of the underlying file.
-	cursor int64
-
-	// The cursor FileServer thinks it has after a Peek.
-	peeked int64
 }
 
-// The FileServer only really tries to Seek to reset the file to the start.
-// It will read the first 512 bytes (sniffLen) to determine the filetype if it
-// can't determine the filetype based on the file extension.
-//
-// I wish it would use Peek, for this, but it only takes an io.ReadSeeker.
-//
-// TODO: Handle offset better for range requests?
+// This used to try to handle Seeking, but it was complicated, so I
+// forked net/http instead.
 func (f *layerFile) Seek(offset int64, whence int) (int64, error) {
-	debugf("Open(%q).Seek(%d, %d) @ [%d, %d]", f.name, offset, whence, f.cursor, f.peeked)
-
-	if whence == io.SeekEnd {
-		// Likely just trying to determine filesize.
-		// TODO: Handle f.seeked or something?
-		return f.header.Size, nil
-	}
-
-	if whence == io.SeekStart {
-		if offset == 0 {
-			// We are seeking to the start of the file, usually after Seeking to the
-			// end to determine the filesize.
-			f.cursor = 0
-			f.peeked = 0
-			return 0, nil
-		}
-
-		if offset == f.cursor {
-			// We are seeking to where the cursor is, do nothing.
-			f.peeked = 0
-			return offset, nil
-		}
-
-		if offset < f.cursor {
-			// Seeking somewhere our cursor has already moved past, we can't respond.
-			// TODO: Reset file somehow?
-			log.Printf("Open(%q).Seek(%d, %d): offset < cursor: ???", f.name, offset, whence)
-			return 0, fmt.Errorf("not implemented")
-		}
-
-		if offset > f.cursor {
-			// We want to seek forward.
-			if offset <= f.peeked {
-				// But not past the Peek().
-				n := offset - f.cursor
-				if _, err := f.buf.Discard(int(n)); err != nil {
-					return 0, err
-				}
-				f.cursor = f.cursor + n
-				return f.cursor, nil
-			}
-
-			// We want to go past the Peek().
-			n, err := f.buf.Discard(int(offset - f.cursor))
-			if err != nil {
-				return 0, err
-			}
-			f.cursor = f.cursor + int64(n)
-			f.peeked = 0
-			return f.cursor, nil
-		}
-
-		// Is this reachable?
-		log.Printf("Open(%q).Seek(%d, %d): start: ???", f.name, offset, whence)
-		return 0, fmt.Errorf("not implemented")
-	}
-
-	debugf("Open(%q).Seek(%d, %d): whence: ???", f.name, offset, whence)
 	return 0, fmt.Errorf("not implemented")
+}
+
+// Allows us to drop Seek impl for http.ServeContent.
+func (f *layerFile) Size() int64 {
+	if f.header == nil {
+		return 0
+	}
+	return f.header.Size
 }
 
 func (f *layerFile) tooBig() []byte {
@@ -409,6 +156,7 @@ func (f *layerFile) tooBig() []byte {
 	return data
 }
 
+// This used to handle content sniffing, but I forked net/http instead.
 func (f *layerFile) Read(p []byte) (int, error) {
 	debugf("Read(%q): len(p) = %d", f.name, len(p))
 
@@ -417,84 +165,14 @@ func (f *layerFile) Read(p []byte) (int, error) {
 		return bytes.NewReader(f.tooBig()).Read(p)
 	}
 
-	// Handle first read.
-	if f.buf == nil {
-		if f.cursor != 0 {
-			// This is a surprise!
-			log.Printf("Read(%q): nil buf, cursor = %d", f.name, f.cursor)
-			return 0, fmt.Errorf("invalid cursor position: %d", f.cursor)
-		}
-
-		if f.fs.tr == nil {
-			if err := f.fs.reset(); err != nil {
-				return 0, err
-			}
-		}
-
-		if len(p) <= bufferLen {
-			f.buf = bufio.NewReaderSize(f.fs.tr, bufferLen)
-		} else {
-			debugf("Read(%q): len(p) = %d", f.name, len(p))
-			f.buf = bufio.NewReaderSize(f.fs.tr, len(p))
-		}
-
-		// Peek to handle the first content sniff.
-		b, err := f.buf.Peek(len(p))
-		if debug {
-			log.Printf("Read(%q): Peek(%d): (%d, %v)", f.name, len(p), len(b), err)
-			//log.Printf("%s", string(b))
-		}
-
-		f.peeked = f.cursor + int64(len(b))
-
-		if err == io.EOF {
-			debugf("hit EOF")
-			return bytes.NewReader(b).Read(p)
-		} else if err != nil {
-			if f.header.Size >= int64(len(p)) {
-				// This should have worked...
-				log.Printf("Read(%q): f.header.Size = %d, err: %v", f.name, f.header.Size, err)
-			}
-			return 0, err
-		}
-
-		n, err := bytes.NewReader(b).Read(p)
-		debugf("Read(%q): (Peek(%d)) = (%d, %v)", f.name, len(p), n, err)
-		return n, err
-	}
-
-	// We did a Peek() but didn't get a Seek() to reset.
-	if f.peeked != 0 {
-		if f.peeked == f.header.Size {
-			debugf("Read(%q): f.peeked=%d, f.header.size=%d", f.name, f.peeked, f.header.Size)
-			// We hit EOF.
-			return 0, io.EOF
-		}
-
-		debugf("Read(%q): f.peeked=%d, f.cursor=%d, f.header.size=%d, discarding rest", f.name, f.peeked, f.cursor, f.header.Size)
-		// We need to throw away some peeked bytes to continue with the read.
-		if _, err := f.buf.Discard(int(f.peeked - f.cursor)); err != nil {
-			debugf("Read(%q): discard err: %v", f.name, err)
-			return 0, err
-		}
-		// Reset peeked to zero so we know we don't have to discard anymore.
-		f.peeked = 0
-	}
-	n, err := f.buf.Read(p)
-	if debug {
-		log.Printf("Read(%q) = (%d, %v)", f.name, n, err)
-		//log.Printf("%s", string(p))
-	}
-	return n, err
+	return f.fs.tr.Read(p)
 }
 
 func (f *layerFile) Close() error {
-	debugf("Close(%q)", f.name)
 	return nil
 }
 
 // Scan through the tarball looking for prefixes that match the layerFile's name.
-// TODO: respect count?
 func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 	debugf("ReadDir(%q)", f.name)
 
@@ -513,92 +191,61 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 	}
 	fis := []os.FileInfo{}
 	if !f.Root() {
-		fis = append(fis, fileInfo{".."})
+		fis = append(fis, dirInfo{".."})
 	}
+
+	implicitDirs := map[string]struct{}{}
+	realDirs := map[string]struct{}{}
+
 	for _, hdr := range f.fs.headers {
 		name := path.Clean("/" + hdr.Name)
-		dir := path.Dir(strings.TrimPrefix(name, prefix))
-		//debugf("hdr.Name=%q prefix=%q name=%q dir=%q", hdr.Name, prefix, name, dir)
 
-		// Is this file in this directory?
-		if strings.HasPrefix(name, prefix) && (f.Root() && dir == "." || dir == "/") {
-			debugf("Readdir(%q) -> %q match!", f.name, hdr.Name)
-			fi := hdr.FileInfo()
-			if !isLink(hdr) {
-				fis = append(fis, fi)
-				continue
-			}
-
-			// The symlink struct handles magic names for making things work.
-			fi = symlink{
-				FileInfo: fi,
-				name:     fi.Name(),
-				link:     hdr.Linkname,
-				typeflag: hdr.Typeflag,
-			}
-			fis = append(fis, fi)
+		if prefix != "/" && name != prefix && !strings.HasPrefix(name, prefix+"/") {
+			continue
 		}
+
+		fdir := path.Dir(strings.TrimPrefix(name, prefix))
+		if !(fdir == "/" || (fdir == "." && prefix == "/")) {
+			if fdir != "" && fdir != "." {
+				if fdir[0] == '/' {
+					fdir = fdir[1:]
+				}
+				implicit := strings.Split(fdir, "/")[0]
+				if implicit != "" {
+					implicitDirs[implicit] = struct{}{}
+				}
+			}
+			continue
+		}
+
+		if hdr.Typeflag == tar.TypeDir {
+			dirname := path.Dir(strings.TrimPrefix(hdr.Name, prefix))
+			if dirname[0] == '/' {
+				dirname = dirname[1:]
+			}
+			realDirs[dirname] = struct{}{}
+			fis = append(fis, hdr.FileInfo())
+			continue
+		}
+		fis = append(fis, hdr.FileInfo())
 	}
 
-	// If we don't find anything in here, but there were subdirectories per the tarball
-	// paths, synthesize some directories.
-	if len(fis) == 0 {
-		debugf("ReadDir(%q): No matching headers in %d entries, synthesizing directories", f.name, len(f.fs.headers))
-		dirs := map[string]struct{}{}
-		for _, hdr := range f.fs.headers {
-			name := path.Clean("/" + hdr.Name)
-
-			if !strings.HasPrefix(name, prefix) {
-				continue
-			}
-
-			dir := path.Dir(strings.TrimPrefix(name, prefix))
-			if dir != "" && dir != "." {
-				prev := dir
-				// Walk up to the first directory.
-				for next := prev; next != "." && next != prefix && filepath.ToSlash(next) != "/"; prev, next = next, filepath.Dir(next) {
-					debugf("ReadDir(%q): dir: %q, prev: %q, next: %q", f.name, dir, prev, next)
-				}
-				dirs[prev] = struct{}{}
-			}
-		}
-		for dir := range dirs {
-			debugf("ReadDir(%q): dir: %q", f.name, dir)
-			fis = append(fis, fileInfo{dir})
+	for dir := range implicitDirs {
+		if _, ok := realDirs[dir]; !ok {
+			logs.Debug.Printf("Adding implicit dir: %s", dir)
+			fis = append(fis, dirInfo{dir})
 		}
 	}
 
 	return fis, nil
 }
 
-func (f *layerFile) contains(child string) bool {
-	if f.Root() {
-		return true
-	}
-
-	prefix := path.Clean("/" + f.name)
-	child = path.Clean("/" + child)
-
-	return strings.HasPrefix(child, prefix)
-}
-
-func isLink(hdr *tar.Header) bool {
-	return hdr.Linkname != ""
-}
-
 func (f *layerFile) Stat() (os.FileInfo, error) {
 	debugf("Stat(%q)", f.name)
-	if f.Root() {
-		debugf("Stat(%q): root!", f.name)
-		return fileInfo{f.name}, nil
-	}
-	debugf("Stat(%q): nonroot!", f.name)
 
-	if f.header == nil {
-		log.Printf("! Stat(%q): no header!", f.name)
-
-		// This is a non-existent entry in the tarball, we need to synthesize one.
-		return fileInfo{f.name}, nil
+	// This is a non-existent entry in the tarball, we need to synthesize one.
+	if f.header == nil || f.Root() {
+		return dirInfo{f.name}, nil
 	}
 
 	// If you try to load a symlink directly, we will render it as a directory.
@@ -623,42 +270,16 @@ func (f *layerFile) Root() bool {
 }
 
 // Implements os.FileInfo for empty directory.
-type fileInfo struct {
+type dirInfo struct {
 	name string
 }
 
-func (f fileInfo) Name() string {
-	debugf("%q.Name()", f.name)
-	return f.name
-}
-
-func (f fileInfo) Size() int64 {
-	debugf("%q.Size()", f.name)
-	return 0
-}
-
-func (f fileInfo) Mode() os.FileMode {
-	debugf("%q.Mode()", f.name)
-	return os.ModeDir
-}
-
-func (f fileInfo) ModTime() time.Time {
-	debugf("%q.ModTime()", f.name)
-	if f.name == "" || f.name == "/" || f.name == "/index.html" {
-		return time.Now()
-	}
-	return time.Unix(0, 0)
-}
-
-func (f fileInfo) IsDir() bool {
-	debugf("%q.IsDir()", f.name)
-	return true
-}
-
-func (f fileInfo) Sys() interface{} {
-	debugf("%q.Sys()", f.name)
-	return nil
-}
+func (f dirInfo) ModTime() time.Time { return time.Unix(0, 0) }
+func (f dirInfo) Name() string       { return f.name }
+func (f dirInfo) Size() int64        { return 0 }
+func (f dirInfo) Mode() os.FileMode  { return os.ModeDir }
+func (f dirInfo) IsDir() bool        { return true }
+func (f dirInfo) Sys() interface{}   { return nil }
 
 type symlink struct {
 	os.FileInfo
@@ -667,27 +288,8 @@ type symlink struct {
 	typeflag byte
 }
 
-// We want the UI to show that this is a symlink, but we also want it to work!
-// This isn't just a display name, this is the actual name that we need to
-// handle later when FileServer attempts to open the file.
 func (s symlink) Name() string {
 	return s.name
-}
-
-// Helpful for debugging in logs what kind of entry was in the tar header.
-func typeStr(t byte) string {
-	switch t {
-	case tar.TypeReg:
-		return "-"
-	case tar.TypeLink:
-		return "h"
-	case tar.TypeSymlink:
-		return "l"
-	case tar.TypeDir:
-		return "d"
-	}
-
-	return string(t)
 }
 
 // Implements os.FileInfo for a file that is too large.
@@ -696,32 +298,9 @@ type bigFifo struct {
 	content []byte
 }
 
-func (b bigFifo) Name() string {
-	debugf("%q.Name()", b.name)
-	return b.name
-}
-
-func (b bigFifo) Size() int64 {
-	debugf("%q.Size()", b.name)
-	return int64(len(b.content))
-}
-
-func (b bigFifo) Mode() os.FileMode {
-	debugf("%q.Mode()", b.name)
-	return 0
-}
-
-func (b bigFifo) ModTime() time.Time {
-	debugf("%q.ModTime()", b.name)
-	return time.Now()
-}
-
-func (b bigFifo) IsDir() bool {
-	debugf("%q.IsDir()", b.name)
-	return false
-}
-
-func (b bigFifo) Sys() interface{} {
-	debugf("%q.Sys()", b.name)
-	return nil
-}
+func (b bigFifo) Name() string       { return b.name }
+func (b bigFifo) Size() int64        { return int64(len(b.content)) }
+func (b bigFifo) ModTime() time.Time { return time.Now() }
+func (b bigFifo) Mode() os.FileMode  { return 0 }
+func (b bigFifo) IsDir() bool        { return false }
+func (b bigFifo) Sys() interface{}   { return nil }

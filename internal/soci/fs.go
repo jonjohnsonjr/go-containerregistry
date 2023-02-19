@@ -218,7 +218,6 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		de = append(de, &sociDirEntry{nil, "..", nil})
 	}
 	subdir := strings.TrimSuffix(strings.TrimPrefix(s.name, "./"), "/")
-	tombstoned := false
 	for i, sfs := range s.fs.fss {
 		des, reald, implicitd, err := sfs.readDir(subdir)
 		if err != nil {
@@ -245,13 +244,12 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 				} else if strings.HasPrefix(name, ".wh.") {
 					logs.Debug.Printf("do not return whiteout %q", name)
 				} else {
-					logs.Debug.Printf("tombstoned: %t", tombstoned)
 					de = append(de, got)
 				}
 			}
 		}
 		if sawOpaque {
-			tombstoned = true
+			break
 		}
 	}
 
@@ -274,29 +272,32 @@ type BlobSeeker interface {
 	Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error)
 }
 
-func FS(tree Tree, bs BlobSeeker, prefix string, ref string, maxSize int64) *SociFS {
+func FS(index Index, bs BlobSeeker, prefix string, ref string, maxSize int64, mt types.MediaType) *SociFS {
 	return &SociFS{
-		tree:    tree,
-		files:   tree.TOC().Files,
+		index:   index,
+		files:   index.TOC().Files,
 		bs:      bs,
 		maxSize: maxSize,
 		prefix:  prefix,
 		ref:     ref,
+		mt:      mt,
 	}
 }
 
-type RenderFunc func(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, size int64, f httpserve.File, ctype string) error
+type RenderFunc func(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, mediaType types.MediaType, size int64, f httpserve.File, ctype string) error
 
 type SociFS struct {
 	files []TOCFile
 
 	bs BlobSeeker
 
-	tree Tree
+	index Index
 
 	prefix  string
 	ref     string
 	maxSize int64
+
+	mt types.MediaType
 
 	Render RenderFunc
 }
@@ -307,17 +308,20 @@ func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.F
 		if err != nil {
 			return err
 		}
-		kind := "targz"
-		if toc := s.tree.TOC(); toc != nil && toc.Type != "" {
-			kind = toc.Type
+		kind := "tar+gzip"
+		if s.mt == "" {
+			if toc := s.index.TOC(); toc != nil && toc.Type != "" {
+				kind = toc.Type
+				s.mt = types.MediaType(toc.MediaType)
+			}
 		}
-		return s.Render(w, fname, s.prefix, ref, kind, s.tree.TOC().Csize, f, ctype)
+		return s.Render(w, fname, s.prefix, ref, kind, s.mt, s.index.TOC().Csize, f, ctype)
 	}
 	return nil
 }
 
-func (s *SociFS) extractFile(ctx context.Context, tf *TOCFile) (io.ReadCloser, error) {
-	return ExtractTreeFile(ctx, s.tree, s.bs, tf)
+func (s *SociFS) extractFile(tf *TOCFile) (io.ReadCloser, error) {
+	return ExtractFile(context.Background(), s.index, s.bs, tf)
 }
 
 func (s *SociFS) err(name string) fs.File {
@@ -395,7 +399,6 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 		logs.Debug.Printf("soci.ReadDir(%q)", dir)
 	}
 
-	// Implicit directories.
 	de, realDirs, implicitDirs, err := s.readDir(original)
 	if err != nil {
 		return nil, err
@@ -425,10 +428,7 @@ func (s *SociFS) readDir(original string) ([]fs.DirEntry, map[string]struct{}, m
 		logs.Debug.Printf("soci.ReadDir(%q)", dir)
 	}
 
-	// Implicit directories.
 	implicitDirs := map[string]struct{}{}
-
-	// Implicit directories.
 	realDirs := map[string]struct{}{}
 
 	prefix := path.Clean("/" + dir)
@@ -466,30 +466,6 @@ func (s *SociFS) readDir(original string) ([]fs.DirEntry, map[string]struct{}, m
 			continue
 		}
 		de = append(de, s.dirEntry(dir, &fm))
-
-		// if !isLink(&fm) {
-		// 	de = append(de, s.dirEntry(dir, &fm))
-		// 	continue
-		// }
-
-		// // For links, we need to handle hardlinks and symlinks.
-		// link := fm.Linkname
-
-		// // For symlinks, assume relative paths.
-		// if fm.Typeflag == tar.TypeSymlink {
-		// 	if !path.IsAbs(fm.Linkname) {
-		// 		link = path.Clean(path.Join(path.Dir(name), link))
-		// 	}
-		// }
-
-		// // For hardlinks, assume absolute paths. This seems to hold up.
-		// if fm.Typeflag == tar.TypeLink {
-		// 	link = path.Clean("/" + link)
-		// }
-
-		// The linkEntry struct handles magic names for making things work.
-		// le := linkEntry{s, &fm, dir, link}
-		// de = append(de, &le)
 	}
 
 	return de, realDirs, implicitDirs, nil
@@ -506,10 +482,6 @@ func (s *SociFS) find(name string) (*TOCFile, error) {
 	}
 
 	return nil, fs.ErrNotExist
-}
-
-func (s *SociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
-	return &sociDirEntry{s, dir, fm}
 }
 
 // todo: cache symlinks to require fewer iterations?
@@ -563,44 +535,33 @@ type sociFile struct {
 	fm     *TOCFile
 	buf    *bufio.Reader
 	closer func() error
-
-	// TODO: Figure out how to get rid of this nonsense.
-	// The real cursor of the underlying file.
-	cursor int64
-
-	// The cursor FileServer thinks it has after a Peek.
-	peeked int64
 }
 
 func (s *sociFile) Stat() (fs.FileInfo, error) {
-	if s.fm != nil {
-		if s.fm.Typeflag == tar.TypeSymlink {
-			hdr := TarHeader(s.fm)
-			hdr.Typeflag = tar.TypeDir
-			return hdr.FileInfo(), nil
-		}
-		return TarHeader(s.fm).FileInfo(), nil
+	if s.fm == nil {
+		// We don't have an entry, so we need to synthesize one.
+		return &dirInfo{s.name}, nil
 	}
 
-	// We don't have an entry, so we need to synthesize one.
-	return &dirInfo{s.name}, nil
+	if s.fm.Typeflag == tar.TypeSymlink {
+		hdr := TarHeader(s.fm)
+		hdr.Typeflag = tar.TypeDir
+		return hdr.FileInfo(), nil
+	}
+
+	return TarHeader(s.fm).FileInfo(), nil
 }
 
 func (s *sociFile) Read(p []byte) (int, error) {
-	if s.fm != nil && s.fm.Size == 0 {
+	logs.Debug.Printf("soci.Read(%q): len(p) = %d", s.name, len(p))
+	if s.fm == nil || s.fm.Size == 0 {
 		return 0, io.EOF
 	}
-	logs.Debug.Printf("soci.Read(%q): len(p) = %d", s.name, len(p))
 	if s.buf == nil {
-		logs.Debug.Printf("buf is nil")
-		if s.cursor != 0 {
-			return 0, fmt.Errorf("invalid cursor position: %d", s.cursor)
-		}
-
-		rc, err := s.fs.extractFile(context.Background(), s.fm)
+		rc, err := s.fs.extractFile(s.fm)
 		if err != nil {
 			logs.Debug.Printf("extractFile: %v", err)
-			return 0, err
+			return 0, fmt.Errorf("extractFile:: %w", err)
 		}
 		s.closer = rc.Close
 
@@ -609,90 +570,12 @@ func (s *sociFile) Read(p []byte) (int, error) {
 		} else {
 			s.buf = bufio.NewReaderSize(rc, len(p))
 		}
-
-		b, err := s.buf.Peek(len(p))
-		s.peeked = s.cursor + int64(len(b))
-		if err == io.EOF {
-			return bytes.NewReader(b).Read(p)
-		} else if err != nil {
-			return 0, err
-		}
-		return bytes.NewReader(b).Read(p)
 	}
-	logs.Debug.Printf("soci.Read(%q): f.peeked=%d, f.header.size=%d", s.name, s.peeked, s.fm.Size)
-	if s.peeked != 0 {
-		if s.peeked == s.fm.Size {
-			return 0, io.EOF
-		}
-		newCursor := s.peeked
-		if _, err := s.buf.Discard(int(s.peeked - s.cursor)); err != nil {
-			return 0, err
-		}
-		s.peeked = 0
-		s.cursor = newCursor
-	} else if s.cursor == 0 {
-		// Peek for the first read so that we can do tooBig.
-		if len(p) < bufferLen {
-			b, err := s.buf.Peek(len(p))
-			s.peeked = s.cursor + int64(len(b))
-			if err == io.EOF {
-				return bytes.NewReader(b).Read(p)
-			} else if err != nil {
-				return 0, err
-			}
-			return bytes.NewReader(b).Read(p)
-		}
-	}
-	logs.Debug.Printf("soci.Read(%q) at the end", s.name)
-	// TODO: Only read s.fm.Size ever
 	return s.buf.Read(p)
 }
 
 func (s *sociFile) Seek(offset int64, whence int) (int64, error) {
-	logs.Debug.Printf("soci.Open(%q).Seek(%d, %d) @ [%d, %d]", s.name, offset, whence, s.cursor, s.peeked)
-	if whence == io.SeekEnd {
-		// Likely just trying to determine filesize.
-		return s.fm.Size, nil
-	}
-	if whence == io.SeekStart {
-		if offset == 0 {
-			s.cursor = 0
-			s.peeked = 0
-			return 0, nil
-		}
-		if offset == s.cursor {
-			// We are seeking to where the cursor is, do nothing.
-			s.peeked = 0
-			return offset, nil
-		}
-		if offset < s.cursor {
-			// Seeking somewhere our cursor has already moved past, we can't respond.
-			// TODO: Reset file somehow?
-			return 0, fmt.Errorf("Open(%q).Seek(%d, %d) [offset < cursor] not implemented", s.name, offset, whence)
-		}
-		if offset > s.cursor {
-			// We want to seek forward.
-			if offset <= s.peeked {
-				// But not past the Peek().
-				n := offset - s.cursor
-				if _, err := s.buf.Discard(int(n)); err != nil {
-					return 0, err
-				}
-				s.cursor = s.cursor + n
-				return s.cursor, nil
-			}
-
-			// We want to go past the Peek().
-			n, err := s.buf.Discard(int(offset - s.cursor))
-			if err != nil {
-				return 0, err
-			}
-			s.cursor = s.cursor + int64(n)
-			s.peeked = 0
-			return s.cursor, nil
-		}
-	}
-	return 0, fmt.Errorf("Open(%q).Seek(%d, %d): not implemented", s.name, offset, whence)
+	return 0, fmt.Errorf("not implemented")
 }
 
 func (s *sociFile) ReadDir(n int) ([]fs.DirEntry, error) {
@@ -706,11 +589,22 @@ func (s *sociFile) ReadDir(n int) ([]fs.DirEntry, error) {
 	return s.fs.ReadDir(s.name)
 }
 
-func (s *sociFile) Close() error {
-	if s.closer != nil {
-		return s.closer()
+func (s *sociFile) Size() int64 {
+	if s.fm == nil {
+		return 0
 	}
-	return nil
+	return s.fm.Size
+}
+
+func (s *sociFile) Close() error {
+	if s.closer == nil {
+		return nil
+	}
+	return s.closer()
+}
+
+func (s *SociFS) dirEntry(dir string, fm *TOCFile) *sociDirEntry {
+	return &sociDirEntry{s, dir, fm}
 }
 
 type sociDirEntry struct {
@@ -754,10 +648,10 @@ func (s *sociDirEntry) Info() (fs.FileInfo, error) {
 }
 
 func (s *sociDirEntry) Layer() string {
-	if s.fs != nil {
-		return s.fs.ref
+	if s.fs == nil {
+		return ""
 	}
-	return ""
+	return s.fs.ref
 }
 
 // If we don't have a file, make up a dir.
@@ -765,46 +659,9 @@ type dirInfo struct {
 	name string
 }
 
-func (f dirInfo) Name() string {
-	return f.name
-}
-
-func (f dirInfo) Size() int64 {
-	return 0
-}
-
-func (f dirInfo) Mode() os.FileMode {
-	return os.ModeDir
-}
-
-func (f dirInfo) ModTime() time.Time {
-	if f.name == "" || f.name == "/" || f.name == "/index.html" {
-		return time.Now()
-	}
-	return time.Unix(0, 0)
-}
-
-func (f dirInfo) IsDir() bool {
-	return true
-}
-
-func (f dirInfo) Sys() interface{} {
-	return nil
-}
-
-func isLink(fm *TOCFile) bool {
-	return fm.Linkname != ""
-}
-
-type symlink struct {
-	os.FileInfo
-	name string
-	link string
-}
-
-// We want the UI to show that this is a symlink, but we also want it to work!
-// This isn't just a display name, this is the actual name that we need to
-// handle later when FileServer attempts to open the file.
-func (s symlink) Name() string {
-	return fmt.Sprintf("%s -> %s", s.name, s.link)
-}
+func (f dirInfo) Name() string       { return f.name }
+func (f dirInfo) Size() int64        { return 0 }
+func (f dirInfo) Mode() os.FileMode  { return os.ModeDir }
+func (f dirInfo) ModTime() time.Time { return time.Unix(0, 0) }
+func (f dirInfo) IsDir() bool        { return true }
+func (f dirInfo) Sys() interface{}   { return nil }

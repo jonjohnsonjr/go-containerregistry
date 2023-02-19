@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type TreeIndexer struct {
+type Indexer struct {
 	toc      *TOC
 	updates  chan *flate.Checkpoint
 	zupdates chan *zstd.Checkpoint
@@ -30,18 +30,18 @@ type TreeIndexer struct {
 }
 
 // TODO: Make it so we can resume this.
-func NewTreeIndexer(rc io.ReadCloser, w io.WriteCloser, span int64) (*TreeIndexer, io.ReadCloser, error) {
-	logs.Debug.Printf("NewTreeIndexer")
+func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string) (*Indexer, io.ReadCloser, error) {
+	logs.Debug.Printf("NewIndexer")
 	// TODO: Allow binding writer after detection.
 
-	// TODO: toc.MediaType
 	toc := &TOC{
 		Files:       []TOCFile{},
 		Checkpoints: []*flate.Checkpoint{},
 		Ssize:       span,
+		MediaType:   mediaType,
 	}
 
-	i := &TreeIndexer{
+	i := &Indexer{
 		toc: toc,
 		in:  rc,
 		w:   w,
@@ -86,7 +86,7 @@ func NewTreeIndexer(rc io.ReadCloser, w io.WriteCloser, span int64) (*TreeIndexe
 	return i, pr, nil
 }
 
-func (i *TreeIndexer) Next() (*tar.Header, error) {
+func (i *Indexer) Next() (*tar.Header, error) {
 	header, err := i.tr.Next()
 	if errors.Is(err, io.EOF) {
 		if !i.finished {
@@ -111,38 +111,24 @@ func (i *TreeIndexer) Next() (*tar.Header, error) {
 	return header, err
 }
 
-func (i *TreeIndexer) Read(p []byte) (int, error) {
+func (i *Indexer) Read(p []byte) (int, error) {
 	return i.tr.Read(p)
 }
 
-func (i *TreeIndexer) Close() error {
+func (i *Indexer) Close() error {
 	// TODO: racey?
 	return i.in.Close()
 }
 
-func (i *TreeIndexer) Tree(bs BlobSeeker) (Tree, error) {
-	toc, err := i.TOC()
-	if err != nil {
-		return nil, err
-	}
-
-	tree := &tree{
-		toc: toc,
-		bs:  bs,
-	}
-
-	return tree, nil
-}
-
-func (i *TreeIndexer) Size() int64 {
+func (i *Indexer) Size() int64 {
 	return i.cw.n
 }
 
-func (i *TreeIndexer) Type() string {
+func (i *Indexer) Type() string {
 	return i.toc.Type
 }
 
-func (i *TreeIndexer) TOC() (*TOC, error) {
+func (i *Indexer) TOC() (*TOC, error) {
 	if i.written {
 		return i.toc, nil
 	}
@@ -181,7 +167,7 @@ func (i *TreeIndexer) TOC() (*TOC, error) {
 	return i.toc, nil
 }
 
-func (i *TreeIndexer) processUpdates() error {
+func (i *Indexer) processUpdates() error {
 	if i.updates != nil {
 		for update := range i.updates {
 			u := update

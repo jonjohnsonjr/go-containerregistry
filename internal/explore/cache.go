@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -18,7 +17,6 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/logs"
-	"github.com/google/go-containerregistry/pkg/name"
 )
 
 type Cache interface {
@@ -35,48 +33,14 @@ type cache interface {
 	RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error)
 }
 
-type ociCache struct {
-	repo      name.Repository
-	transport http.RoundTripper
+type cacheSeeker struct {
+	cache cache
+	key   string
 }
 
-func (m *ociCache) Writer(ctx context.Context, key string) (io.WriteCloser, error) {
-	panic("ociCache.Writer")
-}
-
-func (m *ociCache) Reader(ctx context.Context, key string) (io.ReadCloser, error) {
-	panic("ociCache.Reader")
-}
-
-func (m *ociCache) RangeReader(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
-	panic("ociCache.RangeReader")
-}
-
-func (m *ociCache) Size(ctx context.Context, key string) (int64, error) {
-	panic("ociCache.Size")
-}
-
-func (o *ociCache) ref(key string) name.Reference {
-	return o.repo.Tag(strings.Replace(key, ":", "-", 1) + ".soci")
-}
-
-func (o *ociCache) Get(ctx context.Context, key string) (*soci.TOC, error) {
-	return nil, nil
-	// img, err := remote.Image(o.ref(key), remote.WithTransport(o.transport))
-	// if err != nil {
-	// 	logs.Debug.Printf("cache pull: %v", err)
-	// 	return nil, err
-	// }
-	// return soci.FromImage(img)
-}
-
-func (o *ociCache) Put(ctx context.Context, key string, index *soci.TOC) error {
-	return nil
-	//img, err := soci.ToImage(index)
-	//if err != nil {
-	//	return err
-	//}
-	//return remote.Write(o.ref(key), img, remote.WithTransport(o.transport))
+func (bs *cacheSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error) {
+	logs.Debug.Printf("cacheSeeker.Reader(%d, %d)", off, end)
+	return bs.cache.RangeReader(ctx, bs.key, off, end-off)
 }
 
 // TODO: We can separate the TOC from the checkpoints to avoid some buffering.
@@ -563,4 +527,41 @@ func (e *joinError) Error() string {
 
 func (e *joinError) Unwrap() []error {
 	return e.errs
+}
+
+func buildGcsCache(bucket string) (cache, error) {
+	client, err := storage.NewClient(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	bkt := client.Bucket(bucket)
+
+	return &gcsCache{client, bkt}, nil
+}
+
+func buildTocCache() cache {
+	mc := &memCache{
+		// 50 MB * 50 = 2.5GB reserved for cache.
+		maxSize:  50 * (1 << 20),
+		entryCap: 50,
+	}
+	return mc
+}
+
+func buildIndexCache() cache {
+	caches := []cache{}
+
+	if cd := os.Getenv("CACHE_DIR"); cd != "" {
+		logs.Debug.Printf("CACHE_DIR=%q", cd)
+		cache := &dirCache{cd}
+		caches = append(caches, cache)
+	} else if cb := os.Getenv("CACHE_BUCKET"); cb != "" {
+		logs.Debug.Printf("CACHE_BUCKET=%q", cb)
+		if cache, err := buildGcsCache(cb); err != nil {
+			logs.Debug.Printf("buildGcsCache(): %v", err)
+		} else {
+			caches = append(caches, cache)
+		}
+	}
+	return &multiCache{caches}
 }

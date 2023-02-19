@@ -338,6 +338,10 @@ func typeStr(t byte) byte {
 	return '?'
 }
 
+type Sizer interface {
+	Size() int64
+}
+
 // ServeContent replies to the request using the content in the
 // provided ReadSeeker. The main benefit of ServeContent over io.Copy
 // is that it handles Range requests properly, sets the MIME type, and
@@ -365,6 +369,9 @@ func typeStr(t byte) byte {
 // Note that *os.File implements the io.ReadSeeker interface.
 func ServeContent(w http.ResponseWriter, req *http.Request, name string, modtime time.Time, content io.ReadSeeker, render renderFunc) {
 	sizeFunc := func() (int64, error) {
+		if s, ok := content.(Sizer); ok {
+			return s.Size(), nil
+		}
 		size, err := content.Seek(0, io.SeekEnd)
 		if err != nil {
 			return 0, errSeeker
@@ -402,6 +409,7 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 	}
 
 	code := http.StatusOK
+	br := bufio.NewReaderSize(content, sniffLen)
 
 	// If Content-Type isn't set, use the file's extension to find it, but
 	// if the Content-Type is unset explicitly, do not sniff the type.
@@ -411,14 +419,12 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		ctype = mime.TypeByExtension(filepath.Ext(name))
 		if ctype == "" {
 			// read a chunk to decide between utf-8 text and binary
-			var buf [sniffLen]byte
-			n, _ := io.ReadFull(content, buf[:])
-			ctype = DetectContentType(buf[:n])
-			_, err := content.Seek(0, io.SeekStart) // rewind to output whole file
-			if err != nil {
-				http.Error(w, "seeker can't seek", http.StatusInternalServerError)
+			buf, err := br.Peek(sniffLen)
+			if err != nil && err != io.EOF {
+				http.Error(w, "serveContent.Peek: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
+			ctype = DetectContentType(buf)
 			logs.Debug.Printf("DetectContentType = %s", ctype)
 		} else {
 			logs.Debug.Printf("ByExtension = %s", ctype)
@@ -441,7 +447,7 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 
 	// handle Content-Range header.
 	sendSize := size
-	var sendContent io.Reader = content
+	var sendContent io.Reader = br
 	ranges, err := parseRange(rangeReq, size)
 	switch err {
 	case nil:

@@ -37,12 +37,9 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/storage"
-
 	ogzip "compress/gzip"
 
 	"github.com/google/go-containerregistry/internal/and"
-	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/internal/verify"
@@ -50,7 +47,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	goog "github.com/google/go-containerregistry/pkg/v1/google"
+	"github.com/google/go-containerregistry/pkg/v1/google"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -80,113 +77,13 @@ type handler struct {
 	// reg.String() -> ping resp
 	pings map[string]*transport.PingResp
 
-	cache     cache
-	treeCache cache
+	tocCache   cache
+	indexCache cache
 
 	sync.Mutex
 	sawTags map[string][]string
 
 	oauth *oauth2.Config
-}
-
-func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo string) []remote.Option {
-	ctx := r.Context()
-
-	// TODO: Set timeout.
-	// TODO: User agent.
-
-	opts := []remote.Option{}
-	opts = append(opts, h.remote...)
-	opts = append(opts, remote.WithContext(ctx))
-
-	auth := authn.Anonymous
-
-	parsed, err := name.NewRepository(repo)
-	if err == nil && isGoogle(parsed.Registry.String()) {
-		if at, err := r.Cookie("access_token"); err == nil {
-			tok := &oauth2.Token{
-				AccessToken: at.Value,
-				Expiry:      at.Expires,
-			}
-			if rt, err := r.Cookie("refresh_token"); err == nil {
-				tok.RefreshToken = rt.Value
-			}
-			if h.oauth != nil {
-				ts := h.oauth.TokenSource(r.Context(), tok)
-				auth = goog.NewTokenSourceAuthenticator(ts)
-			}
-
-		}
-	}
-
-	opts = append(opts, remote.WithAuth(auth))
-
-	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
-		log.Printf("failed to get transport from cookie: %v", err)
-	} else {
-		opts = append(opts, remote.WithTransport(t))
-	}
-
-	if n := r.URL.Query().Get("n"); n != "" {
-		size, err := strconv.ParseInt(n, 10, 64)
-		if err != nil {
-			log.Printf("n = %s, err: %v", n, err)
-		} else {
-			opts = append(opts, remote.WithPageSize(int(size)))
-		}
-	}
-	if next := r.URL.Query().Get("next"); next != "" {
-		opts = append(opts, remote.WithNext(next))
-	}
-
-	return opts
-}
-
-// TODO: ugh
-func (h *handler) googleOptions(w http.ResponseWriter, r *http.Request, repo string) []goog.Option {
-	ctx := r.Context()
-
-	opts := []goog.Option{}
-	opts = append(opts, goog.WithContext(ctx))
-	if repo == "mirror.gcr.io" {
-		t := remote.DefaultTransport
-		t = transport.NewRetry(t)
-		t = transport.NewUserAgent(t, ua)
-		if r.URL.Query().Get("trace") != "" {
-			t = transport.NewTracer(t)
-		}
-		t = transport.Wrap(t)
-		opts = append(opts, goog.WithTransport(t))
-		return opts
-	}
-	auth := authn.Anonymous
-
-	parsed, err := name.NewRepository(repo)
-	if err == nil && isGoogle(parsed.Registry.String()) {
-		if at, err := r.Cookie("access_token"); err == nil {
-			tok := &oauth2.Token{
-				AccessToken: at.Value,
-				Expiry:      at.Expires,
-			}
-			if rt, err := r.Cookie("refresh_token"); err == nil {
-				tok.RefreshToken = rt.Value
-			}
-			if h.oauth != nil {
-				ts := h.oauth.TokenSource(r.Context(), tok)
-				auth = goog.NewTokenSourceAuthenticator(ts)
-			}
-		}
-	}
-
-	opts = append(opts, goog.WithAuth(auth))
-
-	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
-		log.Printf("failed to get transport from cookie: %v", err)
-	} else {
-		opts = append(opts, goog.WithTransport(t))
-	}
-
-	return opts
 }
 
 type Option func(h *handler)
@@ -197,113 +94,15 @@ func WithRemote(opt []remote.Option) Option {
 	}
 }
 
-// TODO: We can drop ~60ms by skipping the auth handshake.
-func buildOciCache(cacheRepo string) (cache, error) {
-	repo, err := name.NewRepository(cacheRepo)
-	if err != nil {
-		return nil, err
-	}
-
-	scopes := []string{repo.Scope(transport.PushScope)}
-
-	auth := authn.Anonymous
-	if isGoogle(repo.RegistryStr()) {
-		auth, err = goog.Keychain.Resolve(repo)
-		if err != nil {
-			return nil, err
-		}
-	}
-	t := remote.DefaultTransport
-	t = transport.NewRetry(t)
-	t = transport.NewUserAgent(t, ua)
-	if logs.Enabled(logs.Trace) {
-		t = transport.NewTracer(t)
-	}
-	t, err = transport.New(repo.Registry, auth, t, scopes)
-	if err != nil {
-		return nil, err
-	}
-	return &ociCache{repo, t}, nil
-}
-
-func buildGcsCache(bucket string) (cache, error) {
-	client, err := storage.NewClient(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	bkt := client.Bucket(bucket)
-
-	return &gcsCache{client, bkt}, nil
-}
-
-func buildCache() cache {
-	// TODO
-	mc := &memCache{
-		// 50 MB * 50 = 2.5GB reserved for cache.
-		maxSize:  50 * (1 << 20),
-		entryCap: 50,
-	}
-	return mc
-	//caches := []cache{mc}
-
-	//if cd := os.Getenv("CACHE_DIR"); cd != "" {
-	//	logs.Debug.Printf("CACHE_DIR=%q", cd)
-	//	cache := &dirCache{cd}
-	//	caches = append(caches, cache)
-	//} else if cb := os.Getenv("CACHE_BUCKET"); cb != "" {
-	//	logs.Debug.Printf("CACHE_BUCKET=%q", cb)
-	//	if cache, err := buildGcsCache(cb); err != nil {
-	//		logs.Debug.Printf("buildGcsCache(): %v", err)
-	//	} else {
-	//		caches = append(caches, cache)
-	//	}
-	//} else if cr := os.Getenv("CACHE_REPO"); cr != "" {
-	//	logs.Debug.Printf("CACHE_REPO=%q", cr)
-	//	if cache, err := buildOciCache(cr); err != nil {
-	//		logs.Debug.Printf("buildOciCache(): %v", err)
-	//	} else {
-	//		caches = append(caches, cache)
-	//	}
-	//}
-
-	//return &multiCache{caches}
-}
-
-// TODO: dedupe above
-func buildTreeCache() cache {
-	caches := []cache{}
-
-	if cd := os.Getenv("CACHE_DIR"); cd != "" {
-		logs.Debug.Printf("CACHE_DIR=%q", cd)
-		cache := &dirCache{cd}
-		caches = append(caches, cache)
-	} else if cb := os.Getenv("CACHE_BUCKET"); cb != "" {
-		logs.Debug.Printf("CACHE_BUCKET=%q", cb)
-		if cache, err := buildGcsCache(cb); err != nil {
-			logs.Debug.Printf("buildGcsCache(): %v", err)
-		} else {
-			caches = append(caches, cache)
-		}
-	} else if cr := os.Getenv("CACHE_REPO"); cr != "" {
-		logs.Debug.Printf("CACHE_REPO=%q", cr)
-		if cache, err := buildOciCache(cr); err != nil {
-			logs.Debug.Printf("buildOciCache(): %v", err)
-		} else {
-			caches = append(caches, cache)
-		}
-	}
-	return &multiCache{caches}
-}
-
 func New(opts ...Option) http.Handler {
 	h := handler{
-		mux:       http.NewServeMux(),
-		manifests: map[string]*remote.Descriptor{},
-		pings:     map[string]*transport.PingResp{},
-		sawTags:   map[string][]string{},
-		cache:     buildCache(),
-		treeCache: buildTreeCache(),
-		oauth:     buildOauth(),
+		mux:        http.NewServeMux(),
+		manifests:  map[string]*remote.Descriptor{},
+		pings:      map[string]*transport.PingResp{},
+		sawTags:    map[string][]string{},
+		tocCache:   buildTocCache(),
+		indexCache: buildIndexCache(),
+		oauth:      buildOauth(),
 	}
 
 	for _, opt := range opts {
@@ -318,19 +117,12 @@ func New(opts ...Option) http.Handler {
 	h.mux.HandleFunc("/http/", h.fsHandler)
 	h.mux.HandleFunc("/https/", h.fsHandler)
 
-	// Just dumps the bytes.
-	// Useful for looking at something with the wrong mediaType.
-	h.mux.HandleFunc("/raw/", h.fsHandler)
-
 	// Try to detect mediaType.
 	h.mux.HandleFunc("/blob/", h.fsHandler)
-	h.mux.HandleFunc("/cache/", h.treeHandler)
+	h.mux.HandleFunc("/cache/", h.indexHandler)
 
 	// We know it's JSON.
 	h.mux.HandleFunc("/json/", h.fsHandler)
-
-	// Same as above but un-gzips.
-	h.mux.HandleFunc("/gzip/", h.fsHandler)
 
 	h.mux.HandleFunc("/oauth", h.oauthHandler)
 
@@ -376,13 +168,6 @@ func (h *handler) root(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func isGoogle(host string) bool {
-	if host != "gcr.io" && !strings.HasSuffix(host, ".gcr.io") && !strings.HasSuffix(host, ".pkg.dev") && !strings.HasSuffix(host, ".google.com") {
-		return false
-	}
-	return true
-}
-
 // Like http.Handler, but with error handling.
 func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderBlob(w, r); err != nil {
@@ -393,119 +178,55 @@ func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type CookieValue struct {
-	Reg           string
-	PingResp      *transport.PingResp
-	Repo          string
-	TokenResponse *transport.TokenResponse
-}
+func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo string) []remote.Option {
+	ctx := r.Context()
 
-func (h *handler) transportFromCookie(w http.ResponseWriter, r *http.Request, repo string, auth authn.Authenticator) (http.RoundTripper, error) {
+	// TODO: Set timeout.
+	opts := []remote.Option{}
+	opts = append(opts, h.remote...)
+	opts = append(opts, remote.WithContext(ctx))
+
+	auth := authn.Anonymous
+
 	parsed, err := name.NewRepository(repo)
-	if err != nil {
-		return nil, err
-	}
-	scopes := []string{parsed.Scope(transport.PullScope)}
-	reg := parsed.Registry
-
-	var (
-		pr  *transport.PingResp
-		tok *transport.TokenResponse
-	)
-	if regCookie, err := r.Cookie("registry_token"); err == nil {
-		b, err := base64.URLEncoding.DecodeString(regCookie.Value)
-		if err != nil {
-			return nil, err
-		}
-		var v CookieValue
-		if err := json.Unmarshal(b, &v); err != nil {
-			return nil, err
-		}
-		if v.Reg == reg.String() {
-			pr = v.PingResp
-			if v.Repo == repo {
-				tok = v.TokenResponse
+	if err == nil && isGoogle(parsed.Registry.String()) {
+		if at, err := r.Cookie("access_token"); err == nil {
+			tok := &oauth2.Token{
+				AccessToken: at.Value,
+				Expiry:      at.Expires,
 			}
+			if rt, err := r.Cookie("refresh_token"); err == nil {
+				tok.RefreshToken = rt.Value
+			}
+			if h.oauth != nil {
+				ts := h.oauth.TokenSource(r.Context(), tok)
+				auth = google.NewTokenSourceAuthenticator(ts)
+			}
+
 		}
 	}
 
-	t := remote.DefaultTransport
-	t = transport.NewRetry(t)
-	t = transport.NewUserAgent(t, ua)
-	if r.URL.Query().Get("trace") != "" {
-		t = transport.NewTracer(t)
-	}
+	opts = append(opts, remote.WithAuth(auth))
 
-	if pr == nil {
-		if cpr, ok := h.pings[reg.String()]; ok {
-			if debug {
-				log.Printf("cached ping: %v", cpr)
-			}
-			pr = cpr
-		} else {
-			if debug {
-				log.Printf("pinging %s", reg.String())
-			}
-			pr, err = transport.Ping(r.Context(), reg, t)
-			if err != nil {
-				return nil, err
-			}
-			h.pings[reg.String()] = pr
-		}
-	}
-
-	if tok == nil {
-		if debug {
-			log.Printf("getting token %s", reg.String())
-		}
-		t, tok, err = transport.NewBearer(r.Context(), pr, reg, auth, t, scopes)
-		if err != nil {
-			return nil, err
-		}
-
-		// Probably no auth needed.
-		if tok == nil {
-			return t, nil
-		}
-
-		// Clear this to make cookies smaller.
-		tok.AccessToken = ""
-
-		v := &CookieValue{
-			Reg:           reg.String(),
-			PingResp:      pr,
-			Repo:          repo,
-			TokenResponse: tok,
-		}
-		b, err := json.Marshal(v)
-		if err != nil {
-			return nil, err
-		}
-		cv := base64.URLEncoding.EncodeToString(b)
-		cookie := &http.Cookie{
-			Name:     "registry_token",
-			Value:    cv,
-			Secure:   true,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		}
-		if tok.ExpiresIn == 0 {
-			tok.ExpiresIn = 60
-		}
-		exp := time.Now().Add(time.Second * time.Duration(tok.ExpiresIn))
-		cookie.Expires = exp
-		http.SetCookie(w, cookie)
+	if t, err := h.transportFromCookie(w, r, repo, auth); err != nil {
+		log.Printf("failed to get transport from cookie: %v", err)
 	} else {
-		if debug {
-			log.Printf("restoring bearer %s", reg.String())
-		}
-		t, err = transport.OldBearer(pr, tok, reg, auth, t, scopes)
-		if err != nil {
-			return nil, err
-		}
+		opts = append(opts, remote.WithTransport(t))
 	}
 
-	return t, nil
+	if n := r.URL.Query().Get("n"); n != "" {
+		size, err := strconv.ParseInt(n, 10, 64)
+		if err != nil {
+			log.Printf("n = %s, err: %v", n, err)
+		} else {
+			opts = append(opts, remote.WithPageSize(int(size)))
+		}
+	}
+	if next := r.URL.Query().Get("next"); next != "" {
+		opts = append(opts, remote.WithNext(next))
+	}
+
+	return opts
 }
 
 func (h *handler) renderResponse(w http.ResponseWriter, r *http.Request) error {
@@ -631,7 +352,7 @@ func (h *handler) renderGoogleRepo(w http.ResponseWriter, r *http.Request, repo 
 	if err != nil {
 		return err
 	}
-	tags, err := goog.List(ref, h.googleOptions(w, r, repo)...)
+	tags, err := google.List(ref, h.googleOptions(w, r, repo)...)
 	if err != nil {
 		return err
 	}
@@ -1340,13 +1061,13 @@ func renderCreatedBy(w io.Writer, b []byte) error {
 	return nil
 }
 
-func (h *handler) treeHandler(w http.ResponseWriter, r *http.Request) {
-	if err := h.renderTree(w, r); err != nil {
-		log.Printf("renderTree: %v", err)
+func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
+	if err := h.renderIndex(w, r); err != nil {
+		log.Printf("renderIndex: %v", err)
 		fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 	}
 }
-func (h *handler) renderTree(w http.ResponseWriter, r *http.Request) error {
+func (h *handler) renderIndex(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	idx := 0
 	dig, idxs, err := h.getDigest(w, r)
@@ -1358,21 +1079,18 @@ func (h *handler) renderTree(w http.ResponseWriter, r *http.Request) error {
 	} else {
 		idx = int(parsed)
 	}
-	key := treeKey(dig.Identifier(), idx)
-	size, err := h.treeCache.Size(ctx, key)
+	key := indexKey(dig.Identifier(), idx)
+	size, err := h.indexCache.Size(ctx, key)
 	if err != nil {
-		return fmt.Errorf("treeCache.Size: %w", err)
+		return fmt.Errorf("indexCache.Size: %w", err)
 	}
-	rc, err := h.treeCache.Reader(ctx, key)
+	rc, err := h.indexCache.Reader(ctx, key)
 	if err != nil {
-		return fmt.Errorf("treeCache.Reader: %w", err)
+		return fmt.Errorf("indexCache.Reader: %w", err)
 	}
 	defer rc.Close()
 	tr := tar.NewReader(rc)
-	fs, err := h.newLayerFS(tr, size, "TODO", dig.String(), "tar+gzip")
-	if err != nil {
-		return err
-	}
+	fs := h.newLayerFS(tr, size, "TODO", dig.String(), "tar+gzip", types.MediaType("application/tar+gzip"))
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -1387,25 +1105,8 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return h.renderBlobJSON(w, r, "")
 	}
 
-	// Bit of a hack for tekton bundles...
-	if strings.HasPrefix(r.URL.Path, "/gzip/") || strings.HasPrefix(r.URL.Path, "/raw/") {
-		blob, _, err := h.fetchBlob(w, r)
-		if err != nil {
-			return err
-		}
-
-		var rc io.ReadCloser = blob
-		if strings.HasPrefix(r.URL.Path, "/gzip/") {
-			rc, err = gzip.UnzipReadCloser(blob)
-			if err != nil {
-				return err
-			}
-			defer rc.Close()
-		}
-
-		_, err = io.Copy(w, rc)
-		return err
-	}
+	qs := r.URL.Query()
+	mt := qs.Get("mt")
 
 	dig, ref, err := h.getDigest(w, r)
 	if err != nil {
@@ -1413,27 +1114,33 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	var (
-		tree soci.Tree
+		index soci.Index
 	)
-	if h.treeCache != nil {
-		tree, err = h.getTree(r.Context(), dig.Identifier())
+	if h.indexCache != nil {
+		index, err = h.getIndex(r.Context(), dig.Identifier())
 		if err != nil {
-			logs.Debug.Printf("treeCache.Tree(%q) = %v", dig.Identifier(), err)
+			logs.Debug.Printf("indexCache.Index(%q) = %v", dig.Identifier(), err)
 		} else {
-			logs.Debug.Printf("treeCache hit: %s", dig.Identifier())
+			logs.Debug.Printf("indexCache hit: %s", dig.Identifier())
+			if mt == "" {
+				toc := index.TOC()
+				if toc != nil {
+					mt = toc.MediaType
+				}
+			}
 		}
 	}
 
 	foreign := strings.HasPrefix(ref, "/http/") || strings.HasPrefix(ref, "/https/")
-	shouldIndex := tree == nil
-	if tree != nil && tree.TOC() != nil {
+	shouldIndex := index == nil
+	if index != nil && index.TOC() != nil {
 		opts := []remote.Option{}
 		if !foreign {
 			// Skip the ping for foreign layers.
 			opts = h.remoteOptions(w, r, dig.Context().Name())
 		}
 
-		opts = append(opts, remote.WithSize(tree.TOC().Csize))
+		opts = append(opts, remote.WithSize(index.TOC().Csize))
 
 		cachedUrl := ""
 		cookie, err := r.Cookie("redirect")
@@ -1521,7 +1228,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		// We never saw a non-nil Body, we can do the range.
 		prefix := strings.TrimPrefix(ref, "/")
 		logs.Debug.Printf("prefix = %s", prefix)
-		fs := soci.FS(tree, blob, prefix, dig.String(), respTooBig)
+		fs := soci.FS(index, blob, prefix, dig.String(), respTooBig, types.MediaType(mt))
 		fs.Render = renderHeader
 		httpserve.FileServer(httpserve.FS(fs)).ServeHTTP(w, r)
 
@@ -1538,9 +1245,9 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 
 	logs.Debug.Printf("shouldIndex: %t", shouldIndex)
 	if shouldIndex {
-		ocw, err := h.treeCache.Writer(r.Context(), treeKey(dig.Identifier(), 0))
+		ocw, err := h.indexCache.Writer(r.Context(), indexKey(dig.Identifier(), 0))
 		if err != nil {
-			return fmt.Errorf("treeCache.Writer: %w", err)
+			return fmt.Errorf("indexCache.Writer: %w", err)
 		}
 		defer ocw.Close()
 		zw, err := ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
@@ -1556,14 +1263,11 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		}
 		cw := &and.WriteCloser{bw, flushClose}
 
-		indexer, _, err := soci.NewTreeIndexer(blob, cw, spanSize)
+		indexer, _, err := soci.NewIndexer(blob, cw, spanSize, mt)
 		if err != nil {
 			return fmt.Errorf("TODO: don't return this error: %w", err)
 		}
-		fs, err := h.newLayerFS(indexer, size, ref, dig.String(), indexer.Type())
-		if err != nil {
-			return err
-		}
+		fs := h.newLayerFS(indexer, size, ref, dig.String(), indexer.Type(), types.MediaType(mt))
 		httpserve.FileServer(fs).ServeHTTP(w, r)
 
 		for {
@@ -1580,14 +1284,14 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if h.cache != nil {
-			key := treeKey(dig.Identifier(), 0)
-			if err := h.cache.Put(r.Context(), key, toc); err != nil {
+		if h.tocCache != nil {
+			key := indexKey(dig.Identifier(), 0)
+			if err := h.tocCache.Put(r.Context(), key, toc); err != nil {
 				logs.Debug.Printf("cache.Put(%q) = %v", key, err)
 			}
 		}
 
-		logs.Debug.Printf("tree size: %d", indexer.Size())
+		logs.Debug.Printf("index size: %d", indexer.Size())
 
 		return nil
 	}
@@ -1598,11 +1302,7 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 	if kind == "tar" {
 		// TODO: Remove newLayerFS entirely?
-		fs, err := h.newLayerFS(tar.NewReader(pr), size, ref, dig.String(), kind)
-		if err != nil {
-			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
-			return err
-		}
+		fs := h.newLayerFS(tar.NewReader(pr), size, ref, dig.String(), kind, types.MediaType(mt))
 
 		// Allow this to be cached for an hour.
 		w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -1612,8 +1312,6 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	qs := r.URL.Query()
-	mt := qs.Get("mt")
 	if mt != "" && !strings.Contains(mt, ".layer.") {
 		// Avoid setting this for steve's artifacts stupidity.
 		w.Header().Set("Content-Type", mt)
@@ -1696,6 +1394,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 		digest := layer.Digest
 		urls := layer.URLs
 		layerRef := dig.Context().Digest(layer.Digest.String())
+		mediaType := layer.MediaType
 
 		if digest.String() == emptyDigest {
 			// TODO: Non-targz should fail gracefully.
@@ -1704,18 +1403,18 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 
 		g.Go(func() error {
 			var (
-				tree soci.Tree
-				err  error
+				index soci.Index
+				err   error
 			)
-			if h.treeCache != nil {
-				tree, err = h.getTree(r.Context(), digest.String())
+			if h.indexCache != nil {
+				index, err = h.getIndex(r.Context(), digest.String())
 				if err != nil {
-					logs.Debug.Printf("treeCache.Tree(%q) = %v", digest.String(), err)
+					logs.Debug.Printf("indexCache.Index(%q) = %v", digest.String(), err)
 				} else {
-					logs.Debug.Printf("treeCache hit: %s", digest.String())
+					logs.Debug.Printf("indexCache hit: %s", digest.String())
 				}
 			}
-			if tree == nil {
+			if index == nil {
 				l, err := remote.Layer(layerRef)
 				if err != nil {
 					return err
@@ -1725,16 +1424,16 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 					return err
 				}
 
-				tree, err = h.createTree(r.Context(), rc, size, digest.String(), 0)
+				index, err = h.createIndex(r.Context(), rc, size, digest.String(), 0, string(mediaType))
 				if err != nil {
-					return fmt.Errorf("createTree: %w", err)
+					return fmt.Errorf("createIndex: %w", err)
 				}
-				if tree == nil {
+				if index == nil {
 					return nil
 				}
 			}
 
-			fs, err := h.createFs(w, r, ref, layerRef, tree, size, urls, opts)
+			fs, err := h.createFs(w, r, ref, layerRef, index, size, mediaType, urls, opts)
 			if err != nil {
 				return err
 			}
@@ -1759,6 +1458,103 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 
 	httpserve.FileServer(httpserve.FS(mfs)).ServeHTTP(w, r)
 
+	return nil
+}
+
+func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, mediaType types.MediaType, size int64, f httpserve.File, ctype string) error {
+	stat, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
+		return err
+	}
+
+	filename := strings.TrimPrefix(fname, "/"+prefix)
+	filename = strings.TrimPrefix(filename, "/")
+
+	header, ok := stat.Sys().(*tar.Header)
+	if ok {
+		filename = header.Name
+	} else {
+		if !stat.IsDir() {
+			logs.Debug.Printf("not a tar header or directory")
+		}
+	}
+
+	tarflags := "tar -Ox "
+	if kind == "tar+gzip" {
+		tarflags = "tar -Oxz "
+	} else if kind == "tar+zstd" {
+		tarflags = "tar --zstd -Ox "
+	}
+
+	hash, err := v1.NewHash(ref.Identifier())
+	if err != nil {
+		return err
+	}
+
+	filelink := filename
+
+	// Compute links for JQ
+	fprefix := ""
+	if strings.HasPrefix(filename, "./") {
+		fprefix = "./"
+	}
+	filename = strings.TrimSuffix(filename, "/")
+	dir := path.Dir(filename)
+	if dir != "." {
+		base := path.Base(filename)
+		sep := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(filename, fprefix), dir), base)
+
+		href := path.Join(prefix, dir)
+		htext := fprefix + dir + sep
+
+		logs.Debug.Printf("dir=%q, sep=%q, base=%q, href=%q, htext=%q", dir, sep, base, href, htext)
+		dirlink := fmt.Sprintf(`<a class="mt" href="/%s">%s</a>`, href, htext)
+		filelink = dirlink + base
+	}
+
+	data := HeaderData{
+		Repo:      ref.Context().String(),
+		Reference: ref.String(),
+		Descriptor: &v1.Descriptor{
+			Size:      size,
+			Digest:    hash,
+			MediaType: mediaType,
+		},
+		Handler:       handlerForMT(string(mediaType)),
+		MediaTypeLink: getLink(string(mediaType)),
+		Up: &RepoParent{
+			Parent:    ref.Context().String(),
+			Separator: "@",
+			Child:     ref.Identifier(),
+		},
+		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filelink,
+	}
+	if ctype == "application/octet-stream" {
+		truncate := int64(1 << 15)
+		if stat.Size() > truncate {
+			data.JQ = data.JQ + fmt.Sprintf(" | head -c %d", truncate)
+		}
+		data.JQ = data.JQ + " | xxd"
+	}
+
+	if stat.IsDir() {
+		tarflags = "tar -tv "
+		if kind == "tar+gzip" {
+			tarflags = "tar -tvz "
+		} else if kind == "tar+zstd" {
+			tarflags = "tar --zstd -tv "
+		}
+
+		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + filelink
+	}
+
+	if err := bodyTmpl.Execute(w, data); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1820,19 +1616,19 @@ func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType typ
 	return nil
 }
 
-func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, prefix string, idx int) (soci.Tree, error) {
-	key := treeKey(prefix, idx)
+func (h *handler) createIndex(ctx context.Context, rc io.ReadCloser, size int64, prefix string, idx int, mediaType string) (soci.Index, error) {
+	key := indexKey(prefix, idx)
 	if debug {
-		logs.Debug.Printf("createTree(%q)", key, idx)
+		logs.Debug.Printf("createIndex(%q)", key, idx)
 		start := time.Now()
 		defer func() {
-			log.Printf("createTree(%q) (%s)", key, time.Since(start))
+			log.Printf("createIndex(%q) (%s)", key, time.Since(start))
 		}()
 	}
 
-	ocw, err := h.treeCache.Writer(ctx, key)
+	ocw, err := h.indexCache.Writer(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("treeCache.Writer: %w", err)
+		return nil, fmt.Errorf("indexCache.Writer: %w", err)
 	}
 	defer ocw.Close()
 
@@ -1851,7 +1647,7 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 	}
 	cw := &and.WriteCloser{bw, flushClose}
 
-	indexer, _, err := soci.NewTreeIndexer(rc, cw, spanSize)
+	indexer, _, err := soci.NewIndexer(rc, cw, spanSize, mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("TODO: don't return this error: %w", err)
 	}
@@ -1869,21 +1665,21 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 	if err != nil {
 		return nil, fmt.Errorf("TOC: %w", err)
 	}
-	if h.cache != nil {
-		if err := h.cache.Put(ctx, key, toc); err != nil {
+	if h.tocCache != nil {
+		if err := h.tocCache.Put(ctx, key, toc); err != nil {
 			logs.Debug.Printf("cache.Put(%q) = %v", key, err)
 		}
 	}
-	logs.Debug.Printf("tree size: %d", indexer.Size())
+	logs.Debug.Printf("index size: %d", indexer.Size())
 
 	if err := ocw.Close(); err != nil {
 		return nil, fmt.Errorf("ocw.Close: %w", err)
 	}
 
-	return h.getTreeIndex(ctx, prefix, idx)
+	return h.getIndexN(ctx, prefix, idx)
 }
 
-func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, tree soci.Tree, size int64, urls []string, opts []remote.Option) (*soci.SociFS, error) {
+func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, dig name.Digest, index soci.Index, size int64, mt types.MediaType, urls []string, opts []remote.Option) (*soci.SociFS, error) {
 	if opts == nil {
 		opts = h.remoteOptions(w, r, dig.Context().Name())
 	}
@@ -1897,7 +1693,7 @@ func (h *handler) createFs(w http.ResponseWriter, r *http.Request, ref string, d
 
 	// We never saw a non-nil Body, we can do the range.
 	prefix := strings.TrimPrefix(ref, "/")
-	fs := soci.FS(tree, blob, prefix, dig.String(), respTooBig)
+	fs := soci.FS(index, blob, prefix, dig.String(), respTooBig, mt)
 	fs.Render = renderHeader
 	return fs, nil
 }
@@ -2105,7 +1901,7 @@ func getBlobQuery(r *http.Request) (string, bool) {
 }
 
 func splitFsURL(p string) (string, string, error) {
-	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/gzip/", "/raw/", "/blob/", "/json/", "/cache/"} {
+	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/blob/", "/json/", "/cache/"} {
 		if strings.HasPrefix(p, prefix) {
 			return strings.TrimPrefix(p, prefix), prefix, nil
 		}
@@ -2114,42 +1910,37 @@ func splitFsURL(p string) (string, string, error) {
 	return "", "", fmt.Errorf("unexpected path: %v", p)
 }
 
-type RedirectCookie struct {
-	Digest string
-	Url    string
-}
-
 // 5 MB.
 const threshold = (1 << 20) * 5
 
-func treeKey(prefix string, idx int) string {
+func indexKey(prefix string, idx int) string {
 	return fmt.Sprintf("%s.%d", prefix, idx)
 }
 
-func (h *handler) getTree(ctx context.Context, prefix string) (soci.Tree, error) {
+func (h *handler) getIndex(ctx context.Context, prefix string) (soci.Index, error) {
 	start := time.Now()
 	defer func() {
-		logs.Debug.Printf("getTree(%q) (%s)", prefix, time.Since(start))
+		logs.Debug.Printf("getIndex(%q) (%s)", prefix, time.Since(start))
 	}()
-	return h.getTreeIndex(ctx, prefix, 0)
+	return h.getIndexN(ctx, prefix, 0)
 }
 
-func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (tree soci.Tree, err error) {
-	key := treeKey(prefix, idx)
-	bs := &cacheSeeker{h.treeCache, key}
+func (h *handler) getIndexN(ctx context.Context, prefix string, idx int) (index soci.Index, err error) {
+	key := indexKey(prefix, idx)
+	bs := &cacheSeeker{h.indexCache, key}
 
 	var (
 		toc  *soci.TOC
 		size int64
 	)
 	// Avoid calling cache.Size if we can.
-	if h.cache != nil {
-		toc, err = h.cache.Get(ctx, key)
+	if h.tocCache != nil {
+		toc, err = h.tocCache.Get(ctx, key)
 		if err != nil {
 			logs.Debug.Printf("cache.Get(%q) = %v", key, err)
 			defer func() {
 				if err == nil {
-					if err := h.cache.Put(ctx, key, tree.TOC()); err != nil {
+					if err := h.tocCache.Put(ctx, key, index.TOC()); err != nil {
 						logs.Debug.Printf("cache.Put(%q) = %v", key, err)
 					}
 				}
@@ -2160,43 +1951,33 @@ func (h *handler) getTreeIndex(ctx context.Context, prefix string, idx int) (tre
 		}
 	}
 
-	// Handle in-memory tree under a certain size.
+	// Handle in-memory index under a certain size.
 	if size == 0 {
-		size, err = h.treeCache.Size(ctx, key)
+		size, err = h.indexCache.Size(ctx, key)
 		if err != nil {
-			return nil, fmt.Errorf("treeCache.Size: %w", err)
+			return nil, fmt.Errorf("indexCache.Size: %w", err)
 		}
 	}
 	if size <= threshold {
-		return soci.NewTree(bs, toc, nil)
+		return soci.NewIndex(bs, toc, nil)
 	}
 
-	// Tree is too big to hold in memory, fetch or create an index of the index.
-	sub, err := h.getTreeIndex(ctx, prefix, idx+1)
+	// Index is too big to hold in memory, fetch or create an index of the index.
+	sub, err := h.getIndexN(ctx, prefix, idx+1)
 	if err != nil {
-		logs.Debug.Printf("getTreeIndex(%q, %d) = %v", prefix, idx+1, err)
-		rc, err := h.treeCache.Reader(ctx, key)
+		logs.Debug.Printf("getIndexN(%q, %d) = %v", prefix, idx+1, err)
+		rc, err := h.indexCache.Reader(ctx, key)
 		if err != nil {
-			return nil, fmt.Errorf("treeCache.Reader: %w", err)
+			return nil, fmt.Errorf("indexCache.Reader: %w", err)
 		}
-		sub, err = h.createTree(ctx, rc, size, prefix, idx+1)
+		sub, err = h.createIndex(ctx, rc, size, prefix, idx+1, "application/tar+gzip")
 		if err != nil {
-			return nil, fmt.Errorf("createTree(%q, %d): %w", prefix, idx+1, err)
+			return nil, fmt.Errorf("createIndex(%q, %d): %w", prefix, idx+1, err)
 		}
 		if sub == nil {
-			return nil, fmt.Errorf("createTree returned nil, not a tar.gz file")
+			return nil, fmt.Errorf("createIndex returned nil, not a tar.gz file")
 		}
 	}
 
-	return soci.NewTree(bs, toc, sub)
-}
-
-type cacheSeeker struct {
-	cache cache
-	key   string
-}
-
-func (bs *cacheSeeker) Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error) {
-	logs.Debug.Printf("cacheSeeker.Reader(%d, %d)", off, end)
-	return bs.cache.RangeReader(ctx, bs.key, off, end-off)
+	return soci.NewIndex(bs, toc, sub)
 }
