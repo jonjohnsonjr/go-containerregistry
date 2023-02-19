@@ -36,12 +36,12 @@ type MultiFS struct {
 
 	ref name.Reference
 
-	Render    RenderDir
-	MediaType types.MediaType
-	Size      int64
+	render RenderDir
+	mt     types.MediaType
+	size   int64
 }
 
-func NewMultiFS(fss []*SociFS, prefix string, ref name.Reference) *MultiFS {
+func NewMultiFS(fss []*SociFS, prefix string, ref name.Reference, render RenderDir, size int64, mt types.MediaType) *MultiFS {
 	filtered := []*SociFS{}
 	for _, fs := range fss {
 		if fs != nil {
@@ -52,6 +52,9 @@ func NewMultiFS(fss []*SociFS, prefix string, ref name.Reference) *MultiFS {
 		fss:    filtered,
 		prefix: prefix,
 		ref:    ref,
+		render: render,
+		size:   size,
+		mt:     mt,
 	}
 }
 
@@ -62,7 +65,7 @@ func (s *MultiFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.
 		return err
 	}
 	if stat.IsDir() {
-		return s.Render(w, fname, s.prefix, s.MediaType, s.Size, s.ref, f, ctype)
+		return s.render(w, fname, s.prefix, s.mt, s.size, s.ref, f, ctype)
 	}
 
 	if s.lastFs == nil {
@@ -198,11 +201,6 @@ func (s *multiFile) Stat() (fs.FileInfo, error) {
 
 func (s *multiFile) Read(p []byte) (int, error) {
 	logs.Debug.Printf("multifs.Read(%q)", s.name)
-	return 0, fmt.Errorf("should not be called")
-}
-
-func (s *multiFile) Seek(offset int64, whence int) (int64, error) {
-	logs.Debug.Printf("multifs.Seek(%q)", s.name)
 	return 0, fmt.Errorf("should not be called")
 }
 
@@ -584,7 +582,10 @@ func (s *sociFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		fm := *s.fm
 		fm.Name = "."
 
-		return []fs.DirEntry{s.fs.dirEntry("", &fm)}, nil
+		return []fs.DirEntry{
+			s.fs.dirEntry("..", nil),
+			s.fs.dirEntry("", &fm),
+		}, nil
 	}
 	return s.fs.ReadDir(s.name)
 }

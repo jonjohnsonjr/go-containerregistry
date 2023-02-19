@@ -1448,10 +1448,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	prefix := strings.TrimPrefix(ref, "/")
-	mfs := soci.NewMultiFS(fss, prefix, dig)
-	mfs.Render = renderDir
-	mfs.Size = desc.Size
-	mfs.MediaType = desc.MediaType
+	mfs := soci.NewMultiFS(fss, prefix, dig, renderDir, desc.Size, desc.MediaType)
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")

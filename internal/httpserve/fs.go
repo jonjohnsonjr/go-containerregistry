@@ -185,7 +185,17 @@ func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, rende
 		http.Error(w, "Error reading directory", http.StatusInternalServerError)
 		return
 	}
-	sort.Slice(dirs, func(i, j int) bool { return dirs.name(i) < dirs.name(j) })
+	less := func(i, j int) bool {
+		in, jn := dirs.name(i), dirs.name(j)
+		if in == ".." {
+			return true
+		} else if jn == ".." {
+			return false
+		}
+
+		return in < jn
+	}
+	sort.Slice(dirs, less)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -271,10 +281,14 @@ func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL, uprefix st
 	// TODO: Figure out why layerFs and soci fs are different here
 	if header.Linkname != "" {
 		logs.Debug.Printf("name=%q, linkname=%q, uprefix: %q", name, header.Linkname, uprefix)
-		if containsDotDot(header.Linkname) {
+		if header.Linkname == "." {
+			u.Path = path.Dir(u.Path)
+		} else if containsDotDot(header.Linkname) {
 			u.Path = strings.TrimPrefix(header.Linkname, "/")
-		} else {
+		} else if strings.HasPrefix(header.Linkname, "/") || header.Typeflag == tar.TypeLink {
 			u.Path = path.Join(uprefix, header.Linkname)
+		} else {
+			u.Path = path.Join("..", header.Linkname)
 		}
 		if header.Typeflag == tar.TypeLink {
 			name += " link to " + header.Linkname
