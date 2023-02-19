@@ -74,6 +74,8 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 	} else if kind == "tar" {
 		i.zr = &countReader{pr, 0}
 		i.tr = tar.NewReader(i.zr)
+	} else {
+		return nil, pr, nil
 	}
 
 	i.toc.Type = kind

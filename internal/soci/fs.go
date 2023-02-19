@@ -285,15 +285,20 @@ type BlobSeeker interface {
 }
 
 func FS(index Index, bs BlobSeeker, prefix string, ref string, maxSize int64, mt types.MediaType) *SociFS {
-	return &SociFS{
+	fs := &SociFS{
 		index:   index,
-		files:   index.TOC().Files,
 		bs:      bs,
 		maxSize: maxSize,
 		prefix:  prefix,
 		ref:     ref,
 		mt:      mt,
 	}
+	if index != nil {
+		if toc := index.TOC(); toc != nil {
+			fs.files = toc.Files
+		}
+	}
+	return fs
 }
 
 type RenderFunc func(w http.ResponseWriter, fname string, prefix string, ref name.Reference, kind string, mediaType types.MediaType, size int64, f httpserve.File, ctype string) error

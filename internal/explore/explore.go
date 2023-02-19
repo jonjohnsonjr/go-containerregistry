@@ -1516,6 +1516,9 @@ func (h *handler) createIndex(ctx context.Context, rc io.ReadCloser, size int64,
 	if err != nil {
 		return nil, fmt.Errorf("TODO: don't return this error: %w", err)
 	}
+	if indexer == nil {
+		return nil, nil
+	}
 	for {
 		// Make sure we hit the end.
 		_, err := indexer.Next()
