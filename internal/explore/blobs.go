@@ -16,11 +16,10 @@ package explore
 import (
 	"bufio"
 	"bytes"
+	ogzip "compress/gzip"
 	"fmt"
 	"io"
 	"log"
-
-	ogzip "compress/gzip"
 
 	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/zstd"

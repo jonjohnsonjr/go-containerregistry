@@ -874,7 +874,6 @@ func ExtractFile(ctx context.Context, bs BlobSeeker, index *Index, tf *TOCFile) 
 	from := index.Checkpoints[0]
 	discard := int64(0)
 	for i, c := range index.Checkpoints {
-		logs.Debug.Printf("%s", c.String())
 		if c.Out > tf.Offset {
 			discard = tf.Offset - from.Out
 			break
@@ -891,7 +890,6 @@ func ExtractFile(ctx context.Context, bs BlobSeeker, index *Index, tf *TOCFile) 
 
 	end := index.Csize
 	for _, c := range index.Checkpoints {
-		logs.Debug.Printf("%s", c.String())
 		if c.Out > uend {
 			end = c.In
 			break

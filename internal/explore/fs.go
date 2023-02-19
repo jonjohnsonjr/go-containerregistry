@@ -28,12 +28,7 @@ import (
 	"time"
 	"unsafe"
 
-	ogzip "compress/gzip"
-
-	"github.com/google/go-containerregistry/internal/and"
-	"github.com/google/go-containerregistry/internal/gzip"
 	"github.com/google/go-containerregistry/internal/httpserve"
-	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -63,122 +58,36 @@ type withSize interface {
 
 // Implements http.FileSystem.
 type layerFS struct {
-	// The HTTP request that originated this filesystem, useful for resetting.
-	req *http.Request
-	w   http.ResponseWriter
-	h   *handler
-
-	index bool
-	iw    io.WriteCloser
-
-	ref      string
-	digest   string
-	rc       io.ReadCloser
-	tr       tarReader
-	headers  []*tar.Header
-	complete bool
+	ref     string
+	digest  string
+	tr      tarReader
+	headers []*tar.Header
 
 	blobRef string
 	size    int64
 	kind    string
 }
 
-func (h *handler) newLayerFS(w http.ResponseWriter, r *http.Request, index bool, iw io.WriteCloser) (*layerFS, error) {
+func (h *handler) newLayerFS(tr tarReader, size int64, ref string) (*layerFS, error) {
 	fs := &layerFS{
-		req:   r,
-		w:     w,
-		iw:    iw,
-		h:     h,
-		index: index,
+		tr:      tr,
+		size:    size,
+		ref:     ref,
+		blobRef: ref,
 	}
 
-	if err := fs.reset(); err != nil {
-		return nil, err
+	chunks := strings.SplitN(ref, "@", 2)
+	fs.digest = chunks[1]
+
+	if len(chunks) != 2 {
+		return nil, fmt.Errorf("not enough chunks: %s", ref)
 	}
+	fs.headers = []*tar.Header{}
 
 	return fs, nil
 }
 
-// refetches the blob in case FileServer has sent us over the edge
 func (fs *layerFS) reset() error {
-	debugf("reset %s", fs.req.URL.String())
-	blob, ref, err := fs.h.fetchBlob(fs.w, fs.req)
-	if err != nil {
-		return err
-	}
-
-	if fs.size, err = blob.Size(); err != nil {
-		logs.Debug.Printf("reset(): Size(): %v", err)
-	}
-
-	logs.Debug.Printf("blob %T", blob)
-	ok, pr, err := gzip.Peek(blob)
-	var rc io.ReadCloser
-	rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
-	if err != nil {
-		log.Printf("gzip.Peek(%q) = %v", ref, err)
-	}
-	if ok {
-		logs.Debug.Printf("it is gzip!")
-		if fs.index {
-			if fs.iw != nil {
-				rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
-			} else {
-				rc, err = soci.NewIndexer(rc, spanSize)
-			}
-		} else {
-			rc, err = ogzip.NewReader(rc)
-		}
-		if err != nil {
-			return err
-		}
-	} else {
-		ok, pr, err := tarPeek(rc)
-		rc = &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}
-		if err != nil {
-			log.Printf("tarPeek(%q) = %v", ref, err)
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("tarPeek(%q): not a tar file", ref)
-		}
-		logs.Debug.Printf("it is tar!")
-
-		if fs.iw != nil {
-			rc, err = soci.NewTreeIndexer(rc, fs.iw, spanSize)
-		}
-
-	}
-
-	if fs.rc != nil {
-		if err := fs.rc.Close(); err != nil {
-			log.Printf("layerFs(%q).rc.Close() = %v", ref, err)
-		}
-	}
-
-	fs.rc = rc
-
-	if idx, ok := rc.(*soci.TreeIndexer); ok {
-		logs.Debug.Printf("it is tree indexer!")
-		fs.tr = idx
-	} else if idx, ok := rc.(*soci.Indexer); ok {
-		logs.Debug.Printf("it is indexer!")
-		fs.tr = idx
-	} else {
-		fs.tr = tar.NewReader(rc)
-	}
-
-	fs.ref = ref
-
-	chunks := strings.SplitN(ref, "@", 2)
-	if len(chunks) != 2 {
-		return fmt.Errorf("not enough chunks: %s", ref)
-	}
-	fs.digest = chunks[1]
-	if !fs.complete {
-		fs.headers = []*tar.Header{}
-	}
-
 	return nil
 }
 
@@ -294,13 +203,6 @@ func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve
 	return renderHeader(w, fname, strings.Trim(fs.ref, "/"), ref, fs.kind, fs.size, f, ctype)
 }
 
-func (fs *layerFS) Close() error {
-	if fs.rc == nil {
-		return nil
-	}
-	return fs.rc.Close()
-}
-
 // TODO: Check to see if we hit tr or rc EOF and reset.
 func (fs *layerFS) Open(original string) (httpserve.File, error) {
 	name := strings.TrimPrefix(original, fs.ref)
@@ -315,63 +217,6 @@ func (fs *layerFS) Open(original string) (httpserve.File, error) {
 
 	debugf("Open(%q) -> Open(%q)", original, name)
 
-	if fs.complete {
-		found := false
-		debugf("headers len: %d", len(fs.headers))
-		// we already have headers, don't hit the tar reader
-		for _, header := range fs.headers {
-			if path.Clean("/"+header.Name) == name {
-				debugf("cached Open(%q): %s %d %s %s %s", name, typeStr(header.Typeflag), header.Size, header.ModTime, header.Name, header.Linkname)
-				if header.Typeflag == tar.TypeDir {
-					debugf("is a dir")
-					return &layerFile{
-						name:   name,
-						header: header,
-						fs:     fs,
-					}, nil
-				} else {
-					debugf("not a dir")
-					found = true
-				}
-			}
-		}
-
-		if !found {
-			// FileServer is trying to find index.html, but it doesn't exist in the image.
-			// TODO: What if there _is_ an index.html in the root FS?
-			if path.Base(name) == "index.html" {
-				return nil, fmt.Errorf("nope: %s", name)
-			}
-
-			chased, err := fs.chase(name, 0)
-			if err == nil {
-				if chased.Typeflag == tar.TypeDir {
-					debugf("chase(%s) -> %s, dir", name, chased.Name)
-					return &layerFile{
-						name:   chased.Name,
-						header: chased,
-						fs:     fs,
-					}, nil
-				}
-				debugf("chase(%s) -> %s, falling through", name, chased.Name)
-				name = path.Clean("/" + chased.Name)
-			} else {
-				// We didn't find the entry in the tarball, so we're probably trying to list
-				// a file or directory that does not exist.
-				return &layerFile{
-					name: name,
-					fs:   fs,
-				}, nil
-			}
-
-		}
-	}
-
-	if fs.tr == nil {
-		if err := fs.reset(); err != nil {
-			return nil, err
-		}
-	}
 	size := 0
 	// Scan through the layer, looking for a matching tar.Header.Name.
 	for {
@@ -691,30 +536,12 @@ func (f *layerFile) Readdir(count int) ([]os.FileInfo, error) {
 				continue
 			}
 
-			// For links, we need to handle hardlinks and symlinks.
-			link := hdr.Linkname
-			debugf("name = %q, hdr.Linkname = %q, dir = %q", name, link, dir)
-
-			// For symlinks, assume relative paths.
-			if hdr.Typeflag == tar.TypeSymlink {
-				if !path.IsAbs(hdr.Linkname) {
-					link = path.Clean(path.Join(path.Dir(name), link))
-				}
-				debugf("symlink: %v -> %v", hdr.Linkname, link)
-			}
-
-			// For hardlinks, assume absolute paths. This seems to hold up.
-			if hdr.Typeflag == tar.TypeLink {
-				link = path.Clean("/" + link)
-
-				debugf("hardlink: %v -> %v", hdr.Linkname, link)
-			}
-
 			// The symlink struct handles magic names for making things work.
 			fi = symlink{
 				FileInfo: fi,
 				name:     fi.Name(),
-				link:     link,
+				link:     hdr.Linkname,
+				typeflag: hdr.Typeflag,
 			}
 			fis = append(fis, fi)
 		}
@@ -842,15 +669,16 @@ func (f fileInfo) Sys() interface{} {
 
 type symlink struct {
 	os.FileInfo
-	name string
-	link string
+	name     string
+	link     string
+	typeflag byte
 }
 
 // We want the UI to show that this is a symlink, but we also want it to work!
 // This isn't just a display name, this is the actual name that we need to
 // handle later when FileServer attempts to open the file.
 func (s symlink) Name() string {
-	return fmt.Sprintf("%s -> %s", s.name, s.link)
+	return s.name
 }
 
 // Helpful for debugging in logs what kind of entry was in the tar header.

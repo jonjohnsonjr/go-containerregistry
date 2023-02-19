@@ -46,7 +46,6 @@ import (
 	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/internal/soci"
 	"github.com/google/go-containerregistry/internal/verify"
-	"github.com/google/go-containerregistry/internal/zstd"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -74,9 +73,6 @@ func whitespaceRepl(in []byte) []byte {
 type handler struct {
 	mux    *http.ServeMux
 	remote []remote.Option
-
-	// Stupid hack because I'm too lazy to refactor.
-	blobs map[*http.Request]*sizeBlob
 
 	// digest -> remote.desc
 	manifests map[string]*remote.Descriptor
@@ -302,7 +298,6 @@ func buildTreeCache() cache {
 func New(opts ...Option) http.Handler {
 	h := handler{
 		mux:       http.NewServeMux(),
-		blobs:     map[*http.Request]*sizeBlob{},
 		manifests: map[string]*remote.Descriptor{},
 		pings:     map[string]*transport.PingResp{},
 		sawTags:   map[string][]string{},
@@ -1372,13 +1367,13 @@ func (h *handler) renderTree(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return fmt.Errorf("treeCache.Reader: %w", err)
 	}
-	h.blobs[r] = &sizeBlob{rc, size}
-	fs, err := h.newLayerFS(w, r, false, nil)
+	defer rc.Close()
+	tr := tar.NewReader(rc)
+	fs, err := h.newLayerFS(tr, size, "TODO")
 	if err != nil {
 		return err
 	}
 	fs.blobRef = dig.String()
-	defer fs.Close()
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -1542,124 +1537,82 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	size := blob.size
 	var rc io.ReadCloser = blob
 
-	kind := "tar"
-
-	ok, pr, err := gztarPeek(blob)
-	if err != nil {
-		log.Printf("gztarPeek(%q): %v", ref, err)
-	}
-
-	if ok {
-		// TODO: Clean this up.
-		// We are letting this fall through later so that in reset() we start indexing.
-		logs.Debug.Printf("it is targz")
-		kind = "targz"
-	} else {
-		logs.Debug.Printf("Peeking gzip")
-		ok, pr, err = gzip.Peek(pr)
+	logs.Debug.Printf("shouldIndex: %t", shouldIndex)
+	if shouldIndex {
+		ocw, err := h.treeCache.Writer(r.Context(), treeKey(dig.Identifier(), 0))
 		if err != nil {
-			log.Printf("gzip.Peek(%q): %v", ref, err)
+			return fmt.Errorf("treeCache.Writer: %w", err)
 		}
-
-		rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
-		if ok {
-			logs.Debug.Printf("it is gzip")
-			rc, err = gzip.UnzipReadCloser(rc)
-			if err != nil {
+		defer ocw.Close()
+		zw, err := ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
+		if err != nil {
+			return err
+		}
+		bw := bufio.NewWriterSize(zw, 1<<16)
+		flushClose := func() error {
+			if err := bw.Flush(); err != nil {
 				return err
 			}
-		} else {
-			rc = &and.ReadCloser{Reader: pr, CloseFunc: blob.Close}
-			logs.Debug.Printf("Peeking zstd")
-			ok, pr, err = zstdPeek(pr)
-			if err != nil {
-				log.Printf("zstdPeek(%q): %v", ref, err)
-			}
-			if ok {
-				shouldIndex = false
-				kind = "zstd"
-				logs.Debug.Printf("it is zstd")
-				rc, err = zstd.UnzipReadCloser(rc)
-				if err != nil {
-					return err
-				}
-			}
+			return zw.Close()
 		}
-		logs.Debug.Printf("Peeking tar")
-		ok, pr, err = tarPeek(rc)
-	}
-	if ok {
-		logs.Debug.Printf("it is tar")
-		if kind == "zstd" {
-			kind = "tarzstd"
-		}
-		// Cache this for layerFS.reset() so we don't have to re-fetch it.
-		h.blobs[r] = &sizeBlob{&and.ReadCloser{Reader: pr, CloseFunc: rc.Close}, size}
+		cw := &and.WriteCloser{bw, flushClose}
 
-		var cw io.WriteCloser
-		if shouldIndex {
-			ocw, err := h.treeCache.Writer(r.Context(), treeKey(dig.Identifier(), 0))
-			if err != nil {
-				logs.Debug.Printf("treeCache.Writer: %v", err)
-			} else {
-				defer ocw.Close()
-				zw, err := ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
-				if err != nil {
-					return err
-				}
-				bw := bufio.NewWriterSize(zw, 1<<16)
-				flushClose := func() error {
-					if err := bw.Flush(); err != nil {
-						return err
-					}
-					return zw.Close()
-				}
-				cw = &and.WriteCloser{bw, flushClose}
+		indexer, _, err := soci.NewTreeIndexer(blob, cw, spanSize)
+		if err != nil {
+			return fmt.Errorf("TODO: don't return this error: %w", err)
+		}
+		fs, err := h.newLayerFS(indexer, size, ref)
+		if err != nil {
+			return err
+		}
+		fs.blobRef = dig.String()
+		httpserve.FileServer(fs).ServeHTTP(w, r)
+
+		for {
+			// Make sure we hit the end.
+			_, err := indexer.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				return fmt.Errorf("indexer.Next: %w", err)
 			}
 		}
-		fs, err := h.newLayerFS(w, r, shouldIndex, cw)
+
+		toc, err := indexer.TOC()
+		if err != nil {
+			return err
+		}
+		if h.cache != nil {
+			key := treeKey(dig.Identifier(), 0)
+			if err := h.cache.Put(r.Context(), key, toc); err != nil {
+				logs.Debug.Printf("cache.Put(%q) = %v", key, err)
+			}
+		}
+
+		logs.Debug.Printf("tree size: %d", indexer.Size())
+
+		return nil
+	}
+
+	kind, pr, _, err := soci.Peek(rc)
+	if err != nil {
+		return fmt.Errorf("TODO: don't return this error: %w", err)
+	}
+	if kind == "tar" {
+		// TODO: Remove newLayerFS entirely?
+		fs, err := h.newLayerFS(tar.NewReader(pr), size, ref)
 		if err != nil {
 			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
 			return err
 		}
 		fs.kind = kind
 		fs.blobRef = dig.String()
-		defer fs.Close()
 
 		// Allow this to be cached for an hour.
 		w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
 		httpserve.FileServer(fs).ServeHTTP(w, r)
 
-		// TODO: Make it so we can do this incrementally.
-		if shouldIndex {
-			if indexer, ok := fs.tr.(*soci.TreeIndexer); ok {
-				logs.Debug.Printf("got tree indexer")
-				for {
-					// Make sure we hit the end.
-					_, err := indexer.Next()
-					if errors.Is(err, io.EOF) {
-						break
-					} else if err != nil {
-						return err
-					}
-				}
-
-				toc, err := indexer.TOC()
-				if err != nil {
-					return err
-				}
-				if h.cache != nil {
-					key := treeKey(dig.Identifier(), 0)
-					if err := h.cache.Put(r.Context(), key, toc); err != nil {
-						logs.Debug.Printf("cache.Put(%q) = %v", key, err)
-					}
-				}
-				logs.Debug.Printf("tree size: %d", indexer.Size())
-			} else {
-				logs.Debug.Printf("not tree indexer, got: %T", fs.tr)
-			}
-		}
 		return nil
 	}
 
@@ -1685,8 +1638,8 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
-	seek := &sizeSeeker{pr, size, ref, nil, false}
-	httpserve.ServeContent(w, r, "", time.Time{}, seek)
+	seek := &sizeSeeker{rc, size, ref, nil, false}
+	httpserve.ServeContent(w, r, "", time.Time{}, seek, nil)
 
 	return nil
 }
@@ -1916,7 +1869,7 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 	}
 	cw := &and.WriteCloser{bw, flushClose}
 
-	indexer, err := soci.NewTreeIndexer(blob, cw, spanSize)
+	indexer, _, err := soci.NewTreeIndexer(blob, cw, spanSize)
 	if err != nil {
 		return nil, fmt.Errorf("soci.NewTreeIndexer: %w", err)
 	}
@@ -2050,12 +2003,6 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 	ref := strings.Join([]string{chunks[0], digest}, "@")
 	if ref == "" {
 		return nil, "", fmt.Errorf("bad ref: %s", path)
-	}
-
-	// The first layerFS.reset() will hit this.
-	if rc, ok := h.blobs[r]; ok {
-		delete(h.blobs, r)
-		return rc, root + ref, err
 	}
 
 	if root == "/http/" || root == "/https/" {

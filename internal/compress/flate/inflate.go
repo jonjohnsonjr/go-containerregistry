@@ -9,14 +9,11 @@ package flate
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"math"
 	"math/bits"
 	"strconv"
 	"sync"
-
-	"github.com/google/go-containerregistry/pkg/logs"
 )
 
 const (
@@ -964,8 +961,24 @@ type Checkpoint struct {
 	Empty bool `json:"empty,omitempty"`
 }
 
-func (c *Checkpoint) String() string {
-	return fmt.Sprintf("In=%d, Out=%d, B=%x, NB=%x", c.In, c.Out, c.B, c.NB)
+func (c *Checkpoint) History() []byte {
+	return c.Hist
+}
+
+func (c *Checkpoint) SetHistory(b []byte) {
+	c.Hist = b
+}
+
+func (c *Checkpoint) IsEmpty() bool {
+	return c.Empty
+}
+
+func (c *Checkpoint) BytesRead() int64 {
+	return c.In
+}
+
+func (c *Checkpoint) BytesWritten() int64 {
+	return c.Out
 }
 
 // NewReaderWithSpans is a hack.
@@ -986,7 +999,6 @@ func NewReaderWithSpans(r io.Reader, span int64, start int64, updates chan<- *Ch
 }
 
 func Continue(r io.Reader, from *Checkpoint, span int64, updates chan<- *Checkpoint) io.ReadCloser {
-	logs.Debug.Printf("flate.Continue: %v", from)
 	fixedHuffmanDecoderInit()
 
 	var f decompressor

@@ -42,14 +42,14 @@ func main() {
 	flag.Parse()
 
 	logs.Trace.SetOutput(os.Stderr)
-	logs.Trace.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	logs.Trace.SetFlags(log.Lshortfile | log.Ldate | log.Ltime | log.Lmicroseconds)
 
 	if *verbose {
 		logs.Debug.SetOutput(os.Stderr)
-		logs.Debug.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+		logs.Debug.SetFlags(log.Lshortfile | log.Ldate | log.Ltime | log.Lmicroseconds)
 	}
 
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	log.SetFlags(log.Lshortfile | log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Print("starting explore.ggcr.dev")
 	//logs.Debug.SetOutput(os.Stderr)
 

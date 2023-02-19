@@ -163,7 +163,9 @@ type withLayer interface {
 	Layer() string
 }
 
-func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) {
+func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, render renderFunc) {
+	logs.Debug.Printf("fname: %q", fname)
+	prefix := fname
 	// Prefer to use ReadDir instead of Readdir,
 	// because the former doesn't require calling
 	// Stat on every entry of a directory on Unix.
@@ -194,6 +196,20 @@ func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) 
 	}
 	showlayer := strings.HasPrefix(r.URL.Path, "/layers")
 
+	fstat, err := f.Stat()
+	if err != nil {
+		logs.Debug.Printf("fstat: %v", err)
+	} else {
+		logs.Debug.Printf("fstat.Name: %q", fstat.Name())
+		header, ok := fstat.Sys().(*tar.Header)
+		if ok {
+			logs.Debug.Printf("need to trim %q", header.Name)
+			prefix = strings.TrimSuffix(prefix, strings.TrimSuffix(header.Name, "/"))
+		}
+	}
+
+	logs.Debug.Printf("prefix: %q", prefix)
+
 	fmt.Fprintf(w, "<pre>\n")
 	for i, n := 0, dirs.len(); i < n; i++ {
 		name := dirs.name(i)
@@ -211,13 +227,13 @@ func dirList(w http.ResponseWriter, r *http.Request, f File, render renderFunc) 
 		if info == nil {
 			fmt.Fprintf(w, "<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
 		} else {
-			fmt.Fprint(w, tarList(dirs.layer(i), showlayer, info, url))
+			fmt.Fprint(w, tarList(dirs.layer(i), showlayer, info, url, prefix))
 		}
 	}
 	fmt.Fprintf(w, "</pre>\n")
 }
 
-func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL) string {
+func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL, uprefix string) string {
 	prefix := "        "
 
 	header, ok := fi.Sys().(*tar.Header)
@@ -253,7 +269,13 @@ func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL) string {
 	}
 	name := fi.Name()
 	// TODO: Figure out why layerFs and soci fs are different here
-	if header.Linkname != "" && !strings.Contains(name, " -> ") {
+	if header.Linkname != "" {
+		logs.Debug.Printf("name=%q, linkname=%q, uprefix: %q", name, header.Linkname, uprefix)
+		if containsDotDot(header.Linkname) {
+			u.Path = strings.TrimPrefix(header.Linkname, "/")
+		} else {
+			u.Path = path.Join(uprefix, header.Linkname)
+		}
 		if header.Typeflag == tar.TypeLink {
 			name += " link to " + header.Linkname
 		} else {
@@ -341,7 +363,7 @@ func typeStr(t byte) byte {
 // ServeContent uses it to handle requests using If-Match, If-None-Match, or If-Range.
 //
 // Note that *os.File implements the io.ReadSeeker interface.
-func ServeContent(w http.ResponseWriter, req *http.Request, name string, modtime time.Time, content io.ReadSeeker) {
+func ServeContent(w http.ResponseWriter, req *http.Request, name string, modtime time.Time, content io.ReadSeeker, render renderFunc) {
 	sizeFunc := func() (int64, error) {
 		size, err := content.Seek(0, io.SeekEnd)
 		if err != nil {
@@ -353,7 +375,7 @@ func ServeContent(w http.ResponseWriter, req *http.Request, name string, modtime
 		}
 		return size, nil
 	}
-	serveContent(w, req, name, modtime, sizeFunc, content, nil)
+	serveContent(w, req, name, modtime, sizeFunc, content, render)
 }
 
 // errSeeker is returned by ServeContent's sizeFunc when the content
@@ -865,7 +887,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, fs FileSystem, name strin
 			return
 		}
 		setLastModified(w, d.ModTime())
-		dirList(w, r, f, render)
+		dirList(w, r, name, f, render)
 		return
 	}
 
