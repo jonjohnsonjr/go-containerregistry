@@ -138,6 +138,7 @@ type anyDirs interface {
 	layer(i int) string
 	whiteout(i int) string
 	overwritten(i int) string
+	index(i int) int
 }
 
 type fileInfoDirs []fs.FileInfo
@@ -149,6 +150,7 @@ func (d fileInfoDirs) info(i int) (fs.FileInfo, error) { return d[i], nil }
 func (d fileInfoDirs) layer(i int) string              { return "" }
 func (d fileInfoDirs) whiteout(i int) string           { return "" }
 func (d fileInfoDirs) overwritten(i int) string        { return "" }
+func (d fileInfoDirs) index(i int) int                 { return 0 }
 
 type dirEntryDirs []fs.DirEntry
 
@@ -174,6 +176,12 @@ func (d dirEntryDirs) overwritten(i int) string {
 	}
 	return ""
 }
+func (d dirEntryDirs) index(i int) int {
+	if se, ok := d[i].(sociEntry); ok {
+		return se.Index()
+	}
+	return 0
+}
 
 type withLayer interface {
 	Layer() string
@@ -182,6 +190,7 @@ type withLayer interface {
 type sociEntry interface {
 	Whiteout() string
 	Overwritten() string
+	Index() int
 }
 
 func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, render renderFunc) {
@@ -217,8 +226,17 @@ func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, rende
 		if in == jn {
 			iw, jw := dirs.whiteout(i), dirs.whiteout(j)
 			io, jo := dirs.overwritten(i), dirs.overwritten(j)
+			ii, ji := dirs.index(i), dirs.index(j)
 
-			return (iw == "" && jw != "") || (io == "" && jo != "")
+			iStays := iw == "" && io == ""
+			jStrike := jw != "" || jo != ""
+			if iStays && jStrike {
+				return true
+			}
+
+			if ji != ii {
+				return ii < ji
+			}
 		}
 
 		return in < jn

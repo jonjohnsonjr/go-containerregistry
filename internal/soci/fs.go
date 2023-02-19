@@ -25,7 +25,7 @@ import (
 // More than enough for FileServer to Peek at file contents.
 const bufferLen = 2 << 16
 
-var up *sociDirEntry = &sociDirEntry{nil, "..", nil, "", ""}
+var up *sociDirEntry = &sociDirEntry{nil, "..", nil, "", "", 0}
 
 type RenderDir func(w http.ResponseWriter, fname string, prefix string, mediaType types.MediaType, size int64, ref name.Reference, f httpserve.File, ctype string) error
 
@@ -219,13 +219,13 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		de = append(de, up)
 	}
 	subdir := strings.TrimSuffix(strings.TrimPrefix(s.name, "./"), "/")
-	for _, sfs := range s.fs.fss {
+	for i, sfs := range s.fs.fss {
 		dc := sfs.readDir(subdir)
-		for i := range dc.realDirs {
-			realDirs[i] = struct{}{}
+		for d := range dc.realDirs {
+			realDirs[d] = struct{}{}
 		}
-		for i := range dc.implicitDirs {
-			implicitDirs[i] = sfs
+		for d := range dc.implicitDirs {
+			implicitDirs[d] = sfs
 		}
 		for _, got := range dc.entries {
 			name := got.Name()
@@ -238,6 +238,7 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 			if !ok {
 				return nil, fmt.Errorf("this shouldn't happen: %q", name)
 			}
+			sde.layerIndex = i
 			opq, sawOpaque := whiteouts[".wh..wh..opq"]
 			if sawOpaque {
 				logs.Debug.Printf("multifs.ReadDir(%q): saw opaque whiteout %q", opq)
@@ -251,6 +252,7 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 				}
 				logs.Debug.Printf("%q was overwritten by %q", name, source)
 				sde.overwritten = source
+				have[name] = sfs.ref
 			} else {
 				have[name] = sfs.ref
 			}
@@ -652,6 +654,9 @@ type sociDirEntry struct {
 	whiteout string
 	// If set, the file that overwrote this file.
 	overwritten string
+
+	// Set by multifs for sorting overwritten files
+	layerIndex int
 }
 
 func (s *sociDirEntry) Name() string {
@@ -701,6 +706,10 @@ func (s *sociDirEntry) Whiteout() string {
 
 func (s *sociDirEntry) Overwritten() string {
 	return s.overwritten
+}
+
+func (s *sociDirEntry) Index() int {
+	return s.layerIndex
 }
 
 // If we don't have a file, make up a dir.
