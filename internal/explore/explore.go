@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	"compress/gzip"
 	ogzip "compress/gzip"
 
 	"github.com/google/go-containerregistry/internal/and"
@@ -923,144 +924,6 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 	return nil
 }
 
-type Schema1History struct {
-	V1Compatibility string `json:"v1Compatibility"`
-}
-
-type Schema1 struct {
-	History []Schema1History `json:"history"`
-}
-
-type Config struct {
-	Cmd []string `json:"Cmd"`
-}
-
-type Compat struct {
-	ContainerConfig Config `json:"container_config"`
-}
-
-// TODO: Dedupe
-func renderDockerfileSchema1(w io.Writer, b []byte) error {
-	m := Schema1{}
-	if err := json.Unmarshal(b, &m); err != nil {
-		return err
-	}
-
-	args := []string{}
-	for i := len(m.History) - 1; i >= 0; i-- {
-		compat := m.History[i]
-		var sb strings.Builder
-		c := Compat{}
-		if err := json.Unmarshal([]byte(compat.V1Compatibility), &c); err != nil {
-			return err
-		}
-
-		cb := strings.Join(c.ContainerConfig.Cmd, " ")
-
-		// Attempt to handle weird ARG stuff.
-		maybe := strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c #(nop)"))
-		if before, after, ok := strings.Cut(maybe, "ARG "); ok && before == "" {
-			args = append(args, after)
-		} else if strings.HasPrefix(cb, "|") {
-			if _, cb, ok = strings.Cut(cb, " "); ok {
-				for _, arg := range args {
-					cb = strings.TrimSpace(strings.TrimPrefix(cb, arg))
-				}
-
-				// Hack around array syntax.
-				if !strings.HasPrefix(cb, "/bin/sh -c ") {
-					cb = "/bin/sh -c " + cb
-				}
-			}
-		}
-		if err := renderCreatedBy(&sb, []byte(cb)); err != nil {
-			return err
-		}
-		if _, err := sb.Write([]byte("\n\n")); err != nil {
-			return err
-		}
-		if _, err := w.Write([]byte(sb.String())); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func renderDockerfile(w io.Writer, b []byte) error {
-	cf, err := v1.ParseConfigFile(bytes.NewReader(b))
-	if err != nil {
-		return err
-	}
-
-	args := []string{}
-	for _, hist := range cf.History {
-		var sb strings.Builder
-		cb := hist.CreatedBy
-
-		// Attempt to handle weird ARG stuff.
-		maybe := strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c #(nop)"))
-		if before, after, ok := strings.Cut(maybe, "ARG "); ok && before == "" {
-			args = append(args, after)
-		} else if strings.HasPrefix(cb, "|") {
-			if _, cb, ok = strings.Cut(cb, " "); ok {
-				for _, arg := range args {
-					cb = strings.TrimSpace(strings.TrimPrefix(cb, arg))
-				}
-
-				// Hack around array syntax.
-				if !strings.HasPrefix(cb, "/bin/sh -c ") {
-					cb = "/bin/sh -c " + cb
-				}
-			}
-		}
-		if err := renderCreatedBy(&sb, []byte(cb)); err != nil {
-			return err
-		}
-		if _, err := sb.Write([]byte("\n\n")); err != nil {
-			return err
-		}
-		if _, err := w.Write([]byte(sb.String())); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-const (
-	winPrefix = `powershell -Command $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';`
-	linPrefix = `/bin/sh -c`
-)
-
-func renderCreatedBy(w io.Writer, b []byte) error {
-	// Heuristically try to format this correctly.
-	for _, prefix := range []string{linPrefix, winPrefix} {
-		b = bytes.TrimPrefix(b, []byte(prefix+" #(nop)"))
-		if bytes.HasPrefix(b, []byte(prefix)) {
-			b = bytes.Replace(b, []byte(prefix), []byte("RUN"), 1)
-		}
-	}
-	b = bytes.ReplaceAll(b, []byte(" \t"), []byte(" \\\n\t"))
-	b = bytes.ReplaceAll(b, []byte("&&\t"), []byte("\\\n&&\t"))
-	b = whitespaceRegex.ReplaceAllFunc(b, whitespaceRepl)
-	b = bytes.TrimSpace(b)
-	if bytes.HasPrefix(b, []byte("EXPOSE")) {
-		// Turn the map version into the dockerfile version
-		b = bytes.TrimSuffix(b, []byte("]"))
-		b = bytes.Replace(b, []byte("map["), []byte(""), 1)
-		b = bytes.ReplaceAll(b, []byte(":{}"), []byte(""))
-	}
-	if bytes.HasPrefix(b, []byte("|")) {
-		if _, after, ok := bytes.Cut(b, []byte("/bin/sh -c")); ok {
-			b = []byte("RUN")
-			b = append(b, after...)
-		}
-	}
-	if _, err := w.Write(b); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderIndex(w, r); err != nil {
 		log.Printf("renderIndex: %v", err)
@@ -1072,8 +935,9 @@ func (h *handler) renderIndex(w http.ResponseWriter, r *http.Request) error {
 	idx := 0
 	dig, idxs, err := h.getDigest(w, r)
 	if err != nil {
-		return err
+		return fmt.Errorf("getDigest: %w", err)
 	}
+	prefix := fmt.Sprintf("/cache/%s/%s", idxs, dig.String())
 	if parsed, err := strconv.ParseInt(idxs, 10, 64); err != nil {
 		logs.Debug.Printf("ParseInt(%q)", idxs)
 	} else {
@@ -1089,8 +953,12 @@ func (h *handler) renderIndex(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("indexCache.Reader: %w", err)
 	}
 	defer rc.Close()
-	tr := tar.NewReader(rc)
-	fs := h.newLayerFS(tr, size, "TODO", dig.String(), "tar+gzip", types.MediaType("application/tar+gzip"))
+	zr, err := gzip.NewReader(rc)
+	if err != nil {
+		return fmt.Errorf("gzip.NewReader: %w", err)
+	}
+	tr := tar.NewReader(zr)
+	fs := h.newLayerFS(tr, size, prefix, dig.String(), "tar+gzip", types.MediaType("application/tar+gzip"))
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -1530,12 +1398,12 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 		},
 		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filelink,
 	}
-	if ctype == "application/octet-stream" {
-		truncate := int64(1 << 15)
-		if stat.Size() > truncate {
-			data.JQ = data.JQ + fmt.Sprintf(" | head -c %d", truncate)
+	truncate := int64(1 << 15)
+	if stat.Size() > truncate {
+		data.JQ = data.JQ + fmt.Sprintf(" | head -c %d", truncate)
+		if ctype == "application/octet-stream" {
+			data.JQ = data.JQ + " | xxd"
 		}
-		data.JQ = data.JQ + " | xxd"
 	}
 
 	if stat.IsDir() {

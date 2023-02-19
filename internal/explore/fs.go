@@ -32,7 +32,7 @@ import (
 )
 
 // Lots of debugging that we don't want to compile into the binary.
-const debug = false
+const debug = true
 
 func debugf(s string, i ...interface{}) {
 	if debug {
@@ -61,6 +61,7 @@ type layerFS struct {
 }
 
 func (h *handler) newLayerFS(tr tarReader, size int64, prefix, ref, kind string, mt types.MediaType) *layerFS {
+	logs.Debug.Printf("size: %d, prefix: %q, ref: %q, kind: %q", size, prefix, ref, kind)
 	return &layerFS{
 		tr:      tr,
 		size:    size,
@@ -81,6 +82,7 @@ func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve
 }
 
 func (fs *layerFS) Open(original string) (httpserve.File, error) {
+	logs.Debug.Printf("Open(%q)", original)
 	name := strings.TrimPrefix(original, fs.prefix)
 
 	var found httpserve.File

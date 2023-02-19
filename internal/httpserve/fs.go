@@ -845,6 +845,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, fs FileSystem, name strin
 
 	f, err := fs.Open(name)
 	if err != nil {
+		logs.Debug.Printf("serveFile: %v", err)
 		msg, code := toHTTPError(err)
 		http.Error(w, msg, code)
 		return
@@ -853,6 +854,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, fs FileSystem, name strin
 
 	d, err := f.Stat()
 	if err != nil {
+		logs.Debug.Printf("serveFile: %v", err)
 		msg, code := toHTTPError(err)
 		http.Error(w, msg, code)
 		return
@@ -1020,6 +1022,7 @@ func (f ioFS) Open(name string) (File, error) {
 	}
 	file, err := f.fsys.Open(name)
 	if err != nil {
+		logs.Debug.Printf("serveFile: %v", err)
 		return nil, mapOpenError(err, name, '/', func(path string) (fs.FileInfo, error) {
 			return fs.Stat(f.fsys, path)
 		})
