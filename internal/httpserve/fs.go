@@ -285,10 +285,10 @@ func tarList(layer string, showlayer bool, fi fs.FileInfo, u url.URL, uprefix st
 			u.Path = path.Dir(u.Path)
 		} else if containsDotDot(header.Linkname) {
 			u.Path = strings.TrimPrefix(header.Linkname, "/")
-		} else if strings.HasPrefix(header.Linkname, "/") || header.Typeflag == tar.TypeLink {
+		} else if strings.HasPrefix(header.Linkname, "/") {
 			u.Path = path.Join(uprefix, header.Linkname)
 		} else {
-			u.Path = path.Join("..", header.Linkname)
+			u.Path = path.Join(u.Path, "..", header.Linkname)
 		}
 		if header.Typeflag == tar.TypeLink {
 			name += " link to " + header.Linkname
