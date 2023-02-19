@@ -1369,11 +1369,10 @@ func (h *handler) renderTree(w http.ResponseWriter, r *http.Request) error {
 	}
 	defer rc.Close()
 	tr := tar.NewReader(rc)
-	fs, err := h.newLayerFS(tr, size, "TODO")
+	fs, err := h.newLayerFS(tr, size, "TODO", dig.String(), "tar+gzip")
 	if err != nil {
 		return err
 	}
-	fs.blobRef = dig.String()
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -1561,11 +1560,10 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return fmt.Errorf("TODO: don't return this error: %w", err)
 		}
-		fs, err := h.newLayerFS(indexer, size, ref)
+		fs, err := h.newLayerFS(indexer, size, ref, dig.String(), indexer.Type())
 		if err != nil {
 			return err
 		}
-		fs.blobRef = dig.String()
 		httpserve.FileServer(fs).ServeHTTP(w, r)
 
 		for {
@@ -1600,13 +1598,11 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 	}
 	if kind == "tar" {
 		// TODO: Remove newLayerFS entirely?
-		fs, err := h.newLayerFS(tar.NewReader(pr), size, ref)
+		fs, err := h.newLayerFS(tar.NewReader(pr), size, ref, dig.String(), kind)
 		if err != nil {
 			// TODO: Try to detect if we guessed wrong about /blobs/ vs /manifests/ and redirect?
 			return err
 		}
-		fs.kind = kind
-		fs.blobRef = dig.String()
 
 		// Allow this to be cached for an hour.
 		w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -1833,26 +1829,12 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 			log.Printf("createTree(%q) (%s)", key, time.Since(start))
 		}()
 	}
-	ok, pr, err := gztarPeek(bufio.NewReaderSize(rc, 1<<16))
-	if err != nil {
-		return nil, fmt.Errorf("peek: %w", err)
-	}
-	if !ok {
-		logs.Debug.Printf("not targz")
-
-		ok, pr, err = tarPeek(pr)
-		if !ok {
-			logs.Debug.Printf("not tar either")
-			return nil, nil
-		}
-	}
-
-	blob := &and.ReadCloser{Reader: pr, CloseFunc: rc.Close}
 
 	ocw, err := h.treeCache.Writer(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("treeCache.Writer: %w", err)
 	}
+	defer ocw.Close()
 
 	zw, err := ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
 	if err != nil {
@@ -1869,9 +1851,9 @@ func (h *handler) createTree(ctx context.Context, rc io.ReadCloser, size int64, 
 	}
 	cw := &and.WriteCloser{bw, flushClose}
 
-	indexer, _, err := soci.NewTreeIndexer(blob, cw, spanSize)
+	indexer, _, err := soci.NewTreeIndexer(rc, cw, spanSize)
 	if err != nil {
-		return nil, fmt.Errorf("soci.NewTreeIndexer: %w", err)
+		return nil, fmt.Errorf("TODO: don't return this error: %w", err)
 	}
 	for {
 		// Make sure we hit the end.

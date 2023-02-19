@@ -58,30 +58,23 @@ type withSize interface {
 
 // Implements http.FileSystem.
 type layerFS struct {
-	ref     string
-	digest  string
+	prefix  string
 	tr      tarReader
 	headers []*tar.Header
 
-	blobRef string
-	size    int64
-	kind    string
+	ref  string
+	size int64
+	kind string
 }
 
-func (h *handler) newLayerFS(tr tarReader, size int64, ref string) (*layerFS, error) {
+func (h *handler) newLayerFS(tr tarReader, size int64, prefix, ref, kind string) (*layerFS, error) {
 	fs := &layerFS{
-		tr:      tr,
-		size:    size,
-		ref:     ref,
-		blobRef: ref,
+		tr:     tr,
+		size:   size,
+		prefix: prefix,
+		ref:    ref,
 	}
 
-	chunks := strings.SplitN(ref, "@", 2)
-	fs.digest = chunks[1]
-
-	if len(chunks) != 2 {
-		return nil, fmt.Errorf("not enough chunks: %s", ref)
-	}
 	fs.headers = []*tar.Header{}
 
 	return fs, nil
@@ -115,10 +108,10 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 
 	mediaType := types.DockerUncompressedLayer
 	tarflags := "tar -Ox "
-	if kind == "targz" {
+	if kind == "tar+gzip" {
 		tarflags = "tar -Oxz "
 		mediaType = types.DockerLayer
-	} else if kind == "tarzstd" {
+	} else if kind == "tar+zstd" {
 		tarflags = "tar --zstd -Ox "
 		mediaType = types.MediaType("application/vnd.oci.image.layer.v1.tar+zstd")
 	}
@@ -177,9 +170,9 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 
 	if stat.IsDir() {
 		tarflags = "tar -tv "
-		if kind == "targz" {
+		if kind == "tar+gzip" {
 			tarflags = "tar -tvz "
-		} else if kind == "tarzstd" {
+		} else if kind == "tar+zstd" {
 			tarflags = "tar --zstd -tv "
 		}
 
@@ -196,16 +189,16 @@ func (fs *layerFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve
 	if fs.kind == "" {
 		// TODO: Do something better for indices.
 	}
-	ref, err := name.ParseReference(fs.blobRef)
+	ref, err := name.ParseReference(fs.ref)
 	if err != nil {
 		return err
 	}
-	return renderHeader(w, fname, strings.Trim(fs.ref, "/"), ref, fs.kind, fs.size, f, ctype)
+	return renderHeader(w, fname, strings.Trim(fs.prefix, "/"), ref, fs.kind, fs.size, f, ctype)
 }
 
 // TODO: Check to see if we hit tr or rc EOF and reset.
 func (fs *layerFS) Open(original string) (httpserve.File, error) {
-	name := strings.TrimPrefix(original, fs.ref)
+	name := strings.TrimPrefix(original, fs.prefix)
 
 	// This is a bit nasty. For symlinks and hardlinks, we have to handle:
 	//   "source -> target"
@@ -411,7 +404,7 @@ func (f *layerFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *layerFile) tooBig() []byte {
-	crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", f.fs.blobRef, f.name)
+	crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", f.fs.ref, f.name)
 	data := []byte("this file is too big, use crane to download it:\n\n" + crane)
 	return data
 }

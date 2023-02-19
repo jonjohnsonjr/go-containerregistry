@@ -16,8 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-containerregistry/internal/and"
-	"github.com/google/go-containerregistry/internal/compress/gzip"
 	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -220,6 +218,7 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		de = append(de, &sociDirEntry{nil, "..", nil})
 	}
 	subdir := strings.TrimSuffix(strings.TrimPrefix(s.name, "./"), "/")
+	tombstoned := false
 	for i, sfs := range s.fs.fss {
 		des, reald, implicitd, err := sfs.readDir(subdir)
 		if err != nil {
@@ -246,12 +245,13 @@ func (s *multiFile) ReadDir(n int) ([]fs.DirEntry, error) {
 				} else if strings.HasPrefix(name, ".wh.") {
 					logs.Debug.Printf("do not return whiteout %q", name)
 				} else {
+					logs.Debug.Printf("tombstoned: %t", tombstoned)
 					de = append(de, got)
 				}
 			}
 		}
 		if sawOpaque {
-			break
+			tombstoned = true
 		}
 	}
 
@@ -465,30 +465,31 @@ func (s *SociFS) readDir(original string) ([]fs.DirEntry, map[string]struct{}, m
 			de = append(de, s.dirEntry(dir, &fm))
 			continue
 		}
+		de = append(de, s.dirEntry(dir, &fm))
 
-		if !isLink(&fm) {
-			de = append(de, s.dirEntry(dir, &fm))
-			continue
-		}
+		// if !isLink(&fm) {
+		// 	de = append(de, s.dirEntry(dir, &fm))
+		// 	continue
+		// }
 
-		// For links, we need to handle hardlinks and symlinks.
-		link := fm.Linkname
+		// // For links, we need to handle hardlinks and symlinks.
+		// link := fm.Linkname
 
-		// For symlinks, assume relative paths.
-		if fm.Typeflag == tar.TypeSymlink {
-			if !path.IsAbs(fm.Linkname) {
-				link = path.Clean(path.Join(path.Dir(name), link))
-			}
-		}
+		// // For symlinks, assume relative paths.
+		// if fm.Typeflag == tar.TypeSymlink {
+		// 	if !path.IsAbs(fm.Linkname) {
+		// 		link = path.Clean(path.Join(path.Dir(name), link))
+		// 	}
+		// }
 
-		// For hardlinks, assume absolute paths. This seems to hold up.
-		if fm.Typeflag == tar.TypeLink {
-			link = path.Clean("/" + link)
-		}
+		// // For hardlinks, assume absolute paths. This seems to hold up.
+		// if fm.Typeflag == tar.TypeLink {
+		// 	link = path.Clean("/" + link)
+		// }
 
 		// The linkEntry struct handles magic names for making things work.
-		le := linkEntry{s, &fm, dir, link}
-		de = append(de, &le)
+		// le := linkEntry{s, &fm, dir, link}
+		// de = append(de, &le)
 	}
 
 	return de, realDirs, implicitDirs, nil
@@ -700,11 +701,7 @@ func (s *sociFile) ReadDir(n int) ([]fs.DirEntry, error) {
 		fm := *s.fm
 		fm.Name = "."
 
-		return []fs.DirEntry{&linkEntry{
-			fs:   s.fs,
-			fm:   &fm,
-			link: fm.Linkname,
-		}}, nil
+		return []fs.DirEntry{s.fs.dirEntry("", &fm)}, nil
 	}
 	return s.fs.ReadDir(s.name)
 }
@@ -763,43 +760,6 @@ func (s *sociDirEntry) Layer() string {
 	return ""
 }
 
-type linkEntry struct {
-	fs   *SociFS
-	fm   *TOCFile
-	dir  string
-	link string
-}
-
-func (s *linkEntry) Layer() string {
-	if s.fs != nil {
-		return s.fs.ref
-	}
-	return ""
-}
-
-func (s *linkEntry) Name() string {
-	trimmed := strings.TrimPrefix(s.fm.Name, "./")
-	if s.dir != "" && !strings.HasPrefix(s.dir, "/") && strings.HasPrefix(trimmed, "/") {
-		trimmed = strings.TrimPrefix(trimmed, "/"+s.dir+"/")
-	} else {
-		trimmed = strings.TrimPrefix(trimmed, s.dir+"/")
-	}
-	name := path.Clean(trimmed)
-	return fmt.Sprintf("%s -> %s", name, s.link)
-}
-
-func (s *linkEntry) IsDir() bool {
-	return false
-}
-
-func (s *linkEntry) Type() fs.FileMode {
-	return TarHeader(s.fm).FileInfo().Mode()
-}
-
-func (s *linkEntry) Info() (fs.FileInfo, error) {
-	return TarHeader(s.fm).FileInfo(), nil
-}
-
 // If we don't have a file, make up a dir.
 type dirInfo struct {
 	name string
@@ -847,101 +807,4 @@ type symlink struct {
 // handle later when FileServer attempts to open the file.
 func (s symlink) Name() string {
 	return fmt.Sprintf("%s -> %s", s.name, s.link)
-}
-
-func TarHeader(header *TOCFile) *tar.Header {
-	return &tar.Header{
-		Typeflag: header.Typeflag,
-		Name:     header.Name,
-		Linkname: header.Linkname,
-		Size:     header.Size,
-		Mode:     header.Mode,
-		ModTime:  header.ModTime,
-		Uid:      header.Uid,
-		Gid:      header.Gid,
-	}
-}
-
-// TODO: Make this a better API.
-func ExtractFile(ctx context.Context, bs BlobSeeker, index *Index, tf *TOCFile) (io.ReadCloser, error) {
-	logs.Debug.Printf("ExtractFile %T", bs)
-	if tf.Size == 0 {
-		return io.NopCloser(bytes.NewReader([]byte{})), nil
-	}
-
-	logs.Debug.Printf("file is at %d", tf.Offset)
-
-	from := index.Checkpoints[0]
-	discard := int64(0)
-	for i, c := range index.Checkpoints {
-		if c.Out > tf.Offset {
-			discard = tf.Offset - from.Out
-			break
-		}
-		if i == len(index.Checkpoints)-1 {
-			discard = tf.Offset - c.Out
-		}
-		from = index.Checkpoints[i]
-	}
-	start := from.In
-	uend := tf.Offset + tf.Size
-
-	logs.Debug.Printf("start=%d, uend=%d", start, uend)
-
-	end := index.Csize
-	for _, c := range index.Checkpoints {
-		if c.Out > uend {
-			end = c.In
-			break
-		}
-	}
-
-	logs.Debug.Printf("end=%d", end)
-
-	rc, err := bs.Reader(ctx, start, end)
-	if err != nil {
-		return nil, err
-	}
-
-	logs.Debug.Printf("Calling gzip.Continue")
-	r, err := gzip.Continue(rc, 1<<22, &from, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	logs.Debug.Printf("discarding %d bytes", discard)
-
-	if _, err := io.CopyN(io.Discard, r, discard); err != nil {
-		return nil, err
-	}
-
-	lr := io.LimitedReader{r, tf.Size}
-
-	logs.Debug.Printf("returning limitedreader of size %d", tf.Size)
-
-	return &and.ReadCloser{&lr, rc.Close}, nil
-}
-
-func strikethrough(s string) string {
-	var b strings.Builder
-	b.Grow(2 * len(s))
-	b.WriteRune('\u0336')
-	for _, c := range s {
-		b.WriteRune(c)
-		b.WriteRune('\u0336')
-	}
-
-	return b.String()
-}
-
-func unstrikethrough(s string) string {
-	var b strings.Builder
-	b.Grow(len(s) / 2)
-	for _, c := range s {
-		if c != '\u0336' {
-			b.WriteRune(c)
-		}
-	}
-
-	return b.String()
 }

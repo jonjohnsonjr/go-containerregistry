@@ -2,6 +2,7 @@ package soci
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,87 +13,10 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/internal/and"
-	"github.com/google/go-containerregistry/internal/compress/flate"
 	"github.com/google/go-containerregistry/internal/compress/gzip"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/klauspost/compress/zstd"
 )
-
-type TOC struct {
-	// TODO: Move these so files/checkpoints can be streamingly parsed.
-	// metadata.json?
-	Csize int64 `json:"csize,omitempty"`
-	Usize int64 `json:"usize,omitempty"`
-	Ssize int64 `json:"ssize,omitempty"`
-
-	// TODO: Files as jsonlines in separate file.
-	Files []TOCFile `json:"files,omitempty"`
-
-	// TODO: Checkpoints as jsonlines in separate file.
-	Checkpoints []*flate.Checkpoint `json:"checkpoints,omitempty"`
-
-	ArchiveSize int64 `json:"asize,omitempty"`
-	Size        int64 `json:"size,omitempty"`
-
-	Type string `json:"type,omitempty"`
-}
-
-func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {
-	if len(toc.Checkpoints) == 0 {
-		return &Checkpointer{
-			checkpoint: &flate.Checkpoint{
-				Empty: true,
-			},
-			tf:    tf,
-			start: tf.Offset,
-			end:   tf.Offset + tf.Size,
-		}
-	}
-	from := toc.Checkpoints[0]
-	discard := int64(0)
-	index := 0
-	for i, c := range toc.Checkpoints {
-		if c.BytesWritten() > tf.Offset {
-			discard = tf.Offset - from.BytesWritten()
-			break
-		}
-		if i == len(toc.Checkpoints)-1 {
-			discard = tf.Offset - c.BytesWritten()
-		}
-		from = toc.Checkpoints[i]
-		index = i
-	}
-	start := from.BytesRead()
-	uend := tf.Offset + tf.Size
-
-	logs.Debug.Printf("start=%d, uend=%d", start, uend)
-
-	end := toc.Csize
-	for _, c := range toc.Checkpoints {
-		if c.BytesWritten() > uend {
-			end = c.BytesRead()
-			break
-		}
-	}
-
-	return &Checkpointer{
-		checkpoint: from,
-		tf:         tf,
-		index:      index,
-		start:      start,
-		end:        end,
-		discard:    discard,
-	}
-}
-
-type Checkpointer struct {
-	checkpoint *flate.Checkpoint
-	tf         *TOCFile
-	index      int
-	start      int64
-	end        int64
-	discard    int64
-}
 
 type Tree interface {
 	Dict(cp *Checkpointer) ([]byte, error)
@@ -107,6 +31,39 @@ type tree struct {
 	bs BlobSeeker
 
 	sub Tree
+}
+
+func NewTree(bs BlobSeeker, toc *TOC, sub Tree) (Tree, error) {
+	if sub == nil {
+		return NewLeaf(bs, toc)
+	}
+
+	t := &tree{
+		bs:  bs,
+		sub: sub,
+	}
+
+	if toc != nil {
+		t.toc = toc
+		return t, nil
+	}
+
+	rc, err := t.Open(tocFile)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	toc = &TOC{}
+	dec := json.NewDecoder(rc)
+	if err := dec.Decode(toc); err != nil {
+		return nil, err
+	}
+	toc.Size = dec.InputOffset()
+	t.toc = toc
+	if t.toc.Type == "" {
+		t.toc.Type = "tar+gzip"
+	}
+	return t, nil
 }
 
 func (t *tree) TOC() *TOC {
@@ -164,7 +121,7 @@ func ExtractTreeFile(ctx context.Context, t Tree, bs BlobSeeker, tf *TOCFile) (i
 		log.Printf("ExtractTreeFile(%q) (%s)", tf.Name, time.Since(start))
 	}()
 	if tf.Size == 0 {
-		return io.NopCloser(&io.LimitedReader{N: 0}), nil
+		return io.NopCloser(bytes.NewReader([]byte{})), nil
 	}
 	cp := t.TOC().Checkpoint(tf)
 	dict, err := t.Dict(cp)
@@ -228,34 +185,11 @@ func (t *tree) Locate(name string) (*TOCFile, error) {
 	return nil, fs.ErrNotExist
 }
 
-func NewTree(bs BlobSeeker, toc *TOC, sub Tree) (Tree, error) {
-	if sub == nil {
-		return NewLeaf(bs, toc)
-	}
+type Leaf struct {
+	bs BlobSeeker
 
-	t := &tree{
-		bs:  bs,
-		sub: sub,
-	}
-
-	if toc != nil {
-		t.toc = toc
-		return t, nil
-	}
-
-	rc, err := t.Open(tocFile)
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-	toc = &TOC{}
-	dec := json.NewDecoder(rc)
-	if err := dec.Decode(toc); err != nil {
-		return nil, err
-	}
-	toc.Size = dec.InputOffset()
-	t.toc = toc
-	return t, nil
+	dicts map[string][]byte
+	toc   *TOC
 }
 
 func NewLeaf(bs BlobSeeker, toc *TOC) (*Leaf, error) {
@@ -311,17 +245,13 @@ func (t *Leaf) init() error {
 			}
 			t.toc.Size = header.Size
 			t.toc.ArchiveSize = zr.UncompressedCount()
+			if t.toc.Type == "" {
+				t.toc.Type = "tar+gzip"
+			}
 		}
 	}
 
 	return nil
-}
-
-type Leaf struct {
-	bs BlobSeeker
-
-	dicts map[string][]byte
-	toc   *TOC
 }
 
 func (t *Leaf) Dict(cp *Checkpointer) ([]byte, error) {

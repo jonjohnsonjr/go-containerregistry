@@ -104,7 +104,7 @@ func (i *TreeIndexer) Next() (*tar.Header, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	f := fromTar(header)
+	f := FromTar(header)
 	f.Offset = i.zr.UncompressedCount()
 	// logs.Debug.Printf("file: %q, read: %d", header.Name, f.Offset)
 	i.toc.Files = append(i.toc.Files, *f)
@@ -136,6 +136,10 @@ func (i *TreeIndexer) Tree(bs BlobSeeker) (Tree, error) {
 
 func (i *TreeIndexer) Size() int64 {
 	return i.cw.n
+}
+
+func (i *TreeIndexer) Type() string {
+	return i.toc.Type
 }
 
 func (i *TreeIndexer) TOC() (*TOC, error) {
