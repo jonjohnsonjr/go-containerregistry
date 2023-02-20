@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/dustin/go-humanize"
+	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
@@ -74,7 +75,7 @@ func renderDockerfileSchema1(w io.Writer, b []byte) error {
 	return nil
 }
 
-func renderDockerfile(w io.Writer, b []byte, m *v1.Manifest) error {
+func renderDockerfile(w io.Writer, b []byte, m *v1.Manifest, repo name.Repository) error {
 	cf, err := v1.ParseConfigFile(bytes.NewReader(b))
 	if err != nil {
 		return err
@@ -85,12 +86,15 @@ func renderDockerfile(w io.Writer, b []byte, m *v1.Manifest) error {
 	index := -1
 	for _, hist := range cf.History {
 		digest := ""
+		href := ""
 		size := int64(0)
 		if m != nil {
 			if !hist.EmptyLayer {
 				index++
 				if index < len(m.Layers) {
-					digest = m.Layers[index].Digest.String()
+					desc := m.Layers[index]
+					digest = desc.Digest.String()
+					href = fmt.Sprintf("/fs/%s/?mt=%s", repo.Digest(digest).String(), desc.MediaType)
 					if _, after, ok := strings.Cut(digest, ":"); ok {
 						if len(after) > 8 {
 							digest = after[:8]
@@ -101,7 +105,7 @@ func renderDockerfile(w io.Writer, b []byte, m *v1.Manifest) error {
 			}
 		}
 		fmt.Fprintf(w, "<tr>\n")
-		fmt.Fprintf(w, "<td class=\"noselect\"><p><em>%s</em></p></td>\n", digest)
+		fmt.Fprintf(w, "<td class=\"noselect\"><p><a href=%q><em>%s</em></a></p></td>\n", href, digest)
 		if size != 0 {
 			human := humanize.Bytes(uint64(size))
 			fmt.Fprintf(w, "<td class=\"noselect\"><p title=\"%d bytes\">%s</p></td>\n", size, human)

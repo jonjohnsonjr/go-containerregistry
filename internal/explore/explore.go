@@ -897,7 +897,6 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		fmt.Fprintf(w, "<pre>")
 		m := v1.Manifest{}
 		if d := r.URL.Query().Get("manifest"); d != "" {
-			logs.Debug.Printf("d=%q", d)
 			dig, err := name.ParseReference(d)
 			if err != nil {
 				return err
@@ -920,7 +919,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 				logs.Debug.Printf("no manifests?")
 			}
 		}
-		if err := renderDockerfile(w, b, &m); err != nil {
+		if err := renderDockerfile(w, b, &m, ref.Context()); err != nil {
 			return nil
 		}
 		fmt.Fprintf(w, "</pre>")
