@@ -287,7 +287,7 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 	data := HeaderData{
 		Repo:      repo,
 		Reference: repo,
-		JQ:        crane + " ls " + repo,
+		JQ:        crane("ls") + " " + repo,
 	}
 	if strings.Contains(repo, "/") || (ref.RegistryStr() == name.DefaultRegistry || ref.RegistryStr() == "docker.io") {
 		fullRepo := path.Join(ref.RegistryStr(), ref.RepositoryStr())
@@ -498,7 +498,7 @@ func (h *handler) renderCatalog(w http.ResponseWriter, r *http.Request, repo str
 	data := HeaderData{
 		Repo:      repo,
 		Reference: repo,
-		JQ:        crane + " catalog " + repo,
+		JQ:        crane("catalog") + " " + repo,
 	}
 	if err := bodyTmpl.Execute(w, data); err != nil {
 		return err
@@ -623,7 +623,7 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		Handler:          handlerForMT(string(desc.MediaType)),
 		EscapedMediaType: url.QueryEscape(string(desc.MediaType)),
 		MediaTypeLink:    getLink(string(desc.MediaType)),
-		JQ:               crane + " manifest " + jqref,
+		JQ:               crane("manifest") + " " + jqref,
 	}
 
 	if strings.Contains(ref.String(), "@") && strings.Index(ref.String(), "@") < strings.Index(ref.String(), ":") {
@@ -853,7 +853,7 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 			Separator: "@",
 			Child:     ref.Identifier(),
 		},
-		JQ: crane + " blob " + ref.String(),
+		JQ: crane("blob") + " " + ref.String(),
 	}
 
 	// TODO: Can we do this in a streaming way?
@@ -1412,7 +1412,7 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 			Separator: "@",
 			Child:     ref.Identifier(),
 		},
-		JQ: crane + " blob " + ref.String() + " | " + tarflags + " " + filelink,
+		JQ: crane("blob") + " " + ref.String() + " | " + tarflags + " " + filelink,
 	}
 	truncate := int64(1 << 15)
 	if stat.Size() > truncate {
@@ -1430,7 +1430,7 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 			tarflags = "tar --zstd -tv "
 		}
 
-		data.JQ = crane + " blob " + ref.String() + " | " + tarflags + " " + filelink
+		data.JQ = crane("blob") + " " + ref.String() + " | " + tarflags + " " + filelink
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {
@@ -1488,7 +1488,7 @@ func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType typ
 			Separator: "@",
 			Child:     ref.Identifier(),
 		},
-		JQ: crane + " export " + ref.String() + " | " + tarflags + " " + filename,
+		JQ: crane("export") + " " + ref.String() + " | " + tarflags + " " + filename,
 	}
 
 	if err := bodyTmpl.Execute(w, data); err != nil {

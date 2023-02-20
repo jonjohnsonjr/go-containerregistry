@@ -153,7 +153,7 @@ func (f *layerFile) Size() int64 {
 }
 
 func (f *layerFile) tooBig() []byte {
-	crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", f.fs.ref, f.name)
+	crane := crane("blob") + f.fs.ref + " | gunzip | tar -Oxf - " + f.name
 	data := []byte("this file is too big, use crane to download it:\n\n" + crane)
 	return data
 }

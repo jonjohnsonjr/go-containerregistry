@@ -356,8 +356,24 @@ func (s *SociFS) dir(fm *TOCFile) fs.File {
 	}
 }
 
+// TODO: dedupe
+const (
+	gcrane     = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/gcrane/README.md">gcrane</a>`
+	craneLink  = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/crane/README.md">crane</a>`
+	subLinkFmt = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/crane/doc/crane_%s.md">%s</a>`
+)
+
+func crane(sub string) string {
+	if sub == "" {
+		return craneLink
+	}
+
+	subLink := fmt.Sprintf(subLinkFmt, sub, sub)
+	return craneLink + " " + subLink
+}
+
 func (s *SociFS) tooBig(fm *TOCFile) fs.File {
-	crane := fmt.Sprintf("crane blob %s | gunzip | tar -Oxf - %s", s.ref, fm.Name)
+	crane := crane("blob") + s.ref + " | gunzip | tar -Oxf - " + fm.Name
 	data := []byte("this file is too big, use crane to download it:\n\n" + crane)
 	fm.Size = int64(len(data))
 

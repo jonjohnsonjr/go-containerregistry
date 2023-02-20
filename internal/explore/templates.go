@@ -14,6 +14,7 @@
 package explore
 
 import (
+	"fmt"
 	"text/template"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -31,8 +32,20 @@ func init() {
 	oauthTmpl = template.Must(template.New("oauthTemplate").Parse(oauthTemplate))
 }
 
-const gcrane = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/gcrane/README.md">gcrane</a>`
-const crane = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/crane/README.md">crane</a>`
+const (
+	gcrane     = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/gcrane/README.md">gcrane</a>`
+	craneLink  = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/crane/README.md">crane</a>`
+	subLinkFmt = `<a class="mt" href="https://github.com/google/go-containerregistry/blob/main/cmd/crane/doc/crane_%s.md">%s</a>`
+)
+
+func crane(sub string) string {
+	if sub == "" {
+		return craneLink
+	}
+
+	subLink := fmt.Sprintf(subLinkFmt, sub, sub)
+	return craneLink + " " + subLink
+}
 
 const (
 	landingPage = `
