@@ -224,6 +224,15 @@ pre {
 
 .noselect {
 	user-select: none;
+	width: fit-content;
+	overflow-wrap: none;
+	padding-right: 1em;
+	text-align: right;
+	white-space: nowrap;
+}
+
+td {
+	vertical-align: top;
 }
 </style>
 </head>
@@ -245,7 +254,7 @@ Content-Type: {{if .MediaTypeLink}}<a class="mt" href="/{{.MediaTypeLink}}">{{.D
 {{end}}
 </div>
 {{ if .JQ }}
-<h4><span class="noselect">$ </span>{{.JQ}}</h4>
+<h4><span class="noselect">$</span>{{.JQ}}</h4>
 
 {{ end }}
 `

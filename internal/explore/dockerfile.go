@@ -3,9 +3,11 @@ package explore
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 
+	"github.com/dustin/go-humanize"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
@@ -72,16 +74,44 @@ func renderDockerfileSchema1(w io.Writer, b []byte) error {
 	return nil
 }
 
-func renderDockerfile(w io.Writer, b []byte) error {
+func renderDockerfile(w io.Writer, b []byte, m *v1.Manifest) error {
 	cf, err := v1.ParseConfigFile(bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
 
+	fmt.Fprintf(w, "<table>\n")
 	args := []string{}
+	index := -1
 	for _, hist := range cf.History {
+		digest := ""
+		size := int64(0)
+		if m != nil {
+			if !hist.EmptyLayer {
+				index++
+				if index < len(m.Layers) {
+					digest = m.Layers[index].Digest.String()
+					if _, after, ok := strings.Cut(digest, ":"); ok {
+						if len(after) > 8 {
+							digest = after[:8]
+						}
+					}
+					size = m.Layers[index].Size
+				}
+			}
+		}
+		fmt.Fprintf(w, "<tr>\n")
+		fmt.Fprintf(w, "<td class=\"noselect\"><p><em>%s</em></p></td>\n", digest)
+		if size != 0 {
+			human := humanize.Bytes(uint64(size))
+			fmt.Fprintf(w, "<td class=\"noselect\"><p title=\"%d bytes\">%s</p></td>\n", size, human)
+		} else {
+			fmt.Fprintf(w, "<td></td>\n")
+		}
+
 		var sb strings.Builder
 		cb := hist.CreatedBy
+		fmt.Fprintf(w, "<td>\n<pre>\n")
 
 		// Attempt to handle weird ARG stuff.
 		maybe := strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c #(nop)"))
@@ -108,7 +138,10 @@ func renderDockerfile(w io.Writer, b []byte) error {
 		if _, err := w.Write([]byte(sb.String())); err != nil {
 			return err
 		}
+		fmt.Fprintf(w, "</pre>\n</td>\n")
+		fmt.Fprintf(w, "</tr>\n")
 	}
+	fmt.Fprintf(w, "</table>\n")
 	return nil
 }
 

@@ -549,25 +549,17 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		desc *remote.Descriptor
 		opts []remote.Option
 	)
-	allowCache := true
-	if isGoogle(ref.Context().Registry.String()) {
-		if _, err := r.Cookie("access_token"); err == nil {
-			allowCache = false
-		}
-	}
-	if allowCache {
-		if _, ok := ref.(name.Digest); ok {
-			desc, ok = h.manifests[ref.Identifier()]
-		} else {
-			if ref.Context().Registry.String() == name.DefaultRegistry {
-				// For dockerhub, HEAD tags to avoid rate limiting
-				// since we might have things cached...
-				opts = h.remoteOptions(w, r, ref.Context().Name())
-				opts = append(opts, remote.WithMaxSize(tooBig))
-				d, err := remote.Head(ref, opts...)
-				if err == nil {
-					desc, ok = h.manifests[d.Digest.String()]
-				}
+	if _, ok := ref.(name.Digest); ok {
+		desc, ok = h.manifests[ref.Identifier()]
+	} else {
+		if ref.Context().Registry.String() == name.DefaultRegistry {
+			// For dockerhub, HEAD tags to avoid rate limiting
+			// since we might have things cached...
+			opts = h.remoteOptions(w, r, ref.Context().Name())
+			opts = append(opts, remote.WithMaxSize(tooBig))
+			d, err := remote.Head(ref, opts...)
+			if err == nil {
+				desc, ok = h.manifests[d.Digest.String()]
 			}
 		}
 	}
@@ -903,7 +895,32 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 
 	} else if r.URL.Query().Get("render") == "history" {
 		fmt.Fprintf(w, "<pre>")
-		if err := renderDockerfile(w, b); err != nil {
+		m := v1.Manifest{}
+		if d := r.URL.Query().Get("manifest"); d != "" {
+			logs.Debug.Printf("d=%q", d)
+			dig, err := name.ParseReference(d)
+			if err != nil {
+				return err
+			}
+			desc, ok := h.manifests[dig.Identifier()]
+			if !ok {
+				opts := h.remoteOptions(w, r, dig.Context().Name())
+				opts = append(opts, remote.WithMaxSize(tooBig))
+				desc, err = remote.Get(dig, opts...)
+				if err != nil {
+					return err
+				}
+				h.manifests[desc.Digest.String()] = desc
+			}
+			if desc != nil {
+				if err := json.Unmarshal(desc.Manifest, &m); err != nil {
+					return err
+				}
+			} else {
+				logs.Debug.Printf("no manifests?")
+			}
+		}
+		if err := renderDockerfile(w, b, &m); err != nil {
 			return nil
 		}
 		fmt.Fprintf(w, "</pre>")
