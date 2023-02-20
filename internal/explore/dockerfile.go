@@ -31,14 +31,14 @@ type Compat struct {
 // TODO: Dedupe
 func renderDockerfileSchema1(w io.Writer, b []byte) error {
 	m := Schema1{}
-	if err := json.Unmarshal(b, &m); err != nil {
+	err := json.Unmarshal(b, &m)
+	if err != nil {
 		return err
 	}
 
 	args := []string{}
 	for i := len(m.History) - 1; i >= 0; i-- {
 		compat := m.History[i]
-		var sb strings.Builder
 		c := Compat{}
 		if err := json.Unmarshal([]byte(compat.V1Compatibility), &c); err != nil {
 			return err
@@ -46,29 +46,8 @@ func renderDockerfileSchema1(w io.Writer, b []byte) error {
 
 		cb := strings.Join(c.ContainerConfig.Cmd, " ")
 
-		// Attempt to handle weird ARG stuff.
-		maybe := strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c #(nop)"))
-		if before, after, ok := strings.Cut(maybe, "ARG "); ok && before == "" {
-			args = append(args, after)
-		} else if strings.HasPrefix(cb, "|") {
-			if _, cb, ok = strings.Cut(cb, " "); ok {
-				for _, arg := range args {
-					cb = strings.TrimSpace(strings.TrimPrefix(cb, arg))
-				}
-
-				// Hack around array syntax.
-				if !strings.HasPrefix(cb, "/bin/sh -c ") {
-					cb = "/bin/sh -c " + cb
-				}
-			}
-		}
-		if err := renderCreatedBy(&sb, []byte(cb)); err != nil {
-			return err
-		}
-		if _, err := sb.Write([]byte("\n\n")); err != nil {
-			return err
-		}
-		if _, err := w.Write([]byte(sb.String())); err != nil {
+		args, err = renderArg(w, cb, args)
+		if err != nil {
 			return err
 		}
 	}
@@ -113,33 +92,11 @@ func renderDockerfile(w io.Writer, b []byte, m *v1.Manifest, repo name.Repositor
 			fmt.Fprintf(w, "<td></td>\n")
 		}
 
-		var sb strings.Builder
 		cb := hist.CreatedBy
 		fmt.Fprintf(w, "<td>\n<pre>\n")
 
-		// Attempt to handle weird ARG stuff.
-		maybe := strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c #(nop)"))
-		if before, after, ok := strings.Cut(maybe, "ARG "); ok && before == "" {
-			args = append(args, after)
-		} else if strings.HasPrefix(cb, "|") {
-			if _, cb, ok = strings.Cut(cb, " "); ok {
-				for _, arg := range args {
-					cb = strings.TrimSpace(strings.TrimPrefix(cb, arg))
-				}
-
-				// Hack around array syntax.
-				if !strings.HasPrefix(cb, "/bin/sh -c ") {
-					cb = "/bin/sh -c " + cb
-				}
-			}
-		}
-		if err := renderCreatedBy(&sb, []byte(cb)); err != nil {
-			return err
-		}
-		if _, err := sb.Write([]byte("\n\n")); err != nil {
-			return err
-		}
-		if _, err := w.Write([]byte(sb.String())); err != nil {
+		args, err = renderArg(w, cb, args)
+		if err != nil {
 			return err
 		}
 		fmt.Fprintf(w, "</pre>\n</td>\n")
@@ -147,6 +104,37 @@ func renderDockerfile(w io.Writer, b []byte, m *v1.Manifest, repo name.Repositor
 	}
 	fmt.Fprintf(w, "</table>\n")
 	return nil
+}
+
+func renderArg(w io.Writer, cb string, args []string) ([]string, error) {
+	var sb strings.Builder
+	// Attempt to handle weird ARG stuff.
+	maybe := strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c #(nop)"))
+	if before, after, ok := strings.Cut(maybe, "ARG "); ok && before == "" {
+		args = append(args, after)
+	} else if strings.HasPrefix(cb, "|") {
+		if _, cb, ok = strings.Cut(cb, " "); ok {
+			for _, arg := range args {
+				cb = strings.TrimSpace(strings.TrimPrefix(cb, arg))
+			}
+
+			// Hack around array syntax.
+			if !strings.HasPrefix(cb, "/bin/sh -c ") {
+				cb = "/bin/sh -c " + cb
+			}
+		}
+	}
+	if err := renderCreatedBy(&sb, []byte(cb)); err != nil {
+		return nil, err
+	}
+	if _, err := sb.Write([]byte("\n\n")); err != nil {
+		return nil, err
+	}
+	if _, err := w.Write([]byte(sb.String())); err != nil {
+		return nil, err
+	}
+
+	return args, nil
 }
 
 const (
