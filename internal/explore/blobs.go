@@ -95,11 +95,8 @@ type sizeBlob struct {
 	size int64
 }
 
-func (s *sizeBlob) Size() (int64, error) {
-	if debug {
-		log.Printf("sizeBlob.Size()")
-	}
-	return s.size, nil
+func (s *sizeBlob) Size() int64 {
+	return s.size
 }
 
 const (

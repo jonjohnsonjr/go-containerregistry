@@ -122,9 +122,6 @@ func New(opts ...Option) http.Handler {
 	h.mux.HandleFunc("/blob/", h.fsHandler)
 	h.mux.HandleFunc("/cache/", h.indexHandler)
 
-	// We know it's JSON.
-	h.mux.HandleFunc("/json/", h.fsHandler)
-
 	h.mux.HandleFunc("/oauth", h.oauthHandler)
 
 	//TODO: APK?
@@ -171,9 +168,9 @@ func (h *handler) root(w http.ResponseWriter, r *http.Request) {
 
 // Like http.Handler, but with error handling.
 func (h *handler) fsHandler(w http.ResponseWriter, r *http.Request) {
-	if err := h.renderBlob(w, r); err != nil {
+	if err := h.renderFS(w, r); err != nil {
 		if err := h.maybeOauthErr(w, r, err); err != nil {
-			log.Printf("renderBlob: %v", err)
+			log.Printf("renderFS: %v", err)
 			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 		}
 	}
@@ -266,25 +263,29 @@ func (h *handler) getTags(repo name.Repository) ([]string, bool) {
 
 // Render repo with tags linking to images.
 func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string) error {
-	qs := r.URL.Query()
 	ref, err := name.NewRepository(repo)
 	if err != nil {
 		return err
 	}
 
-	if ref.RegistryStr() == "registry.k8s.io" || ref.RegistryStr() == "mirror.gcr.io" || (isGoogle(ref.RegistryStr()) && ref.RepositoryStr() != "") {
+	reg := ref.RegistryStr()
+	shouldGoogle := reg == "registry.k8s.io" || reg == "mirror.gcr.io" || (isGoogle(reg) && ref.RepositoryStr() != "")
+	dockerHub := (strings.HasPrefix(repo, "docker.io") || strings.HasPrefix(repo, name.DefaultRegistry)) && strings.Count(repo, "/") == 1
+
+	if shouldGoogle {
 		return h.renderGoogleRepo(w, r, repo)
-	} else if ref.RepositoryStr() == "" {
+	}
+	if ref.RepositoryStr() == "" {
 		return h.renderCatalog(w, r, repo)
 	}
-	if (strings.HasPrefix(repo, "docker.io") || strings.HasPrefix(repo, name.DefaultRegistry)) && strings.Count(repo, "/") == 1 {
+	if dockerHub {
 		return h.renderDockerHub(w, r, repo)
 	}
 
 	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
 		return err
 	}
-	data := HeaderData{
+	header := HeaderData{
 		Repo:      repo,
 		Reference: repo,
 		JQ:        crane("ls") + " " + repo,
@@ -294,14 +295,14 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		base := path.Base(fullRepo)
 		dir := path.Dir(strings.TrimRight(fullRepo, "/"))
 		if base != "." && dir != "." {
-			data.Up = &RepoParent{
+			header.Up = &RepoParent{
 				Parent:    dir,
 				Child:     base,
 				Separator: "/",
 			}
 		}
 	}
-	if err := bodyTmpl.Execute(w, data); err != nil {
+	if err := bodyTmpl.Execute(w, header); err != nil {
 		return err
 	}
 
@@ -312,31 +313,15 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		repo:  repo,
 	}
 
-	var v *remote.Tags
-	if qs.Get("n") != "" {
-		v, err = remote.ListPage(ref, qs.Get("next"), h.remoteOptions(w, r, repo)...)
-		if err != nil {
+	tags, err := h.listTags(w, r, ref, repo)
+	if err != nil {
+		if tags == nil {
 			return err
 		}
-	} else {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		opts := h.remoteOptions(w, r, repo)
-		opts = append(opts, remote.WithContext(ctx))
-
-		v, err = remote.List(ref, opts...)
-		if err != nil {
-			if v != nil && errors.Is(err, context.DeadlineExceeded) {
-				fmt.Fprintf(w, "<p>deadline exceeded, returning partial response</p>\n<hr>\n")
-			} else {
-				return err
-			}
-		}
-		h.Lock()
-		h.sawTags[ref.String()] = v.Tags
-		h.Unlock()
+		fmt.Fprintf(w, "<p>returning partial response, saw error: %s</p>\n<hr>\n", err)
 	}
-	b, err := json.Marshal(v)
+
+	b, err := json.Marshal(tags)
 	if err != nil {
 		return err
 	}
@@ -346,6 +331,28 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 
 	fmt.Fprintf(w, footer)
 	return nil
+}
+
+func (h *handler) listTags(w http.ResponseWriter, r *http.Request, ref name.Repository, repo string) (tags *remote.Tags, err error) {
+	defer func() {
+		if tags != nil {
+			h.Lock()
+			h.sawTags[ref.String()] = tags.Tags
+			h.Unlock()
+		}
+	}()
+
+	qs := r.URL.Query()
+	opts := h.remoteOptions(w, r, repo)
+	if qs.Get("n") != "" {
+		return remote.ListPage(ref, qs.Get("next"), opts...)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	opts = append(opts, remote.WithContext(ctx))
+
+	return remote.List(ref, opts...)
 }
 
 func (h *handler) renderGoogleRepo(w http.ResponseWriter, r *http.Request, repo string) error {
@@ -363,9 +370,10 @@ func (h *handler) renderGoogleRepo(w http.ResponseWriter, r *http.Request, repo 
 	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
 		return err
 	}
-	data := HeaderData{
+	header := HeaderData{
 		Repo:      repo,
 		Reference: repo,
+		JQ:        gcrane + " ls --json " + repo + " | jq .",
 	}
 	if ref.RepositoryStr() == "" {
 		uri := &url.URL{
@@ -373,22 +381,20 @@ func (h *handler) renderGoogleRepo(w http.ResponseWriter, r *http.Request, repo 
 			Host:   ref.Registry.RegistryStr(),
 			Path:   "/v2/tags/list",
 		}
-		data.JQ = fmt.Sprintf("curl -sL %q | jq .", uri.String())
-	} else {
-		data.JQ = gcrane + " ls --json " + repo + " | jq ."
+		header.JQ = fmt.Sprintf("curl -sL %q | jq .", uri.String())
 	}
 	if strings.Contains(repo, "/") {
 		base := path.Base(repo)
 		dir := path.Dir(strings.TrimRight(repo, "/"))
 		if base != "." && dir != "." {
-			data.Up = &RepoParent{
+			header.Up = &RepoParent{
 				Parent:    dir,
 				Child:     base,
 				Separator: "/",
 			}
 		}
 	}
-	if err := bodyTmpl.Execute(w, data); err != nil {
+	if err := bodyTmpl.Execute(w, header); err != nil {
 		return err
 	}
 
@@ -423,10 +429,6 @@ func (h *handler) renderDockerHub(w http.ResponseWriter, r *http.Request, repo s
 	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
 		return err
 	}
-	data := HeaderData{
-		Repo:      repo,
-		Reference: repo,
-	}
 	uri := &url.URL{
 		Scheme:   "https",
 		Host:     "hub.docker.com",
@@ -439,20 +441,25 @@ func (h *handler) renderDockerHub(w http.ResponseWriter, r *http.Request, repo s
 			nextUri = next
 		}
 	}
-	data.JQ = fmt.Sprintf("curl -sL %q | jq .", nextUri)
+
+	header := HeaderData{
+		Repo:      repo,
+		Reference: repo,
+		JQ:        fmt.Sprintf("curl -sL %q | jq .", nextUri),
+	}
 
 	if strings.Contains(repo, "/") {
 		base := path.Base(repo)
 		dir := path.Dir(strings.TrimRight(repo, "/"))
 		if base != "." && dir != "." {
-			data.Up = &RepoParent{
+			header.Up = &RepoParent{
 				Parent:    dir,
 				Child:     base,
 				Separator: "/",
 			}
 		}
 	}
-	if err := bodyTmpl.Execute(w, data); err != nil {
+	if err := bodyTmpl.Execute(w, header); err != nil {
 		return err
 	}
 
@@ -495,12 +502,12 @@ func (h *handler) renderCatalog(w http.ResponseWriter, r *http.Request, repo str
 	if err := headerTmpl.Execute(w, TitleData{repo}); err != nil {
 		return err
 	}
-	data := HeaderData{
+	header := HeaderData{
 		Repo:      repo,
 		Reference: repo,
 		JQ:        crane("catalog") + " " + repo,
 	}
-	if err := bodyTmpl.Execute(w, data); err != nil {
+	if err := bodyTmpl.Execute(w, header); err != nil {
 		return err
 	}
 
@@ -539,140 +546,91 @@ func (h *handler) renderCatalog(w http.ResponseWriter, r *http.Request, repo str
 	return nil
 }
 
+func (h *handler) fetchManifest(w http.ResponseWriter, r *http.Request, ref name.Reference) (*remote.Descriptor, error) {
+	opts := h.remoteOptions(w, r, ref.Context().Name())
+	opts = append(opts, remote.WithMaxSize(tooBig))
+
+	if _, ok := ref.(name.Digest); !ok && isDockerHub(ref) {
+		// To avoid DockerHub rate limits, HEAD and rewrite ref to be a name.Digest.
+		desc, err := remote.Head(ref, opts...)
+		if err != nil {
+			return nil, err
+		}
+		ref = ref.Context().Digest(desc.Digest.String())
+	}
+	if _, ok := ref.(name.Digest); ok {
+		if desc, ok := h.manifests[ref.Identifier()]; ok {
+			return desc, nil
+		}
+	}
+
+	desc, err := remote.Get(ref, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if allowCache(r, ref) {
+		h.manifests[desc.Digest.String()] = desc
+	}
+	return desc, nil
+}
+
+// Unused, left to make it easy to test registries.
+func (h *handler) fetchManifestAndReferrersTag(w http.ResponseWriter, r *http.Request, ref name.Reference, opts []remote.Option) (desc *remote.Descriptor, err error) {
+	var g errgroup.Group
+	g.Go(func() error {
+		desc, err = h.fetchManifest(w, r, ref)
+		return err
+	})
+	if dig, ok := ref.(name.Digest); ok {
+		g.Go(func() error {
+			if _, ok := h.getTags(ref.Context()); ok {
+				return nil
+			}
+			fallback := strings.ReplaceAll(dig.Identifier(), ":", "-")
+			ref := ref.Context().Tag(fallback)
+			if _, err := remote.Head(ref, opts...); err != nil {
+				log.Printf("fallback check: %v", err)
+				return nil
+			}
+
+			h.Lock()
+			defer h.Unlock()
+			if _, ok := h.sawTags[ref.Context().String()]; ok {
+				return nil
+			}
+			h.sawTags[ref.Context().String()] = []string{fallback}
+
+			return nil
+		})
+	}
+	err = g.Wait()
+	return
+}
+
+func isDockerHub(ref name.Reference) bool {
+	return ref.Context().Registry.String() == name.DefaultRegistry
+}
+
 // Render manifests with links to blobs, manifests, etc.
 func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image string) error {
 	ref, err := name.ParseReference(image, name.WeakValidation)
 	if err != nil {
 		return err
 	}
-	var (
-		desc *remote.Descriptor
-		opts []remote.Option
-	)
-	if _, ok := ref.(name.Digest); ok {
-		desc, ok = h.manifests[ref.Identifier()]
-	} else {
-		if ref.Context().Registry.String() == name.DefaultRegistry {
-			// For dockerhub, HEAD tags to avoid rate limiting
-			// since we might have things cached...
-			opts = h.remoteOptions(w, r, ref.Context().Name())
-			opts = append(opts, remote.WithMaxSize(tooBig))
-			d, err := remote.Head(ref, opts...)
-			if err == nil {
-				desc, ok = h.manifests[d.Digest.String()]
-			}
-		}
-	}
-	if desc == nil {
-		if opts == nil {
-			opts = h.remoteOptions(w, r, ref.Context().Name())
-			opts = append(opts, remote.WithMaxSize(tooBig))
-		}
 
-		var g errgroup.Group
-		g.Go(func() error {
-			desc, err = remote.Get(ref, opts...)
-			if err != nil {
-				return err
-			}
-			h.manifests[desc.Digest.String()] = desc
-			return nil
-		})
-		if dig, ok := ref.(name.Digest); ok {
-			g.Go(func() error {
-				if _, ok := h.getTags(ref.Context()); ok {
-					return nil
-				}
-				fallback := strings.ReplaceAll(dig.Identifier(), ":", "-")
-				ref := ref.Context().Tag(fallback)
-				if _, err := remote.Head(ref, opts...); err != nil {
-					log.Printf("fallback check: %v", err)
-					return nil
-				}
-
-				h.Lock()
-				defer h.Unlock()
-				if _, ok := h.sawTags[ref.Context().String()]; ok {
-					return nil
-				}
-				h.sawTags[ref.Context().String()] = []string{fallback}
-
-				return nil
-			})
-		}
-		if err := g.Wait(); err != nil {
-			return err
-		}
-	}
-
-	jqref, err := url.PathUnescape(ref.String())
+	desc, err := h.fetchManifest(w, r, ref)
 	if err != nil {
 		return err
 	}
 
-	data := HeaderData{
-		Repo: ref.Context().String(),
-		//Reference:  url.QueryEscape(ref.String()),
-		Reference:  ref.String(),
-		CosignTags: []CosignTag{},
-		Descriptor: &v1.Descriptor{
-			Digest:    desc.Digest,
-			MediaType: desc.MediaType,
-			Size:      desc.Size,
-		},
-		Handler:          handlerForMT(string(desc.MediaType)),
-		EscapedMediaType: url.QueryEscape(string(desc.MediaType)),
-		MediaTypeLink:    getLink(string(desc.MediaType)),
-		JQ:               crane("manifest") + " " + jqref,
-	}
-
-	if strings.Contains(ref.String(), "@") && strings.Index(ref.String(), "@") < strings.Index(ref.String(), ":") {
-		chunks := strings.SplitN(ref.String(), "@", 2)
-		data.Up = &RepoParent{
-			Parent:    ref.Context().String(),
-			Child:     chunks[1],
-			Separator: "@",
-		}
-	} else if strings.Contains(ref.String(), ":") {
-		chunks := strings.SplitN(ref.String(), ":", 2)
-		data.Up = &RepoParent{
-			Parent:    ref.Context().String(),
-			Child:     chunks[1],
-			Separator: ":",
-		}
-	} else {
-		data.Up = &RepoParent{
-			Parent: ref.String(),
-		}
-	}
-	prefix := strings.Replace(desc.Digest.String(), ":", "-", 1)
-	tags, ok := h.getTags(ref.Context())
-	if ok {
-		for _, tag := range tags {
-			if tag == prefix {
-				// Referrers tag schema
-				data.CosignTags = append(data.CosignTags, CosignTag{
-					Tag:   tag,
-					Short: "referrers",
-				})
-			} else if strings.HasPrefix(tag, prefix) {
-				// Cosign tag schema
-				chunks := strings.SplitN(tag, ".", 2)
-				if len(chunks) == 2 && len(chunks[1]) != 0 {
-					data.CosignTags = append(data.CosignTags, CosignTag{
-						Tag:   tag,
-						Short: chunks[1],
-					})
-				}
-			}
-		}
-	}
+	header := h.manifestHeader(ref, desc.Descriptor)
 
 	u := *r.URL
 	if _, ok := ref.(name.Digest); ok {
 		// Allow this to be cached for an hour.
 		w.Header().Set("Cache-Control", "max-age=3600, immutable")
 	} else {
+		// Rewrite links to include digest (not tag) for better caching.
 		newImage := image + "@" + desc.Digest.String()
 		qs := u.Query()
 		qs.Set("image", newImage)
@@ -692,24 +650,24 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		pt:    r.URL.Query().Get("payloadType"),
 	}
 
-	// Mutates data for bodyTmpl.
-	b, err := h.jq(output, desc.Manifest, r, &data)
+	// Mutates header for bodyTmpl.
+	b, err := h.jq(output, desc.Manifest, r, header)
 	if err != nil {
 		return err
 	}
 
 	if r.URL.Query().Get("render") == "x509" {
 		if bytes.Count(b, []byte("-----BEGIN CERTIFICATE-----")) > 1 {
-			data.JQ += " | while openssl x509 -text -noout 2>/dev/null; do :; done"
+			header.JQ += " | while openssl x509 -text -noout 2>/dev/null; do :; done"
 		} else {
-			data.JQ += " | openssl x509 -text -noout"
+			header.JQ += " | openssl x509 -text -noout"
 		}
 	} else if r.URL.Query().Get("render") == "history" {
-		data.JQ = strings.TrimSuffix(data.JQ, " | jq .")
-		data.JQ += ` | jq '.history[] | .v1Compatibility' -r | jq '.container_config.Cmd | join(" ")' -r | tac`
+		header.JQ = strings.TrimSuffix(header.JQ, " | jq .")
+		header.JQ += ` | jq '.history[] | .v1Compatibility' -r | jq '.container_config.Cmd | join(" ")' -r | tac`
 	}
 
-	if err := bodyTmpl.Execute(w, data); err != nil {
+	if err := bodyTmpl.Execute(w, header); err != nil {
 		return err
 	}
 
@@ -757,57 +715,97 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 	return nil
 }
 
-// Render blob as JSON, possibly containing refs to images.
-func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef string) error {
-	var (
-		size int64
-		blob io.ReadCloser
-		err  error
-		ref  name.Reference
-	)
-	if blobRef != "" {
-		dig, err := name.NewDigest(blobRef)
-		if err != nil {
-			return err
-		}
-		ref = dig
+func headerData(ref name.Reference, desc v1.Descriptor) *HeaderData {
+	return &HeaderData{
+		Repo:             ref.Context().String(),
+		Reference:        ref.String(),
+		CosignTags:       []CosignTag{},
+		Descriptor:       &desc,
+		Handler:          handlerForMT(string(desc.MediaType)),
+		EscapedMediaType: url.QueryEscape(string(desc.MediaType)),
+		MediaTypeLink:    getLink(string(desc.MediaType)),
+	}
+}
 
-		opts := h.remoteOptions(w, r, dig.Context().Name())
-		opts = append(opts, remote.WithMaxSize(tooBig))
-		l, err := remote.Layer(dig, opts...)
-		if err != nil {
-			return err
+func (h *handler) manifestHeader(ref name.Reference, desc v1.Descriptor) *HeaderData {
+	header := headerData(ref, desc)
+	header.JQ = crane("manifest") + " " + ref.String()
+
+	// Handle clicking repo to list tags and such.
+	if strings.Contains(ref.String(), "@") && strings.Index(ref.String(), "@") < strings.Index(ref.String(), ":") {
+		chunks := strings.SplitN(ref.String(), "@", 2)
+		header.Up = &RepoParent{
+			Parent:    ref.Context().String(),
+			Child:     chunks[1],
+			Separator: "@",
 		}
-		blob, err = l.Compressed()
-		if err != nil {
-			return err
-		}
-		defer blob.Close()
-		size, err = l.Size()
-		if err != nil {
-			log.Printf("layer %s Size(): %v", ref, err)
-			return fmt.Errorf("cannot check blob size: %v", err)
-		} else if size > tooBig {
-			return fmt.Errorf("layer %s too big: %d", ref, size)
+	} else if strings.Contains(ref.String(), ":") {
+		chunks := strings.SplitN(ref.String(), ":", 2)
+		header.Up = &RepoParent{
+			Parent:    ref.Context().String(),
+			Child:     chunks[1],
+			Separator: ":",
 		}
 	} else {
-		fetched, prefix, err := h.fetchBlob(w, r)
-		if err != nil {
-			return err
+		header.Up = &RepoParent{
+			Parent: ref.String(),
 		}
-		defer fetched.Close()
-		_, root, err := splitFsURL(r.URL.Path)
-		if err != nil {
-			return err
-		}
-		trimmed := strings.TrimPrefix(prefix, root)
-		ref, err = name.NewDigest(trimmed)
-		if err != nil {
-			return err
-		}
+	}
 
-		blob = fetched
-		size = fetched.size
+	// Opportunistically show referrers based on cosign scheme if we
+	// have a cached tags list response.
+	prefix := strings.Replace(desc.Digest.String(), ":", "-", 1)
+	tags, ok := h.getTags(ref.Context())
+	if ok {
+		for _, tag := range tags {
+			if tag == prefix {
+				// Referrers tag schema
+				header.CosignTags = append(header.CosignTags, CosignTag{
+					Tag:   tag,
+					Short: "referrers",
+				})
+			} else if strings.HasPrefix(tag, prefix) {
+				// Cosign tag schema
+				chunks := strings.SplitN(tag, ".", 2)
+				if len(chunks) == 2 && len(chunks[1]) != 0 {
+					header.CosignTags = append(header.CosignTags, CosignTag{
+						Tag:   tag,
+						Short: chunks[1],
+					})
+				}
+			}
+		}
+	}
+
+	return header
+}
+
+// Render blob as JSON, possibly containing refs to images.
+func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef string) error {
+	ref, err := name.NewDigest(blobRef)
+	if err != nil {
+		return err
+	}
+
+	opts := h.remoteOptions(w, r, ref.Context().Name())
+	opts = append(opts, remote.WithMaxSize(tooBig))
+
+	l, err := remote.Layer(ref, opts...)
+	if err != nil {
+		return err
+	}
+	blob, err := l.Compressed()
+	if err != nil {
+		return err
+	}
+	defer blob.Close()
+
+	size, err := l.Size()
+	if err != nil {
+		log.Printf("layer %s Size(): %v", ref, err)
+		return fmt.Errorf("cannot check blob size: %w", err)
+	} else if size > tooBig {
+		return fmt.Errorf("blob %s too big: %d > %d", ref, size, tooBig)
 	}
 
 	// Allow this to be cached for an hour.
@@ -837,24 +835,18 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		mediaType = types.MediaType(output.mt)
 	}
 
-	data := HeaderData{
-		Repo:      ref.Context().String(),
-		Reference: url.QueryEscape(ref.String()),
-		Descriptor: &v1.Descriptor{
-			Size:      size,
-			Digest:    hash,
-			MediaType: mediaType,
-		},
-		Handler:          handlerForMT(string(mediaType)),
-		EscapedMediaType: url.QueryEscape(string(mediaType)),
-		MediaTypeLink:    getLink(string(mediaType)),
-		Up: &RepoParent{
-			Parent:    ref.Context().String(),
-			Separator: "@",
-			Child:     ref.Identifier(),
-		},
-		JQ: crane("blob") + " " + ref.String(),
+	desc := v1.Descriptor{
+		Size:      size,
+		Digest:    hash,
+		MediaType: mediaType,
 	}
+	header := headerData(ref, desc)
+	header.Up = &RepoParent{
+		Parent:    ref.Context().String(),
+		Separator: "@",
+		Child:     ref.Identifier(),
+	}
+	header.JQ = crane("blob") + " " + ref.String()
 
 	// TODO: Can we do this in a streaming way?
 	input, err := ioutil.ReadAll(io.LimitReader(blob, tooBig))
@@ -862,82 +854,70 @@ func (h *handler) renderBlobJSON(w http.ResponseWriter, r *http.Request, blobRef
 		return err
 	}
 
-	// Mutates data for bodyTmpl.
-	b, err := h.jq(output, input, r, &data)
+	// Mutates header for bodyTmpl.
+	b, err := h.jq(output, input, r, header)
 	if err != nil {
 		return err
 	}
 
 	if r.URL.Query().Get("render") == "history" {
-		data.JQ = strings.TrimSuffix(data.JQ, " | jq .")
-		data.JQ += " | jq '.history[] | .created_by' -r"
+		header.JQ = strings.TrimSuffix(header.JQ, " | jq .")
+		header.JQ += " | jq '.history[] | .created_by' -r"
 
 	} else if r.URL.Query().Get("render") == "der" {
-		data.JQ += " | openssl x509 -inform der -text -noout"
+		header.JQ += " | openssl x509 -inform der -text -noout"
 	}
 
-	if err := bodyTmpl.Execute(w, data); err != nil {
+	if err := bodyTmpl.Execute(w, header); err != nil {
 		return err
 	}
 
-	if r.URL.Query().Get("render") == "raw" {
-		fmt.Fprintf(w, "<pre>")
-		if _, err := w.Write(b); err != nil {
-			return err
-		}
-		fmt.Fprintf(w, "</pre>")
-	} else if r.URL.Query().Get("render") == "der" {
-		fmt.Fprintf(w, "<pre>")
-		if err := renderDer(w, b); err != nil {
-			return err
-		}
-		fmt.Fprintf(w, "</pre>")
-
-	} else if r.URL.Query().Get("render") == "history" {
-		fmt.Fprintf(w, "<pre>")
-		m := v1.Manifest{}
-		if d := r.URL.Query().Get("manifest"); d != "" {
-			dig, err := name.ParseReference(d)
-			if err != nil {
-				return err
-			}
-			desc, ok := h.manifests[dig.Identifier()]
-			if !ok {
-				opts := h.remoteOptions(w, r, dig.Context().Name())
-				opts = append(opts, remote.WithMaxSize(tooBig))
-				desc, err = remote.Get(dig, opts...)
-				if err != nil {
-					return err
-				}
-				h.manifests[desc.Digest.String()] = desc
-			}
-			if desc != nil {
-				if err := json.Unmarshal(desc.Manifest, &m); err != nil {
-					return err
-				}
-			} else {
-				logs.Debug.Printf("no manifests?")
-			}
-		}
-		if err := renderDockerfile(w, b, &m, ref.Context()); err != nil {
-			return nil
-		}
-		fmt.Fprintf(w, "</pre>")
-	} else if r.URL.Query().Get("render") == "created_by" {
-		fmt.Fprintf(w, "<pre>")
-		if err := renderCreatedBy(w, b); err != nil {
-			return nil
-		}
-		fmt.Fprintf(w, "</pre>")
-	} else {
-		if err := renderJSON(output, b); err != nil {
-			return err
-		}
+	fmt.Fprintf(w, "<pre>")
+	if err := h.renderJSON(w, r, ref, b, output); err != nil {
+		return err
 	}
+	fmt.Fprintf(w, "</pre>")
 
 	fmt.Fprintf(w, footer)
 
 	return nil
+}
+
+func (h *handler) renderJSON(w http.ResponseWriter, r *http.Request, ref name.Reference, b []byte, output *jsonOutputter) error {
+	switch r.URL.Query().Get("render") {
+	case "raw":
+		_, err := w.Write(b)
+		return err
+	case "der":
+		return renderDer(w, b)
+	case "history":
+		return h.renderDockerfile(w, r, ref, b)
+	case "created_byte":
+		return renderCreatedBy(w, b)
+	}
+
+	return renderJSON(output, b)
+}
+
+func (h *handler) renderDockerfile(w http.ResponseWriter, r *http.Request, ref name.Reference, b []byte) error {
+	manifest := r.URL.Query().Get("manifest")
+	if manifest == "" {
+		return renderDockerfile(w, b, nil, ref.Context())
+	}
+
+	dig, err := name.ParseReference(manifest)
+	if err != nil {
+		return err
+	}
+	desc, err := h.fetchManifest(w, r, dig)
+	if err != nil {
+		return err
+	}
+	m := v1.Manifest{}
+	if err := json.Unmarshal(desc.Manifest, &m); err != nil {
+		return err
+	}
+	return renderDockerfile(w, b, &m, ref.Context())
 }
 
 func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
@@ -984,11 +964,20 @@ func (h *handler) renderIndex(w http.ResponseWriter, r *http.Request) error {
 }
 
 // Render blob, either as just ungzipped bytes, or via http.FileServer.
-func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
-	if strings.HasPrefix(r.URL.Path, "/json/") {
-		return h.renderBlobJSON(w, r, "")
+func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request, seek io.ReadSeeker) error {
+	if mt := r.URL.Query().Get("mt"); mt != "" && !strings.Contains(mt, ".layer.") {
+		// Avoid setting this for steve's artifacts stupidity.
+		w.Header().Set("Content-Type", mt)
 	}
 
+	// Allow this to be cached for an hour.
+	w.Header().Set("Cache-Control", "max-age=3600, immutable")
+	httpserve.ServeContent(w, r, "", time.Time{}, seek, nil)
+
+	return nil
+}
+
+func (h *handler) renderFS(w http.ResponseWriter, r *http.Request) error {
 	qs := r.URL.Query()
 	mt := qs.Get("mt")
 
@@ -997,126 +986,12 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("getDigest: %w", err)
 	}
 
-	var (
-		index soci.Index
-	)
-	if h.indexCache != nil {
-		index, err = h.getIndex(r.Context(), dig.Identifier())
-		if err != nil {
-			logs.Debug.Printf("indexCache.Index(%q) = %v", dig.Identifier(), err)
-		} else {
-			logs.Debug.Printf("indexCache hit: %s", dig.Identifier())
-			if mt == "" {
-				toc := index.TOC()
-				if toc != nil {
-					mt = toc.MediaType
-				}
-			}
-		}
+	index, err := h.getIndex(r.Context(), dig.Identifier())
+	if err != nil {
+		return fmt.Errorf("indexCache.Index(%q) = %w", dig.Identifier(), err)
 	}
-
-	foreign := strings.HasPrefix(ref, "/http/") || strings.HasPrefix(ref, "/https/")
-	shouldIndex := index == nil
-	if index != nil && index.TOC() != nil {
-		opts := []remote.Option{}
-		if !foreign {
-			// Skip the ping for foreign layers.
-			opts = h.remoteOptions(w, r, dig.Context().Name())
-		}
-
-		opts = append(opts, remote.WithSize(index.TOC().Csize))
-
-		cachedUrl := ""
-		cookie, err := r.Cookie("redirect")
-		if err == nil {
-			b, err := base64.URLEncoding.DecodeString(cookie.Value)
-			if err != nil {
-				return err
-			}
-			var v RedirectCookie
-			if err := json.Unmarshal(b, &v); err != nil {
-				return err
-			}
-			if v.Digest == dig.Identifier() {
-				cachedUrl = v.Url
-			} else {
-				logs.Debug.Printf("%q vs %q", v.Digest, dig.Identifier())
-				// Clear so we reset it.
-				cookie = nil
-			}
-		} else {
-			logs.Debug.Printf("redirect cookie err: %v", err)
-		}
-
-		if h, s := strings.HasPrefix(ref, "/http/"), strings.HasPrefix(ref, "/https/"); h || s {
-			p := ref
-			if h {
-				p = strings.TrimPrefix(p, "/http/")
-			} else {
-				p = strings.TrimPrefix(ref, "/https/")
-			}
-			chunks := strings.SplitN(p, "@", 2)
-			if len(chunks) == 2 {
-				u, err := url.PathUnescape(chunks[0])
-				if err != nil {
-					return err
-				}
-				scheme := "https://"
-				if h {
-					scheme = "http://"
-				}
-				u = scheme + u
-				logs.Debug.Printf("u = %q", u)
-				cachedUrl = u
-
-				t := remote.DefaultTransport
-				t = transport.NewRetry(t)
-				t = transport.NewUserAgent(t, ua)
-				if r.URL.Query().Get("trace") != "" {
-					t = transport.NewTracer(t)
-				}
-				t = transport.Wrap(t)
-				opts = append(opts, remote.WithTransport(t))
-			}
-		}
-
-		setCookie := func(blob *remote.BlobSeeker) error {
-			if cookie != nil || blob.Url == "" {
-				return nil
-			}
-			v := &RedirectCookie{
-				Digest: dig.Identifier(),
-				Url:    blob.Url,
-			}
-			logs.Debug.Printf("setting cookie: %v", v)
-			b, err := json.Marshal(v)
-			if err != nil {
-				return err
-			}
-			cv := base64.URLEncoding.EncodeToString(b)
-			cookie := &http.Cookie{
-				Name:     "redirect",
-				Value:    cv,
-				Expires:  time.Now().Add(time.Minute * 10),
-				Secure:   true,
-				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
-			}
-			http.SetCookie(w, cookie)
-
-			return nil
-		}
-
-		blob := remote.LazyBlob(dig, cachedUrl, setCookie, opts...)
-		logs.Debug.Printf("soci serve")
-		// We never saw a non-nil Body, we can do the range.
-		prefix := strings.TrimPrefix(ref, "/")
-		logs.Debug.Printf("prefix = %s", prefix)
-		fs := soci.FS(index, blob, prefix, dig.String(), respTooBig, types.MediaType(mt))
-		fs.Render = renderHeader
-		httpserve.FileServer(httpserve.FS(fs)).ServeHTTP(w, r)
-
-		return nil
+	if index != nil {
+		return h.renderSoci(w, r, dig, ref, index)
 	}
 
 	// Determine if this is actually a filesystem thing.
@@ -1125,102 +1000,183 @@ func (h *handler) renderBlob(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	size := blob.size
-	var rc io.ReadCloser = blob
 
-	logs.Debug.Printf("shouldIndex: %t", shouldIndex)
-	if shouldIndex {
-		ocw, err := h.indexCache.Writer(r.Context(), indexKey(dig.Identifier(), 0))
-		if err != nil {
-			return fmt.Errorf("indexCache.Writer: %w", err)
-		}
-		defer ocw.Close()
-		zw, err := ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
-		if err != nil {
-			return err
-		}
-		bw := bufio.NewWriterSize(zw, 1<<16)
-		flushClose := func() error {
-			if err := bw.Flush(); err != nil {
-				return err
-			}
-			return zw.Close()
-		}
-		cw := &and.WriteCloser{bw, flushClose}
-
-		indexer, _, err := soci.NewIndexer(blob, cw, spanSize, mt)
-		if err != nil {
-			return fmt.Errorf("TODO: don't return this error: %w", err)
-		}
-		fs := h.newLayerFS(indexer, size, ref, dig.String(), indexer.Type(), types.MediaType(mt))
-		httpserve.FileServer(fs).ServeHTTP(w, r)
-
-		for {
-			// Make sure we hit the end.
-			_, err := indexer.Next()
-			if errors.Is(err, io.EOF) {
-				break
-			} else if err != nil {
-				return fmt.Errorf("indexer.Next: %w", err)
-			}
-		}
-
-		toc, err := indexer.TOC()
-		if err != nil {
-			return err
-		}
-		if h.tocCache != nil {
-			key := indexKey(dig.Identifier(), 0)
-			if err := h.tocCache.Put(r.Context(), key, toc); err != nil {
-				logs.Debug.Printf("cache.Put(%q) = %v", key, err)
-			}
-		}
-
-		logs.Debug.Printf("index size: %d", indexer.Size())
-
-		return nil
+	ocw, err := h.indexCache.Writer(r.Context(), indexKey(dig.Identifier(), 0))
+	if err != nil {
+		return fmt.Errorf("indexCache.Writer: %w", err)
 	}
+	defer ocw.Close()
+	zw, err := ogzip.NewWriterLevel(ocw, ogzip.BestSpeed)
+	if err != nil {
+		return err
+	}
+	bw := bufio.NewWriterSize(zw, 1<<16)
+	flushClose := func() error {
+		if err := bw.Flush(); err != nil {
+			return err
+		}
+		return zw.Close()
+	}
+	cw := &and.WriteCloser{bw, flushClose}
 
-	kind, pr, _, err := soci.Peek(rc)
+	indexer, pr, tpr, err := soci.NewIndexer(blob, cw, spanSize, mt)
 	if err != nil {
 		return fmt.Errorf("TODO: don't return this error: %w", err)
 	}
-	if kind == "tar" {
-		// TODO: Remove newLayerFS entirely?
-		fs := h.newLayerFS(tar.NewReader(pr), size, ref, dig.String(), kind, types.MediaType(mt))
+	if indexer == nil {
+		if qsize := r.URL.Query().Get("size"); qsize != "" {
+			sz, err := strconv.ParseInt(qsize, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid size (%q): %w", qsize, err)
+			}
+			size = sz
+		}
+		seek := &sizeSeeker{pr, size, ref, nil, false}
+		if tpr != nil {
+			seek = &sizeSeeker{tpr, -1, ref, nil, false}
+		}
 
-		// Allow this to be cached for an hour.
-		w.Header().Set("Cache-Control", "max-age=3600, immutable")
+		return h.renderBlob(w, r, seek)
+	}
 
-		httpserve.FileServer(fs).ServeHTTP(w, r)
+	// Render FS the old way while generating the index.
+	fs := h.newLayerFS(indexer, size, ref, dig.String(), indexer.Type(), types.MediaType(mt))
+	httpserve.FileServer(fs).ServeHTTP(w, r)
+
+	for {
+		// Make sure we hit the end.
+		_, err := indexer.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return fmt.Errorf("indexer.Next: %w", err)
+		}
+	}
+
+	toc, err := indexer.TOC()
+	if err != nil {
+		return err
+	}
+	if h.tocCache != nil {
+		key := indexKey(dig.Identifier(), 0)
+		if err := h.tocCache.Put(r.Context(), key, toc); err != nil {
+			logs.Debug.Printf("cache.Put(%q) = %v", key, err)
+		}
+	}
+
+	logs.Debug.Printf("index size: %d", indexer.Size())
+
+	return nil
+}
+
+func (h *handler) renderSoci(w http.ResponseWriter, r *http.Request, dig name.Digest, ref string, index soci.Index) error {
+	mt := r.URL.Query().Get("mt")
+	toc := index.TOC()
+	if toc == nil {
+		return fmt.Errorf("this should not happen")
+	}
+	if mt == "" {
+		mt = toc.MediaType
+	}
+
+	opts := []remote.Option{}
+	foreign := strings.HasPrefix(r.URL.Path, "/http/") || strings.HasPrefix(r.URL.Path, "/https/")
+	if !foreign {
+		// Skip the ping for foreign layers.
+		opts = h.remoteOptions(w, r, dig.Context().Name())
+	}
+
+	opts = append(opts, remote.WithSize(toc.Csize))
+
+	cachedUrl := ""
+	cookie, err := r.Cookie("redirect")
+	if err == nil {
+		b, err := base64.URLEncoding.DecodeString(cookie.Value)
+		if err != nil {
+			return err
+		}
+		var v RedirectCookie
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+		if v.Digest == dig.Identifier() {
+			cachedUrl = v.Url
+		} else {
+			logs.Debug.Printf("%q vs %q", v.Digest, dig.Identifier())
+			// Clear so we reset it.
+			cookie = nil
+		}
+	} else {
+		logs.Debug.Printf("redirect cookie err: %v", err)
+	}
+
+	if foreign {
+		p := r.URL.Path
+		scheme := "https://"
+		if strings.HasPrefix(r.URL.Path, "/http/") {
+			p = strings.TrimPrefix(p, "/http/")
+			scheme = "http://"
+		} else {
+			p = strings.TrimPrefix(p, "/https/")
+		}
+		if before, _, ok := strings.Cut(p, "@"); ok {
+			u, err := url.PathUnescape(before)
+			if err != nil {
+				return err
+			}
+			u = scheme + u
+			cachedUrl = u
+
+			t := remote.DefaultTransport
+			t = transport.NewRetry(t)
+			t = transport.NewUserAgent(t, ua)
+			if r.URL.Query().Get("trace") != "" {
+				t = transport.NewTracer(t)
+			}
+			t = transport.Wrap(t)
+			opts = append(opts, remote.WithTransport(t))
+		}
+	}
+
+	setCookie := func(blob *remote.BlobSeeker) error {
+		if cookie != nil || blob.Url == "" {
+			return nil
+		}
+		v := &RedirectCookie{
+			Digest: dig.Identifier(),
+			Url:    blob.Url,
+		}
+		logs.Debug.Printf("setting cookie: %v", v)
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		cv := base64.URLEncoding.EncodeToString(b)
+		cookie := &http.Cookie{
+			Name:     "redirect",
+			Value:    cv,
+			Expires:  time.Now().Add(time.Minute * 10),
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		}
+		http.SetCookie(w, cookie)
 
 		return nil
 	}
 
-	if mt != "" && !strings.Contains(mt, ".layer.") {
-		// Avoid setting this for steve's artifacts stupidity.
-		w.Header().Set("Content-Type", mt)
-	}
-	qsize := qs.Get("size")
-	if qsize != "" {
-		if sz, err := strconv.ParseInt(qsize, 10, 64); err != nil {
-			log.Printf("wtf? %q size=%q", ref, qsize)
-		} else {
-			size = sz
-		}
-	}
-
-	if debug {
-		log.Printf("size=%d", size)
-	}
-
-	// Allow this to be cached for an hour.
-	w.Header().Set("Cache-Control", "max-age=3600, immutable")
-
-	seek := &sizeSeeker{rc, size, ref, nil, false}
-	httpserve.ServeContent(w, r, "", time.Time{}, seek, nil)
+	blob := remote.LazyBlob(dig, cachedUrl, setCookie, opts...)
+	logs.Debug.Printf("soci serve")
+	// We never saw a non-nil Body, we can do the range.
+	prefix := strings.TrimPrefix(ref, "/")
+	logs.Debug.Printf("prefix = %s", prefix)
+	fs := soci.FS(index, blob, prefix, dig.String(), respTooBig, types.MediaType(mt))
+	fs.Render = renderHeader
+	httpserve.FileServer(httpserve.FS(fs)).ServeHTTP(w, r)
 
 	return nil
 }
+
 func (h *handler) layersHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.renderLayers(w, r); err != nil {
 		if err := h.maybeOauthErr(w, r, err); err != nil {
@@ -1228,6 +1184,14 @@ func (h *handler) layersHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "failed: %s", html.EscapeString(err.Error()))
 		}
 	}
+}
+
+// don't cache potentially private manifests
+func allowCache(r *http.Request, ref name.Reference) bool {
+	if _, err := r.Cookie("access_token"); err == nil {
+		return !isGoogle(ref.Context().Registry.String())
+	}
+	return true
 }
 
 // Flatten layers of an image and serve as a filesystem.
@@ -1238,31 +1202,12 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	var (
-		desc *remote.Descriptor
-		opts []remote.Option
-	)
-	allowCache := true
-	if isGoogle(dig.Context().Registry.String()) {
-		if _, err := r.Cookie("access_token"); err == nil {
-			allowCache = false
-		}
-	}
-	if allowCache {
-		desc, _ = h.manifests[dig.Identifier()]
-	}
+	opts := h.remoteOptions(w, r, dig.Context().Name())
+	opts = append(opts, remote.WithMaxSize(tooBig))
 
-	if opts == nil {
-		opts = h.remoteOptions(w, r, dig.Context().Name())
-		opts = append(opts, remote.WithMaxSize(tooBig))
-	}
-
-	if desc == nil {
-		desc, err = remote.Get(dig, opts...)
-		if err != nil {
-			return err
-		}
-		h.manifests[desc.Digest.String()] = desc
+	desc, err := h.fetchManifest(w, r, dig)
+	if err != nil {
+		return err
 	}
 
 	m, err := v1.ParseManifest(bytes.NewReader(desc.Manifest))
@@ -1286,17 +1231,9 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		g.Go(func() error {
-			var (
-				index soci.Index
-				err   error
-			)
-			if h.indexCache != nil {
-				index, err = h.getIndex(r.Context(), digest.String())
-				if err != nil {
-					logs.Debug.Printf("indexCache.Index(%q) = %v", digest.String(), err)
-				} else {
-					logs.Debug.Printf("indexCache hit: %s", digest.String())
-				}
+			index, err := h.getIndex(r.Context(), digest.String())
+			if err != nil {
+				return fmt.Errorf("indexCache.Index(%q) = %w", dig.Identifier(), err)
 			}
 			if index == nil {
 				l, err := remote.Layer(layerRef)
@@ -1313,6 +1250,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 					return fmt.Errorf("createIndex: %w", err)
 				}
 				if index == nil {
+					// Non-indexable blobs are filtered later>
 					return nil
 				}
 			}
@@ -1355,9 +1293,9 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 	filename := strings.TrimPrefix(fname, "/"+prefix)
 	filename = strings.TrimPrefix(filename, "/")
 
-	header, ok := stat.Sys().(*tar.Header)
+	tarh, ok := stat.Sys().(*tar.Header)
 	if ok {
-		filename = header.Name
+		filename = tarh.Name
 	} else {
 		if !stat.IsDir() {
 			logs.Debug.Printf("not a tar header or directory")
@@ -1397,28 +1335,24 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 		filelink = dirlink + base
 	}
 
-	data := HeaderData{
-		Repo:      ref.Context().String(),
-		Reference: ref.String(),
-		Descriptor: &v1.Descriptor{
-			Size:      size,
-			Digest:    hash,
-			MediaType: mediaType,
-		},
-		Handler:       handlerForMT(string(mediaType)),
-		MediaTypeLink: getLink(string(mediaType)),
-		Up: &RepoParent{
-			Parent:    ref.Context().String(),
-			Separator: "@",
-			Child:     ref.Identifier(),
-		},
-		JQ: crane("blob") + " " + ref.String() + " | " + tarflags + " " + filelink,
+	desc := v1.Descriptor{
+		Size:      size,
+		Digest:    hash,
+		MediaType: mediaType,
 	}
+	header := headerData(ref, desc)
+	header.Up = &RepoParent{
+		Parent:    ref.Context().String(),
+		Separator: "@",
+		Child:     ref.Identifier(),
+	}
+	header.JQ = crane("blob") + " " + ref.String() + " | " + tarflags + " " + filelink
+
 	truncate := int64(1 << 15)
 	if stat.Size() > truncate {
-		data.JQ = data.JQ + fmt.Sprintf(" | head -c %d", truncate)
+		header.JQ = header.JQ + fmt.Sprintf(" | head -c %d", truncate)
 		if ctype == "application/octet-stream" {
-			data.JQ = data.JQ + " | xxd"
+			header.JQ = header.JQ + " | xxd"
 		}
 	}
 
@@ -1430,10 +1364,10 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 			tarflags = "tar --zstd -tv "
 		}
 
-		data.JQ = crane("blob") + " " + ref.String() + " | " + tarflags + " " + filelink
+		header.JQ = crane("blob") + " " + ref.String() + " | " + tarflags + " " + filelink
 	}
 
-	if err := bodyTmpl.Execute(w, data); err != nil {
+	if err := bodyTmpl.Execute(w, header); err != nil {
 		return err
 	}
 	return nil
@@ -1458,9 +1392,9 @@ func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType typ
 	filename = strings.TrimPrefix(filename, "/")
 
 	sys := stat.Sys()
-	header, ok := sys.(*tar.Header)
+	tarh, ok := sys.(*tar.Header)
 	if ok {
-		filename = header.Name
+		filename = tarh.Name
 	} else {
 		logs.Debug.Printf("sys: %T", sys)
 	}
@@ -1472,26 +1406,21 @@ func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType typ
 		return err
 	}
 
-	data := HeaderData{
-		Repo:      ref.Context().String(),
-		Reference: ref.String(),
-		Descriptor: &v1.Descriptor{
-			Size:      size,
-			Digest:    hash,
-			MediaType: mediaType,
-		},
-		Handler: handlerForMT(string(mediaType)),
-		//EscapedMediaType: url.QueryEscape(string(mediaType)),
-		MediaTypeLink: getLink(string(mediaType)),
-		Up: &RepoParent{
-			Parent:    ref.Context().String(),
-			Separator: "@",
-			Child:     ref.Identifier(),
-		},
-		JQ: crane("export") + " " + ref.String() + " | " + tarflags + " " + filename,
+	desc := v1.Descriptor{
+		Size:      size,
+		Digest:    hash,
+		MediaType: mediaType,
 	}
+	header := headerData(ref, desc)
 
-	if err := bodyTmpl.Execute(w, data); err != nil {
+	header.Up = &RepoParent{
+		Parent:    ref.Context().String(),
+		Separator: "@",
+		Child:     ref.Identifier(),
+	}
+	header.JQ = crane("export") + " " + ref.String() + " | " + tarflags + " " + filename
+
+	if err := bodyTmpl.Execute(w, header); err != nil {
 		return err
 	}
 	return nil
@@ -1528,7 +1457,8 @@ func (h *handler) createIndex(ctx context.Context, rc io.ReadCloser, size int64,
 	}
 	cw := &and.WriteCloser{bw, flushClose}
 
-	indexer, _, err := soci.NewIndexer(rc, cw, spanSize, mediaType)
+	// TODO: Better?
+	indexer, _, _, err := soci.NewIndexer(rc, cw, spanSize, mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("TODO: don't return this error: %w", err)
 	}
@@ -1740,10 +1670,10 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 	return sb, root + ref, err
 }
 
-func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *HeaderData) ([]byte, error) {
+func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, header *HeaderData) ([]byte, error) {
 	jq, ok := r.URL.Query()["jq"]
 	if !ok {
-		data.JQ += " | jq ."
+		header.JQ += " | jq ."
 		return b, nil
 	}
 
@@ -1752,7 +1682,7 @@ func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *Hea
 		exp string
 	)
 
-	exps := []string{data.JQ}
+	exps := []string{header.JQ}
 
 	for _, j := range jq {
 		if debug {
@@ -1765,7 +1695,7 @@ func (h *handler) jq(output *jsonOutputter, b []byte, r *http.Request, data *Hea
 		exps = append(exps, exp)
 	}
 
-	data.JQ = strings.Join(exps, " | ")
+	header.JQ = strings.Join(exps, " | ")
 	return b, nil
 }
 
@@ -1785,7 +1715,7 @@ func getBlobQuery(r *http.Request) (string, bool) {
 }
 
 func splitFsURL(p string) (string, string, error) {
-	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/blob/", "/json/", "/cache/"} {
+	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/blob/", "/cache/"} {
 		if strings.HasPrefix(p, prefix) {
 			return strings.TrimPrefix(p, prefix), prefix, nil
 		}
@@ -1801,12 +1731,29 @@ func indexKey(prefix string, idx int) string {
 	return fmt.Sprintf("%s.%d", prefix, idx)
 }
 
+// Returns nil index if it's incomplete.
 func (h *handler) getIndex(ctx context.Context, prefix string) (soci.Index, error) {
+	if h.indexCache == nil {
+		return nil, nil
+	}
 	start := time.Now()
 	defer func() {
 		logs.Debug.Printf("getIndex(%q) (%s)", prefix, time.Since(start))
 	}()
-	return h.getIndexN(ctx, prefix, 0)
+	index, err := h.getIndexN(ctx, prefix, 0)
+	if errors.Is(err, io.EOF) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO: Remove the need for this.
+	if index.TOC() == nil {
+		return nil, nil
+	}
+
+	return index, nil
 }
 
 func (h *handler) getIndexN(ctx context.Context, prefix string, idx int) (index soci.Index, err error) {

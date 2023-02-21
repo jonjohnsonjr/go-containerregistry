@@ -29,8 +29,12 @@ type Indexer struct {
 	written  bool
 }
 
-// TODO: Make it so we can resume this.
-func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string) (*Indexer, io.ReadCloser, error) {
+// Returns:
+// Indexer (if non-nil, everything else is nil)
+// Original stream (buffered rc to Peek)
+// Unwrapped stream (ungzip or unzstd, nil if we could not unwrap or err != nil)
+// Error (maybe nil)
+func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string) (*Indexer, io.ReadCloser, io.ReadCloser, error) {
 	logs.Debug.Printf("NewIndexer")
 	// TODO: Allow binding writer after detection.
 
@@ -47,10 +51,9 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 		w:   w,
 	}
 
-	// TODO: Use tpr somehow?
-	kind, pr, _, err := Peek(rc)
+	kind, pr, tpr, err := Peek(rc)
 	if err != nil {
-		return nil, pr, err
+		return nil, pr, tpr, err
 	}
 
 	logs.Debug.Printf("Peeked: %s", kind)
@@ -58,7 +61,7 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 		i.updates = make(chan *flate.Checkpoint, 10)
 		zr, err := gzip.NewReaderWithSpans(pr, span, i.updates)
 		if err != nil {
-			return nil, pr, err
+			return nil, pr, nil, err
 		}
 
 		i.zr = zr
@@ -67,7 +70,7 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 		i.zupdates = make(chan *zstd.Checkpoint, 10)
 		zr, err := zstd.NewReader(pr, zstd.WithCheckpoints(i.zupdates), zstd.WithDecoderConcurrency(1))
 		if err != nil {
-			return nil, pr, err
+			return nil, pr, nil, err
 		}
 		i.zr = zr
 		i.tr = tar.NewReader(zr)
@@ -75,7 +78,8 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 		i.zr = &countReader{pr, 0}
 		i.tr = tar.NewReader(i.zr)
 	} else {
-		return nil, pr, nil
+		// Not a wrapped tar!
+		return nil, pr, tpr, nil
 	}
 
 	i.toc.Type = kind
@@ -85,7 +89,7 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 
 	i.g.Go(i.processUpdates)
 
-	return i, pr, nil
+	return i, nil, nil, nil
 }
 
 func (i *Indexer) Next() (*tar.Header, error) {

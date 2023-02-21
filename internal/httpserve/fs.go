@@ -614,7 +614,9 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 	} else {
 		w.Header().Set("Accept-Ranges", "bytes")
 		if w.Header().Get("Content-Encoding") == "" {
-			w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
+			if sendSize >= 0 {
+				w.Header().Set("Content-Length", strconv.FormatInt(sendSize, 10))
+			}
 		}
 
 		w.WriteHeader(code)
@@ -628,15 +630,27 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 				if sendSize > tooBig {
 					sendSize = tooBig
 				}
-				if _, err := io.CopyN(&octetPrinter{buf: buf, size: sendSize}, sendContent, sendSize); err != nil {
-					logs.Debug.Printf("octet: %v", err)
+				if sendSize < 0 {
+					if _, err := io.Copy(&octetPrinter{buf: buf, size: sendSize}, sendContent); err != nil {
+						logs.Debug.Printf("octet: %v", err)
+					}
+				} else {
+					if _, err := io.CopyN(&octetPrinter{buf: buf, size: sendSize}, sendContent, sendSize); err != nil {
+						logs.Debug.Printf("octet: %v", err)
+					}
 				}
 			} else {
 				if sendSize > tooBig {
 					sendSize = tooBig
 				}
-				if _, err := io.CopyN(&dumbEscaper{buf: buf}, sendContent, sendSize); err != nil {
-					logs.Debug.Printf("escaper: %v", err)
+				if sendSize < 0 {
+					if _, err := io.Copy(&dumbEscaper{buf: buf}, sendContent); err != nil {
+						logs.Debug.Printf("escaper: %v", err)
+					}
+				} else {
+					if _, err := io.CopyN(&dumbEscaper{buf: buf}, sendContent, sendSize); err != nil {
+						logs.Debug.Printf("escaper: %v", err)
+					}
 				}
 			}
 		} else {
@@ -1375,7 +1389,7 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 	chunks := len(p) / 16
 	remain := len(p) % 16
 
-	if remain != 0 && int64(len(p))+o.total != o.size {
+	if remain != 0 && (o.size >= 0 && int64(len(p))+o.total != o.size) {
 		return 0, fmt.Errorf("TODO: implement chunking")
 	}
 
@@ -1383,7 +1397,7 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 		start := chunk * 16
 		cur := o.total + int64(start)
 
-		if start >= len(p) || cur >= o.size {
+		if start >= len(p) || (o.size >= 0 && cur >= o.size) {
 			break
 		}
 
@@ -1402,7 +1416,7 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 				}
 			}
 			line := "  "
-			if start+i < len(p) && pos < o.size {
+			if start+i < len(p) && (o.size >= 0 && pos < o.size) {
 				r := p[start+i]
 				if r < 32 || r > 126 {
 					ascii = append(ascii, '.')
