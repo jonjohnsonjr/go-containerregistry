@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/dustin/go-humanize"
@@ -28,7 +29,12 @@ type Compat struct {
 	ContainerConfig Config `json:"container_config"`
 }
 
-// TODO: Dedupe
+var whitespaceRegex = regexp.MustCompile(`( )(?:    )+`)
+
+func whitespaceRepl(in []byte) []byte {
+	return bytes.Replace(in, []byte(" "), []byte(" \\\n"), 1)
+}
+
 func renderDockerfileSchema1(w io.Writer, b []byte) error {
 	m := Schema1{}
 	err := json.Unmarshal(b, &m)
@@ -167,7 +173,7 @@ func renderCreatedBy(w io.Writer, b []byte) error {
 		}
 	}
 	if _, err := w.Write(b); err != nil {
-		return err
+		return fmt.Errorf("Write: %w", err)
 	}
 	return nil
 }

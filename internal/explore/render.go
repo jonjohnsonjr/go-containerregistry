@@ -46,7 +46,6 @@ type jsonOutputter struct {
 	name string
 	repo string
 	mt   string
-	pt   string
 
 	fresh []bool
 	jq    []string
@@ -127,6 +126,7 @@ func (w *jsonOutputter) History(text string) {
 	u := *w.u
 	qs := u.Query()
 	qs.Set("render", "history")
+	qs.Set("mt", w.mt)
 	u.RawQuery = qs.Encode()
 
 	w.tabf()
@@ -294,7 +294,6 @@ func (w *jsonOutputter) maybeMap(k string) string {
 
 func (w *jsonOutputter) tabs() string {
 	return strings.Repeat("  ", len(w.fresh))
-	//return ""
 }
 
 func (w *jsonOutputter) newline() {

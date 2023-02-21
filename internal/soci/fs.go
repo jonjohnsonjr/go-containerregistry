@@ -43,7 +43,7 @@ type MultiFS struct {
 	size   int64
 }
 
-func NewMultiFS(fss []*SociFS, prefix string, ref name.Reference, render RenderDir, size int64, mt types.MediaType) *MultiFS {
+func NewMultiFS(fss []*SociFS, prefix string, ref name.Reference, size int64, mt types.MediaType, render RenderDir) *MultiFS {
 	filtered := []*SociFS{}
 	for _, fs := range fss {
 		if fs != nil {
@@ -284,7 +284,7 @@ type BlobSeeker interface {
 	Reader(ctx context.Context, off int64, end int64) (io.ReadCloser, error)
 }
 
-func FS(index Index, bs BlobSeeker, prefix string, ref string, maxSize int64, mt types.MediaType) *SociFS {
+func FS(index Index, bs BlobSeeker, prefix string, ref string, maxSize int64, mt types.MediaType, render RenderFunc) *SociFS {
 	fs := &SociFS{
 		index:   index,
 		bs:      bs,
@@ -292,6 +292,7 @@ func FS(index Index, bs BlobSeeker, prefix string, ref string, maxSize int64, mt
 		prefix:  prefix,
 		ref:     ref,
 		mt:      mt,
+		render:  render,
 	}
 	if index != nil {
 		if toc := index.TOC(); toc != nil {
@@ -316,11 +317,11 @@ type SociFS struct {
 
 	mt types.MediaType
 
-	Render RenderFunc
+	render RenderFunc
 }
 
 func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.File, ctype string) error {
-	if s.Render != nil {
+	if s.render != nil {
 		ref, err := name.ParseReference(s.ref)
 		if err != nil {
 			return err
@@ -332,7 +333,7 @@ func (s *SociFS) RenderHeader(w http.ResponseWriter, fname string, f httpserve.F
 				s.mt = types.MediaType(toc.MediaType)
 			}
 		}
-		return s.Render(w, fname, s.prefix, ref, kind, s.mt, s.index.TOC().Csize, f, ctype)
+		return s.render(w, fname, s.prefix, ref, kind, s.mt, s.index.TOC().Csize, f, ctype)
 	}
 	return nil
 }

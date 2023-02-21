@@ -14,6 +14,7 @@
 package explore
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/tls"
@@ -24,6 +25,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
@@ -31,72 +33,33 @@ import (
 	casn1 "golang.org/x/crypto/cryptobyte/asn1"
 )
 
+func renderCert(w io.Writer, b []byte, u url.URL) error {
+	qs := u.Query()
+	qs.Set("render", "x509")
+	u.RawQuery = qs.Encode()
+
+	fmt.Fprintf(w, `<div><a href="%s">`, u.String())
+
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		if _, err := w.Write(line); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "<br>\n")
+	}
+	fmt.Fprintf(w, "</a>\n</div>")
+
+	return nil
+}
+
 // TODO: render links!
 // TODO: Don't use x509.ParseCertificate
-/*
-Certificate:
-    Data:
-        Version: 3 (0x2)
-        Serial Number:
-            22:d1:a2:19:26:f1:ac:e4:87:b4:b9:fa:fb:df:89:42:ca:dc:ce:a0
-        Signature Algorithm: ecdsa-with-SHA384
-        Issuer: O = sigstore.dev, CN = sigstore-intermediate
-        Validity
-            Not Before: Jul 20 21:23:51 2022 GMT
-            Not After : Jul 20 21:33:51 2022 GMT
-        Subject:
-        Subject Public Key Info:
-            Public Key Algorithm: id-ecPublicKey
-                Public-Key: (256 bit)
-                pub:
-                    04:4f:76:63:aa:43:9c:b4:8a:e2:59:12:ed:62:90:
-                    64:d1:9e:a1:d3:ad:3c:6b:ad:ce:74:90:95:3f:87:
-                    3a:2a:4f:3e:b0:60:0c:60:ac:28:44:e9:f1:56:26:
-                    fe:fb:6f:87:38:1e:7b:83:f3:8a:2a:96:45:56:72:
-                    bf:c7:a2:17:4a
-                ASN1 OID: prime256v1
-                NIST CURVE: P-256
-        X509v3 extensions:
-            X509v3 Key Usage: critical
-                Digital Signature
-            X509v3 Extended Key Usage:
-                Code Signing
-            X509v3 Subject Key Identifier:
-                0B:4D:47:3B:EF:69:A4:C8:0E:2A:2A:34:27:34:39:B8:31:09:48:BF
-            X509v3 Authority Key Identifier:
-                DF:D3:E9:CF:56:24:11:96:F9:A8:D8:E9:28:55:A2:C6:2E:18:64:3F
-            X509v3 Subject Alternative Name: critical
-                email:krel-trust@k8s-releng-prod.iam.gserviceaccount.com
-            1.3.6.1.4.1.57264.1.1:
-                https://accounts.google.com
-            CT Precertificate SCTs:
-                Signed Certificate Timestamp:
-                    Version   : v1 (0x0)
-                    Log ID    : 08:60:92:F0:28:52:FF:68:45:D1:D1:6B:27:84:9C:45:
-                                67:18:AC:16:3D:C3:38:D2:6D:E6:BC:22:06:36:6F:72
-                    Timestamp : Jul 20 21:23:52.023 2022 GMT
-                    Extensions: none
-                    Signature : ecdsa-with-SHA256
-                                30:46:02:21:00:E2:7B:5F:04:0F:B3:54:6B:82:55:0C:
-                                80:2A:34:C7:9B:8F:AD:42:F0:F3:A1:17:C3:DC:54:17:
-                                C7:C8:5C:FD:F8:02:21:00:B1:1C:8B:AD:21:7C:47:96:
-                                DB:E2:DC:57:67:0C:3C:E4:BE:EE:DC:F9:F8:60:93:F2:
-                                55:93:99:85:0E:52:FF:6C
-    Signature Algorithm: ecdsa-with-SHA384
-    Signature Value:
-        30:65:02:31:00:ad:dd:e9:6d:9a:4e:87:74:37:03:0b:b6:2f:
-        11:ab:86:87:36:f6:c5:d3:14:dd:3e:ed:30:77:42:38:a6:c7:
-        a1:1c:64:4f:f4:4f:fb:ec:ab:cd:2d:49:64:6f:85:74:88:02:
-        30:6f:cc:2e:1a:0a:38:d8:10:d3:8f:dc:60:52:9d:36:8c:db:
-        60:97:f0:51:9d:22:db:d7:df:fa:32:56:b3:08:88:ed:c3:6a:
-        52:d9:c8:ef:79:35:9d:30:f9:ea:d9:2d:ad
-*/
 func renderDer(w io.Writer, b []byte) error {
 	cert, err := x509.ParseCertificate(b)
 	if err != nil {
 		return err
 	}
 
+	fmt.Fprintf(w, "<pre>")
 	fmt.Fprintf(w, "Certificate:\n")
 	fmt.Fprintf(w, "    Data:\n")
 	fmt.Fprintf(w, "        Version: %d (0x%x)\n", cert.Version, cert.Version-1)
@@ -167,7 +130,7 @@ func renderDer(w io.Writer, b []byte) error {
 		fmt.Fprintf(w, "                Exponent: %d (%#x)\n", p.E, p.E)
 
 	default:
-		return fmt.Errorf("TODO: renderCert with %T", pub)
+		return fmt.Errorf("TODO: renderx509 with %T", pub)
 	}
 
 	fmt.Fprintf(w, "        X509v3 extensions:\n")
@@ -201,10 +164,11 @@ func renderDer(w io.Writer, b []byte) error {
 		}
 
 	}
+	fmt.Fprintf(w, "</pre>")
 	return nil
 }
 
-func renderCert(w io.Writer, b []byte) error {
+func renderx509(w io.Writer, b []byte) error {
 	block, rest := pem.Decode(b)
 	for {
 		if block == nil {
@@ -467,24 +431,6 @@ func printSan(cert *x509.Certificate, b []byte) string {
 	return strings.Join(outs, "\n")
 }
 
-//	OCTET STRING {
-//		sct_list {
-//			sct {
-//				Version (0x0 or v1)
-//				LogID (opaque)
-//				uint64 timestamp
-//				CtExtensions
-//				signed_struct {
-//					// tls.SignatureScheme.String()
-//					SigAndHashAlgorithm {
-//						hash
-//						signature
-//					}
-//					Signature (opaque)
-//				}
-//			}
-//		}
-//	}
 func printSCTs(cert *x509.Certificate, b []byte) string {
 	cb := cryptobyte.String(b)
 	var out []byte
@@ -614,7 +560,6 @@ type sct struct {
 	Sig        []byte
 }
 
-// TODO: these should be capital hex??
 func (s *sct) String() string {
 	w := &strings.Builder{}
 	fmt.Fprintf(w, "Signed Certificate Timestamp:\n")
