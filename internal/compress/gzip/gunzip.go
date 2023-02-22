@@ -287,8 +287,9 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 		} else {
 			if z.updates != nil {
 				checkpoint := &flate.Checkpoint{
-					In:    z.CompressedCount(),
-					Empty: true,
+					In:         z.CompressedCount(),
+					Empty:      true,
+					GzipHeader: toFlateHeader(hdr),
 				}
 				z.updates <- checkpoint
 			}
@@ -298,9 +299,10 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 	} else {
 		if z.updates != nil {
 			checkpoint := &flate.Checkpoint{
-				In:    z.CompressedCount(),
-				Out:   z.decompressor.(flate.Woffseter).Woffset(),
-				Empty: true,
+				In:         z.CompressedCount(),
+				Out:        z.decompressor.(flate.Woffseter).Woffset(),
+				Empty:      true,
+				GzipHeader: toFlateHeader(hdr),
 			}
 			z.updates <- checkpoint
 		}
@@ -308,6 +310,24 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 		z.decompressor.(flate.Resetter).Reset(z.r, nil, z.CompressedCount())
 	}
 	return hdr, nil
+}
+
+var emptyTime = time.Time{}
+
+func toFlateHeader(hdr Header) *flate.Header {
+	if len(hdr.Extra) == 0 && len(hdr.Comment) == 0 && hdr.ModTime == emptyTime && len(hdr.Name) == 0 && hdr.OS == 0 {
+		return nil
+	}
+	h := &flate.Header{
+		Comment: hdr.Comment,
+		Extra:   hdr.Extra,
+		Name:    hdr.Name,
+		OS:      hdr.OS,
+	}
+	if hdr.ModTime != emptyTime {
+		h.ModTime = &hdr.ModTime
+	}
+	return h
 }
 
 // Read implements io.Reader, reading uncompressed bytes from its underlying Reader.

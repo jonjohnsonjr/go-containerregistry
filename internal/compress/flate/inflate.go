@@ -14,6 +14,7 @@ import (
 	"math/bits"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -942,6 +943,14 @@ func NewReaderDict(r io.Reader, dict []byte) io.ReadCloser {
 	return &f
 }
 
+type Header struct {
+	Comment string     `json:"comment,omitempty"`
+	Extra   []byte     `json:"extra,omitempty"`
+	ModTime *time.Time `json:"modtime,omitempty"`
+	Name    string     `json:"name,omitempty"`
+	OS      byte       `json:"os,omitempty"`
+}
+
 type Checkpoint struct {
 	// TODO: separate these from the rest
 	In  int64 `json:"in,omitempty"`
@@ -959,6 +968,10 @@ type Checkpoint struct {
 
 	// If there is no Hist, we can avoid writing the file.
 	Empty bool `json:"empty,omitempty"`
+
+	// Optional gzip header.
+	// TODO: Refactor this.
+	GzipHeader *Header `json:"gzipHeader,omitempty"`
 }
 
 func (c *Checkpoint) History() []byte {
