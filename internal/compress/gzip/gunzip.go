@@ -315,17 +315,19 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 var emptyTime = time.Time{}
 
 func toFlateHeader(hdr Header) *flate.Header {
-	if len(hdr.Extra) == 0 && len(hdr.Comment) == 0 && hdr.ModTime == emptyTime && len(hdr.Name) == 0 && hdr.OS == 0 {
+	if len(hdr.Extra) == 0 && len(hdr.Comment) == 0 && hdr.ModTime == emptyTime && len(hdr.Name) == 0 && hdr.OS == 255 {
 		return nil
 	}
 	h := &flate.Header{
 		Comment: hdr.Comment,
 		Extra:   hdr.Extra,
 		Name:    hdr.Name,
-		OS:      hdr.OS,
 	}
 	if hdr.ModTime != emptyTime {
 		h.ModTime = &hdr.ModTime
+	}
+	if hdr.OS != 255 {
+		h.OS = &hdr.OS
 	}
 	return h
 }

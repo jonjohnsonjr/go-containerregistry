@@ -11,21 +11,19 @@ import (
 type TOC struct {
 	// TODO: Move these so files/checkpoints can be streamingly parsed.
 	// metadata.json?
-	Csize int64 `json:"csize,omitempty"`
-	Usize int64 `json:"usize,omitempty"`
-	Ssize int64 `json:"ssize,omitempty"`
-
-	// TODO: Files as jsonlines in separate file.
-	Files []TOCFile `json:"files,omitempty"`
+	Csize       int64  `json:"csize,omitempty"`
+	Usize       int64  `json:"usize,omitempty"`
+	Ssize       int64  `json:"ssize,omitempty"`
+	ArchiveSize int64  `json:"asize,omitempty"`
+	Size        int64  `json:"size,omitempty"`
+	Type        string `json:"type,omitempty"`
+	MediaType   string `json:"mediaType,omitempty"`
 
 	// TODO: Checkpoints as jsonlines in separate file.
 	Checkpoints []*flate.Checkpoint `json:"checkpoints,omitempty"`
 
-	ArchiveSize int64 `json:"asize,omitempty"`
-	Size        int64 `json:"size,omitempty"`
-
-	Type      string `json:"type,omitempty"`
-	MediaType string `json:"mediaType,omitempty"`
+	// TODO: Files as jsonlines in separate file.
+	Files []TOCFile `json:"files,omitempty"`
 }
 
 type TOCFile struct {
@@ -40,7 +38,7 @@ type TOCFile struct {
 	Gid      int       `json:"gid,omitempty"`
 
 	// Our uncompressed offset so we can seek ahead.
-	Offset int64
+	Offset int64 `json:"offset,omitempty"`
 }
 
 func (toc *TOC) Checkpoint(tf *TOCFile) *Checkpointer {

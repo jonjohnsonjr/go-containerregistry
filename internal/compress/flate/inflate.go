@@ -948,7 +948,7 @@ type Header struct {
 	Extra   []byte     `json:"extra,omitempty"`
 	ModTime *time.Time `json:"modtime,omitempty"`
 	Name    string     `json:"name,omitempty"`
-	OS      byte       `json:"os,omitempty"`
+	OS      *byte      `json:"os,omitempty"`
 }
 
 type Checkpoint struct {
