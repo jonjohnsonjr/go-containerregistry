@@ -15,7 +15,6 @@ package explore
 
 import (
 	"archive/tar"
-	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -152,20 +151,9 @@ func (f *layerFile) Size() int64 {
 	return f.header.Size
 }
 
-func (f *layerFile) tooBig() []byte {
-	crane := crane("blob") + f.fs.ref + " | gunzip | tar -Oxf - " + f.name
-	data := []byte("this file is too big, use crane to download it:\n\n" + crane)
-	return data
-}
-
 // This used to handle content sniffing, but I forked net/http instead.
 func (f *layerFile) Read(p []byte) (int, error) {
 	debugf("Read(%q): len(p) = %d", f.name, len(p))
-
-	if f.header.Size > respTooBig {
-		log.Printf("too big")
-		return bytes.NewReader(f.tooBig()).Read(p)
-	}
 
 	return f.fs.tr.Read(p)
 }
@@ -255,13 +243,6 @@ func (f *layerFile) Stat() (os.FileInfo, error) {
 		hdr := *f.header
 		hdr.Typeflag = tar.TypeDir
 		return hdr.FileInfo(), nil
-	}
-
-	if f.header.Size > respTooBig {
-		return bigFifo{
-			name:    f.header.Name,
-			content: f.tooBig(),
-		}, nil
 	}
 
 	return f.header.FileInfo(), nil

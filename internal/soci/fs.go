@@ -3,7 +3,6 @@ package soci
 import (
 	"archive/tar"
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -159,11 +158,6 @@ func (s *MultiFS) Open(original string) (fs.File, error) {
 		name = path.Clean("/" + fm.Name)
 	}
 	s.lastFs = sfs
-
-	if int64(fm.Size) > sfs.maxSize {
-		logs.Debug.Printf("multifs.Open(%q): too big: %d", name, fm.Size)
-		return sfs.tooBig(fm), nil
-	}
 
 	if fm.Typeflag == tar.TypeDir {
 		// Return a multifs dir file so we search everything
@@ -373,19 +367,6 @@ func crane(sub string) string {
 	return craneLink + " " + subLink
 }
 
-func (s *SociFS) tooBig(fm *TOCFile) fs.File {
-	crane := crane("blob") + s.ref + " | gunzip | tar -Oxf - " + fm.Name
-	data := []byte("this file is too big, use crane to download it:\n\n" + crane)
-	fm.Size = int64(len(data))
-
-	return &sociFile{
-		fs:   s,
-		name: fm.Name,
-		fm:   fm,
-		buf:  bufio.NewReader(bytes.NewReader(data)),
-	}
-}
-
 func (s *SociFS) Open(original string) (fs.File, error) {
 	logs.Debug.Printf("soci.Open(%q)", original)
 	name := strings.TrimPrefix(original, s.prefix)
@@ -416,11 +397,6 @@ func (s *SociFS) Open(original string) (fs.File, error) {
 
 		name = path.Clean("/" + chased.Name)
 		fm = chased
-	}
-
-	if int64(fm.Size) > s.maxSize {
-		logs.Debug.Printf("soci.Open(%q): too big: %d", name, fm.Size)
-		return s.tooBig(fm), nil
 	}
 
 	return &sociFile{fs: s, name: name, fm: fm}, nil
