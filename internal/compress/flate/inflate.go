@@ -951,6 +951,11 @@ type Header struct {
 	OS      *byte      `json:"os,omitempty"`
 }
 
+type Trailer struct {
+	Digest uint32 `json:"crc32,omitempty"`
+	Size   uint32 `json:"isize,omitempty"`
+}
+
 type Checkpoint struct {
 	// TODO: separate these from the rest
 	In  int64 `json:"in,omitempty"`
@@ -970,8 +975,7 @@ type Checkpoint struct {
 	Empty bool `json:"empty,omitempty"`
 
 	// Optional gzip header.
-	// TODO: Refactor this.
-	GzipHeader *Header `json:"gzipHeader,omitempty"`
+	GzipHeader *Header `json:"header,omitempty"`
 }
 
 func (c *Checkpoint) History() []byte {

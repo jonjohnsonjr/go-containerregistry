@@ -58,6 +58,11 @@ type Header struct {
 	OS      byte      // operating system type
 }
 
+type Trailer struct {
+	Digest uint32 `json:"crc32,omitempty"`
+	Size   uint32 `json:"isize,omitempty"`
+}
+
 // A Reader is an io.Reader that can be read to retrieve
 // uncompressed data from a gzip-format compressed file.
 //
@@ -73,7 +78,8 @@ type Header struct {
 // returned by Read as tentative until they receive the io.EOF
 // marking the end of the data.
 type Reader struct {
-	Header       // valid after NewReader or Reader.Reset
+	Header                // valid after NewReader or Reader.Reset
+	Trailer      *Trailer // valid after hitting EOF
 	r            *countReader
 	decompressor io.ReadCloser
 	digest       uint32 // CRC-32, IEEE polynomial (section 8)
@@ -87,6 +93,8 @@ type Reader struct {
 	span    int64
 	from    *flate.Checkpoint
 	updates chan<- *flate.Checkpoint
+
+	last *flate.Checkpoint
 }
 
 // NewReader creates a new Reader reading the given reader.
@@ -286,25 +294,25 @@ func (z *Reader) readHeader() (hdr Header, err error) {
 			z.decompressor = flate.Continue(z.r, z.from, z.span, z.updates)
 		} else {
 			if z.updates != nil {
-				checkpoint := &flate.Checkpoint{
+				z.last = &flate.Checkpoint{
 					In:         z.CompressedCount(),
 					Empty:      true,
 					GzipHeader: toFlateHeader(hdr),
 				}
-				z.updates <- checkpoint
+				z.updates <- z.last
 			}
 
 			z.decompressor = flate.NewReaderWithSpans(z.r, z.span, z.CompressedCount(), z.updates)
 		}
 	} else {
 		if z.updates != nil {
-			checkpoint := &flate.Checkpoint{
+			z.last = &flate.Checkpoint{
 				In:         z.CompressedCount(),
 				Out:        z.decompressor.(flate.Woffseter).Woffset(),
 				Empty:      true,
 				GzipHeader: toFlateHeader(hdr),
 			}
-			z.updates <- checkpoint
+			z.updates <- z.last
 		}
 
 		z.decompressor.(flate.Resetter).Reset(z.r, nil, z.CompressedCount())
@@ -362,6 +370,7 @@ func (z *Reader) Read(p []byte) (n int, err error) {
 			}
 		}
 		z.digest, z.size = 0, 0
+		z.Trailer = &Trailer{digest, size}
 
 		// File is ok; check if there is another.
 		if !z.multistream {
