@@ -215,6 +215,9 @@ func (h *handler) renderRepo(w http.ResponseWriter, r *http.Request, repo string
 		base := path.Base(fullRepo)
 		dir := path.Dir(strings.TrimRight(fullRepo, "/"))
 		if base != "." && dir != "." {
+			if strings.HasPrefix(dir, "index.docker.io") {
+				dir = strings.Replace(dir, "index.docker.io", "docker.io", 1)
+			}
 			header.Up = &RepoParent{
 				Parent:    dir,
 				Child:     base,

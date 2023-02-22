@@ -22,7 +22,7 @@ import (
 
 func isDockerHub(repo name.Repository) bool {
 	reg := repo.Registry.String()
-	return reg == name.DefaultRegistry || reg == "docker.io"
+	return reg == "index.docker.io" || reg == "docker.io"
 }
 
 // don't cache potentially private manifests
