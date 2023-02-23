@@ -189,6 +189,7 @@ func WithTransport(t http.RoundTripper) Option {
 func WithAuth(auth authn.Authenticator) Option {
 	return func(o *options) error {
 		o.auth = auth
+		o.keychain = nil
 		return nil
 	}
 }
@@ -202,6 +203,7 @@ func WithAuth(auth authn.Authenticator) Option {
 func WithAuthFromKeychain(keys authn.Keychain) Option {
 	return func(o *options) error {
 		o.keychain = keys
+		o.auth = nil
 		return nil
 	}
 }
