@@ -34,7 +34,7 @@ type Indexer struct {
 // Original stream (buffered rc to Peek)
 // Unwrapped stream (ungzip or unzstd, nil if we could not unwrap or err != nil)
 // Error (maybe nil)
-func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string) (*Indexer, io.ReadCloser, io.ReadCloser, error) {
+func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string) (*Indexer, string, io.ReadCloser, io.ReadCloser, error) {
 	logs.Debug.Printf("NewIndexer")
 	// TODO: Allow binding writer after detection.
 
@@ -53,7 +53,7 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 
 	kind, pr, tpr, err := Peek(rc)
 	if err != nil {
-		return nil, pr, tpr, err
+		return nil, kind, pr, tpr, err
 	}
 
 	logs.Debug.Printf("Peeked: %s", kind)
@@ -61,7 +61,7 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 		i.updates = make(chan *flate.Checkpoint, 10)
 		zr, err := gzip.NewReaderWithSpans(pr, span, i.updates)
 		if err != nil {
-			return nil, pr, nil, err
+			return nil, kind, pr, nil, err
 		}
 
 		i.zr = zr
@@ -70,7 +70,7 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 		i.zupdates = make(chan *zstd.Checkpoint, 10)
 		zr, err := zstd.NewReader(pr, zstd.WithCheckpoints(i.zupdates), zstd.WithDecoderConcurrency(1))
 		if err != nil {
-			return nil, pr, nil, err
+			return nil, kind, pr, nil, err
 		}
 		i.zr = zr
 		i.tr = tar.NewReader(zr)
@@ -79,7 +79,7 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 		i.tr = tar.NewReader(i.zr)
 	} else {
 		// Not a wrapped tar!
-		return nil, pr, tpr, nil
+		return nil, kind, pr, tpr, nil
 	}
 
 	i.toc.Type = kind
@@ -89,7 +89,7 @@ func NewIndexer(rc io.ReadCloser, w io.WriteCloser, span int64, mediaType string
 
 	i.g.Go(i.processUpdates)
 
-	return i, nil, nil, nil
+	return i, kind, nil, nil, nil
 }
 
 func (i *Indexer) Next() (*tar.Header, error) {

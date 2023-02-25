@@ -659,8 +659,9 @@ func (h *handler) renderDockerfile(w http.ResponseWriter, r *http.Request, ref n
 	return renderDockerfile(w, b, &m, ref.Context())
 }
 
-func (h *handler) renderFile(w http.ResponseWriter, r *http.Request, seek io.ReadSeeker) error {
-	if mt := r.URL.Query().Get("mt"); mt != "" && !strings.Contains(mt, ".layer.") {
+func (h *handler) renderFile(w http.ResponseWriter, r *http.Request, ref name.Digest, kind string, blob *sizeSeeker) error {
+	mt := r.URL.Query().Get("mt")
+	if mt != "" && !strings.Contains(mt, ".layer.") {
 		// Avoid setting this for steve's artifacts stupidity.
 		w.Header().Set("Content-Type", mt)
 	}
@@ -669,7 +670,47 @@ func (h *handler) renderFile(w http.ResponseWriter, r *http.Request, seek io.Rea
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
 
 	// TODO: Add render func here?
-	httpserve.ServeContent(w, r, "", time.Time{}, seek, nil)
+	httpserve.ServeContent(w, r, "", time.Time{}, blob, func(w http.ResponseWriter, ctype string) error {
+		// Kind at this poin can be "gzip", "zstd" or ""
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
+			return err
+		}
+		hash, err := v1.NewHash(ref.Identifier())
+		if err != nil {
+			return err
+		}
+		desc := v1.Descriptor{
+			Digest:    hash,
+			MediaType: types.MediaType(mt),
+		}
+		if size := r.URL.Query().Get("size"); size != "" {
+			if parsed, err := strconv.ParseInt(size, 10, 64); err == nil {
+				desc.Size = parsed
+			}
+		}
+		header := headerData(ref, desc)
+		header.Up = &RepoParent{
+			Parent:    ref.Context().String(),
+			Separator: "@",
+			Child:     ref.Identifier(),
+		}
+		header.JQ = crane("blob") + " " + ref.String()
+		if kind == "zstd" {
+			header.JQ += " | zstd -d"
+		} else if kind == "gzip" {
+			header.JQ += " | gunzip"
+		}
+		if blob.size < 0 || blob.size > httpserve.TooBig {
+			header.JQ += fmt.Sprintf(" | head -c %d", httpserve.TooBig)
+		}
+		if ctype == "application/octet-stream" {
+			header.JQ += " | xxd"
+		}
+
+		logs.Debug.Printf("got here tho")
+		return bodyTmpl.Execute(w, header)
+	})
 
 	return nil
 }
@@ -694,18 +735,23 @@ func (h *handler) renderFS(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("fetchBlob: %w", err)
 	}
 
-	original, unwrapped, err := h.tryNewIndex(w, r, dig, ref, blob)
+	kind, original, unwrapped, err := h.tryNewIndex(w, r, dig, ref, blob)
 	if err != nil {
 		return fmt.Errorf("failed to index blob %q: %w", dig.String(), err)
 	}
 	if unwrapped != nil {
+		logs.Debug.Printf("unwrapped, kind = %q", kind)
 		seek := &sizeSeeker{unwrapped, -1, ref, nil, false}
-		return h.renderFile(w, r, seek)
+		return h.renderFile(w, r, dig, kind, seek)
 	}
 	if original != nil {
+		logs.Debug.Printf("original")
 		seek := &sizeSeeker{original, blob.size, ref, nil, false}
-		return h.renderFile(w, r, seek)
+		return h.renderFile(w, r, dig, kind, seek)
 	}
+
+	logs.Debug.Printf("unwrapped and original were both nil?")
+
 	return nil
 }
 
@@ -1107,12 +1153,11 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 	}
 	header.JQ = crane("blob") + " " + ref.String() + " | " + tarflags + " " + filelink
 
-	truncate := int64(1 << 15)
-	if stat.Size() > truncate {
-		header.JQ = header.JQ + fmt.Sprintf(" | head -c %d", truncate)
-		if ctype == "application/octet-stream" {
-			header.JQ = header.JQ + " | xxd"
-		}
+	if stat.Size() > httpserve.TooBig {
+		header.JQ += fmt.Sprintf(" | head -c %d", httpserve.TooBig)
+	}
+	if ctype == "application/octet-stream" {
+		header.JQ += " | xxd"
 	}
 
 	if stat.IsDir() {

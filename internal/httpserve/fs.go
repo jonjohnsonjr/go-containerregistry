@@ -32,7 +32,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/logs"
 )
 
-const tooBig = 1 << 15
+const TooBig = 1 << 15
 
 // HeaderRenderer renders a header for a FileSystem.
 type HeaderRenderer interface {
@@ -474,6 +474,7 @@ var errSeeker = errors.New("seeker can't seek")
 // all of the byte-range-spec values is greater than the content size.
 var errNoOverlap = errors.New("invalid range: failed to overlap")
 
+// TODO: Define sentinel error to return early.
 type renderFunc func(w http.ResponseWriter, ctype string) error
 
 // if name is empty, filename is unknown. (used for mime type, before sniffing)
@@ -519,9 +520,11 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		return
 	}
 	if size < 0 {
-		// Should never happen but just to be sure
-		http.Error(w, "negative content size computed", http.StatusInternalServerError)
-		return
+		if _, ok := w.(http.Flusher); !ok {
+			// Should never happen but just to be sure
+			http.Error(w, "negative content size computed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// handle Content-Range header.
@@ -604,7 +607,8 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		}()
 	}
 
-	//if render != nil && r.URL.Query().Get("dl") == "" {
+	logs.Debug.Printf("got here")
+
 	if render != nil && r.URL.Query().Get("dl") == "" {
 		if err := render(w, ctype); err != nil {
 			logs.Debug.Printf("render(w): %v", err)
@@ -626,34 +630,27 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		if render != nil && r.URL.Query().Get("dl") == "" {
 			logs.Debug.Printf("ctype=%q", ctype)
 			buf := bufio.NewWriter(w)
-			if ctype == "application/octet-stream" {
-				if sendSize > tooBig {
-					sendSize = tooBig
-				}
-				if sendSize < 0 {
-					if _, err := io.Copy(&octetPrinter{buf: buf, size: sendSize}, sendContent); err != nil {
-						logs.Debug.Printf("octet: %v", err)
-					}
-				} else {
-					if _, err := io.CopyN(&octetPrinter{buf: buf, size: sendSize}, sendContent, sendSize); err != nil {
-						logs.Debug.Printf("octet: %v", err)
-					}
+			if sendSize < 0 || sendSize > TooBig {
+				sendSize = TooBig
+			}
+
+			var w io.Writer
+			if strings.HasPrefix(ctype, "text/") {
+				w = &dumbEscaper{buf: buf}
+			} else {
+				w = &octetPrinter{buf: buf, size: sendSize}
+			}
+			if sendSize < 0 {
+				if _, err := io.Copy(w, sendContent); err != nil {
+					logs.Debug.Printf("Copy: %v", err)
 				}
 			} else {
-				if sendSize > tooBig {
-					sendSize = tooBig
-				}
-				if sendSize < 0 {
-					if _, err := io.Copy(&dumbEscaper{buf: buf}, sendContent); err != nil {
-						logs.Debug.Printf("escaper: %v", err)
-					}
-				} else {
-					if _, err := io.CopyN(&dumbEscaper{buf: buf}, sendContent, sendSize); err != nil {
-						logs.Debug.Printf("escaper: %v", err)
-					}
+				if _, err := io.CopyN(w, sendContent, sendSize); err != nil {
+					logs.Debug.Printf("CopyN: %v", err)
 				}
 			}
 		} else {
+			logs.Debug.Printf("got here :(")
 			io.CopyN(w, sendContent, sendSize)
 		}
 	}
@@ -1371,9 +1368,10 @@ func (d *dumbEscaper) Write(p []byte) (n int, err error) {
 }
 
 type octetPrinter struct {
-	buf   *bufio.Writer
-	size  int64
-	total int64
+	buf    *bufio.Writer
+	size   int64
+	total  int64
+	cursor int64
 }
 
 // TODO: restrict to some reasonable number
@@ -1382,17 +1380,14 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 		o.total += int64(n)
 	}()
 
-	left := o.total % 16
+	logs.Debug.Printf("len(p) == %d", len(p))
+
+	left := int(o.total % 16)
 	if left != 0 {
-		return 0, fmt.Errorf("TODO: implement chunking")
+		logs.Debug.Printf("left = %d", left)
+		// logs.Debug.Printf("misaligned previous write: left == %d, total=%d, size=%d", left, o.total, o.size)
 	}
-	chunks := len(p) / 16
-	remain := len(p) % 16
-
-	if remain != 0 && (o.size >= 0 && int64(len(p))+o.total != o.size) {
-		return 0, fmt.Errorf("TODO: implement chunking")
-	}
-
+	chunks := (left + len(p)) / 16
 	for chunk := 0; chunk <= chunks; chunk++ {
 		start := chunk * 16
 		cur := o.total + int64(start)
@@ -1402,8 +1397,15 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 		}
 
 		ascii := []byte{' ', ' '}
-		for i := 0; i < 16; i++ {
-			pos := cur + int64(i)
+		min, max := 0, 16
+		if left != 0 && chunk == 0 {
+			min = left
+		}
+		if min != 0 {
+			logs.Debug.Printf("min=%d, max=%d", min, max)
+		}
+		for i := min; i < max; i++ {
+			pos := o.cursor + 1
 			if i == 0 {
 				line := fmt.Sprintf("%08x:", cur)
 				if _, err := o.buf.WriteString(line); err != nil {
@@ -1441,8 +1443,12 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 			if _, err := o.buf.WriteString(line); err != nil {
 				return i, err
 			}
+			o.cursor++
 		}
-		ascii = append(ascii, '\n')
+		// logs.Debug.Printf("pos = %d", pos)
+		if o.cursor%16 == 0 {
+			ascii = append(ascii, '\n')
+		}
 		if _, err := o.buf.Write(ascii); err != nil {
 			return start, err
 		}
