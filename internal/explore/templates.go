@@ -237,6 +237,7 @@ pre {
 
 .noselect {
 	user-select: none;
+	-webkit-user-select: none;
 	width: fit-content;
 	overflow-wrap: none;
 	padding-right: 1em;

@@ -29,18 +29,18 @@ func indexKey(prefix string, idx int) string {
 
 // Attempt to create a new index. If we fail, both readclosers will be nil.
 // TODO: Dedupe with createIndex.
-func (h *handler) tryNewIndex(w http.ResponseWriter, r *http.Request, dig name.Digest, ref string, blob *sizeBlob) (io.ReadCloser, io.ReadCloser, error) {
+func (h *handler) tryNewIndex(w http.ResponseWriter, r *http.Request, dig name.Digest, ref string, blob *sizeBlob) (string, io.ReadCloser, io.ReadCloser, error) {
 	key := indexKey(dig.Identifier(), 0)
 
 	// TODO: Plumb this down into NewIndexer so we don't create it until we need to.
 	ocw, err := h.indexCache.Writer(r.Context(), key)
 	if err != nil {
-		return nil, nil, fmt.Errorf("indexCache.Writer: %w", err)
+		return "", nil, nil, fmt.Errorf("indexCache.Writer: %w", err)
 	}
 	defer ocw.Close()
 	zw, err := gzip.NewWriterLevel(ocw, gzip.BestSpeed)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 	bw := bufio.NewWriterSize(zw, 1<<16)
 	flushClose := func() error {
@@ -52,9 +52,9 @@ func (h *handler) tryNewIndex(w http.ResponseWriter, r *http.Request, dig name.D
 	cw := &and.WriteCloser{bw, flushClose}
 
 	mt := r.URL.Query().Get("mt")
-	indexer, pr, tpr, err := soci.NewIndexer(blob, cw, spanSize, mt)
+	indexer, kind, pr, tpr, err := soci.NewIndexer(blob, cw, spanSize, mt)
 	if indexer == nil {
-		return pr, tpr, err
+		return kind, pr, tpr, err
 	}
 
 	// Render FS the old way while generating the index.
@@ -67,13 +67,13 @@ func (h *handler) tryNewIndex(w http.ResponseWriter, r *http.Request, dig name.D
 		if errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
-			return nil, nil, fmt.Errorf("indexer.Next: %w", err)
+			return "", nil, nil, fmt.Errorf("indexer.Next: %w", err)
 		}
 	}
 
 	toc, err := indexer.TOC()
 	if err != nil {
-		return nil, nil, err
+		return kind, nil, nil, err
 	}
 	if h.tocCache != nil {
 		if err := h.tocCache.Put(r.Context(), key, toc); err != nil {
@@ -83,7 +83,7 @@ func (h *handler) tryNewIndex(w http.ResponseWriter, r *http.Request, dig name.D
 
 	logs.Debug.Printf("index size: %d", indexer.Size())
 
-	return nil, nil, nil
+	return kind, nil, nil, nil
 }
 
 // Returns nil index if it's incomplete.
@@ -188,7 +188,7 @@ func (h *handler) createIndex(ctx context.Context, rc io.ReadCloser, size int64,
 	cw := &and.WriteCloser{bw, flushClose}
 
 	// TODO: Better?
-	indexer, _, _, err := soci.NewIndexer(rc, cw, spanSize, mediaType)
+	indexer, _, _, _, err := soci.NewIndexer(rc, cw, spanSize, mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("TODO: don't return this error: %w", err)
 	}
