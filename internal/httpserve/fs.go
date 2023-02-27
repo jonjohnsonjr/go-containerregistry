@@ -1382,7 +1382,7 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 	}
 	for _, r := range p {
 		if o.size != 0 && o.cursor >= o.size {
-			return len(p), o.buf.Flush()
+			break
 		}
 		if o.cursor%16 == 0 {
 			line := fmt.Sprintf("%08x:", o.cursor)
@@ -1424,8 +1424,25 @@ func (o *octetPrinter) Write(p []byte) (n int, err error) {
 		}
 		if o.cursor%16 == 0 {
 			o.ascii = append(o.ascii, '\n')
+			if _, err := o.buf.Write(o.ascii); err != nil {
+				return 0, err
+			}
 		}
-		if o.cursor%16 == 0 || (o.size >= 0 && o.cursor == o.size) {
+	}
+
+	if o.size > 0 && o.cursor >= o.size {
+		pos := o.size % 16
+		if pos != 0 {
+			for i := pos; i < 16; i++ {
+				if i%2 == 0 {
+					if err := o.buf.WriteByte(' '); err != nil {
+						return 0, err
+					}
+				}
+				if _, err := o.buf.Write([]byte("  ")); err != nil {
+					return 0, err
+				}
+			}
 			if _, err := o.buf.Write(o.ascii); err != nil {
 				return 0, err
 			}

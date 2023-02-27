@@ -127,7 +127,20 @@ Enter a <strong>public</strong> repository, e.g. <tt>"ubuntu"</tt>:
 <h3>FAQ</h3>
 <h4>How does this work?</h4>
 <p>
-This service lives on <a href="https://cloud.run">Cloud Run</a> and uses <a href="https://github.com/google/go-containerregistry">google/go-containerregistry</a> (AKA <em>ggcr</em>) for registry interactions.
+This service lives on <a href="https://cloud.run">Cloud Run</a> and uses <a href="https://github.com/google/go-containerregistry">google/go-containerregistry</a> for registry interactions.
+</p>
+<h4>Isn't this expensive for the registry?</h4>
+<p>
+Not really! The first time a layer is accessed, I download and index it. Browsing the filesystem just uses that index, and opening a file uses Range requests to load small chunks of the layer as needed.
+</p>
+<h4>That can't be true, gzip doesn't support random access!</h4>
+<p>
+That's not a question.
+</p>
+<h4>Okay then, how does random access work if the layers are gzipped tarballs?</h4>
+<p>Great question! See <a href="https://github.com/madler/zlib/blob/master/examples/zran.c">here</a>.</p>
+<p>Tl;dr, you can seek to an arbitrary position in a gzip stream if you know the 32KiB of uncompressed data that comes just before it, so by storing ~1% of the uncompressed layer size, I can jump ahead to predetermined locations and start reading from there rather than reading the entire layer.</p>
+<p>Thanks <a href="https://github.com/aidansteele">@aidansteele</a>!</p>
 </p>
 </body>
 </html>
