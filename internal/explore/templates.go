@@ -322,25 +322,3 @@ type HeaderData struct {
 	EscapedMediaType string
 	MediaTypeLink    string
 }
-
-// Cosign simple signing stuff.
-// TODO: Maybe just remove this?
-
-type SimpleSigning struct {
-	Critical Critical
-	Optional map[string]string
-}
-
-type Critical struct {
-	Identity Identity
-	Image    Image
-	Type     string
-}
-
-type Identity struct {
-	DockerReference string `json:"docker-reference"`
-}
-
-type Image struct {
-	DockerManifestDigest string `json:"Docker-manifest-digest"`
-}

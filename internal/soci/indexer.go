@@ -150,6 +150,7 @@ func (i *Indexer) TOC() (*TOC, error) {
 		return nil, err
 	}
 	tocSize := int64(len(b))
+	// TODO: Reset gzip writer at this point.
 	if err := i.tw.WriteHeader(&tar.Header{
 		Name: tocFile,
 		Size: tocSize,
