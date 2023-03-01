@@ -24,12 +24,16 @@ func (p *purl) url(repo string) (string, error) {
 		if p.version == "" {
 			return "", fmt.Errorf("no version in purl")
 		}
-		repository := repo
-		if p.namespace == "" {
-			p.namespace = "library"
-		}
-		if p.namespace != "" && p.name != "" {
-			repository = path.Join("index.docker.io", p.namespace, p.name)
+		repository := p.qualifiers.Get("repository_url")
+		if repository == "" {
+			if p.namespace == "" {
+				p.namespace = "library"
+			}
+			if p.namespace != "" && p.name != "" {
+				repository = path.Join("index.docker.io", p.namespace, p.name)
+			}
+		} else {
+			repository = path.Join(repository, p.namespace, p.name)
 		}
 		mt := p.qualifiers.Get("mediaType")
 		if mt == "" {
@@ -67,6 +71,8 @@ func (p *purl) url(repo string) (string, error) {
 		return fmt.Sprintf("/%s%s%s%s", h, repository, delim, p.version), nil
 	case "github":
 		return fmt.Sprintf("https://github.com/%s/%s/tree/%s", p.namespace, p.name, p.version), nil
+	case "bitbucket":
+		return fmt.Sprintf("https://www.bitbucket.org/%s/%s/changeset/%s", p.namespace, p.name, p.version), nil
 	case "apk":
 		if p.namespace == "alpine" {
 			arch := p.qualifiers.Get("arch")
@@ -74,7 +80,7 @@ func (p *purl) url(repo string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("nope")
+	return "", fmt.Errorf("TODO: implement %q", p.tipe)
 }
 
 // scheme:type/namespace/name@version?qualifiers#subpath
