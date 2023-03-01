@@ -661,10 +661,6 @@ func (h *handler) renderDockerfile(w http.ResponseWriter, r *http.Request, ref n
 
 func (h *handler) renderFile(w http.ResponseWriter, r *http.Request, ref name.Digest, kind string, blob *sizeSeeker) error {
 	mt := r.URL.Query().Get("mt")
-	if mt != "" && !strings.Contains(mt, ".layer.") {
-		// Avoid setting this for steve's artifacts stupidity.
-		w.Header().Set("Content-Type", mt)
-	}
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -703,7 +699,7 @@ func (h *handler) renderFile(w http.ResponseWriter, r *http.Request, ref name.Di
 		if blob.size < 0 || blob.size > httpserve.TooBig {
 			header.JQ += fmt.Sprintf(" | head -c %d", httpserve.TooBig)
 		}
-		if !strings.HasPrefix(ctype, "text/") {
+		if !strings.HasPrefix(ctype, "text/") && !strings.Contains(ctype, "json") {
 			header.JQ += " | xxd"
 		}
 
@@ -714,9 +710,15 @@ func (h *handler) renderFile(w http.ResponseWriter, r *http.Request, ref name.Di
 }
 
 func (h *handler) renderFS(w http.ResponseWriter, r *http.Request) error {
+	mt := r.URL.Query().Get("mt")
 	dig, ref, err := h.getDigest(w, r)
 	if err != nil {
 		return fmt.Errorf("getDigest: %w", err)
+	}
+
+	isImage := strings.HasPrefix(mt, "image/")
+	if isImage {
+		return h.renderImage(w, r, dig, mt)
 	}
 
 	index, err := h.getIndex(r.Context(), dig.Identifier())
@@ -747,6 +749,42 @@ func (h *handler) renderFS(w http.ResponseWriter, r *http.Request) error {
 		seek := &sizeSeeker{original, blob.size, ref, nil, false}
 		return h.renderFile(w, r, dig, kind, seek)
 	}
+
+	return nil
+}
+
+func (h *handler) renderImage(w http.ResponseWriter, r *http.Request, ref name.Digest, mt string) error {
+	url, err := h.resolveUrl(w, r)
+	if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
+		return err
+	}
+	hash, err := v1.NewHash(ref.Identifier())
+	if err != nil {
+		return err
+	}
+	desc := v1.Descriptor{
+		Digest:    hash,
+		MediaType: types.MediaType(mt),
+	}
+	if size := r.URL.Query().Get("size"); size != "" {
+		if parsed, err := strconv.ParseInt(size, 10, 64); err == nil {
+			desc.Size = parsed
+		}
+	}
+	header := headerData(ref, desc)
+	header.Up = &RepoParent{
+		Parent:    ref.Context().String(),
+		Separator: "@",
+		Child:     ref.Identifier(),
+	}
+	header.JQ = "curl " + url
+
+	if err := bodyTmpl.Execute(w, header); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, "<img src=%q></img>", url)
+	fmt.Fprintf(w, "</body></html>")
 
 	return nil
 }

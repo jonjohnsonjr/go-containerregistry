@@ -245,6 +245,55 @@ func (h *handler) fetchBlob(w http.ResponseWriter, r *http.Request) (*sizeBlob, 
 	return sb, root + ref, err
 }
 
+func (h *handler) resolveUrl(w http.ResponseWriter, r *http.Request) (string, error) {
+	path, root, err := splitFsURL(r.URL.Path)
+	if err != nil {
+		return "", err
+	}
+
+	chunks := strings.SplitN(path, "@", 2)
+	if len(chunks) != 2 {
+		return "", fmt.Errorf("not enough chunks: %s", path)
+	}
+	// 71 = len("sha256:") + 64
+	if len(chunks[1]) < 71 {
+		return "", fmt.Errorf("second chunk too short: %s", chunks[1])
+	}
+
+	digest := chunks[1][:71]
+
+	ref := strings.Join([]string{chunks[0], digest}, "@")
+	if ref == "" {
+		return "", fmt.Errorf("bad ref: %s", path)
+	}
+
+	if root == "/http/" || root == "/https/" {
+		u, err := url.PathUnescape(chunks[0])
+		if err != nil {
+			return "", err
+		}
+
+		scheme := "https://"
+		if root == "/http/" {
+			scheme = "http://"
+		}
+		return scheme + u, nil
+	}
+
+	blobRef, err := name.NewDigest(ref)
+	if err != nil {
+		return "", err
+	}
+
+	opts := h.remoteOptions(w, r, blobRef.Context().Name())
+	l, err := remote.Blob(blobRef, "", opts...)
+	if err != nil {
+		return "", err
+	}
+
+	return l.Url, nil
+}
+
 func (h *handler) fetchUrl(root, ref, digest string, chunks []string, expectedSize int64) (*sizeBlob, string, error) {
 	u, err := url.PathUnescape(chunks[0])
 	if err != nil {

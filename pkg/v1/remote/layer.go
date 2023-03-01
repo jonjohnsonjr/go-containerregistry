@@ -271,6 +271,19 @@ func Blob(ref name.Digest, cachedUrl string, options ...Option) (*BlobSeeker, er
 	return bs, bs.init(0, 1)
 }
 
+func (b *BlobSeeker) Size() int64 {
+	return b.size
+}
+
+func (b *BlobSeeker) Read(p []byte) (n int, err error) {
+	// logs.Debug.Printf("Read of %d", len(p))
+	return b.Body.Read(p)
+}
+
+func (b *BlobSeeker) Close() error {
+	return b.Body.Close()
+}
+
 func (b *BlobSeeker) ReadAt(p []byte, off int64) (n int, err error) {
 	if b.rl == nil {
 		if err := b.init(off, off+int64(len(p))+1); err != nil {

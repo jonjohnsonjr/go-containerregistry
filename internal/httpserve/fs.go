@@ -607,8 +607,6 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 		}()
 	}
 
-	logs.Debug.Printf("got here")
-
 	if render != nil && r.URL.Query().Get("dl") == "" {
 		if err := render(w, ctype); err != nil {
 			logs.Debug.Printf("render(w): %v", err)
@@ -635,7 +633,7 @@ func serveContent(w http.ResponseWriter, r *http.Request, name string, modtime t
 			}
 
 			var w io.Writer
-			if strings.HasPrefix(ctype, "text/") {
+			if strings.HasPrefix(ctype, "text/") || strings.Contains(ctype, "json") {
 				w = &dumbEscaper{buf: buf}
 			} else {
 				w = &octetPrinter{buf: buf, size: sendSize}
