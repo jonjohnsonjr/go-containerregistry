@@ -1137,13 +1137,9 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 						if ds, ok := d.(string); ok {
 							if m, ok := o["mediaType"]; ok {
 								if ms, ok := m.(string); ok {
-									if ss, sss := shouldSize(ms), types.MediaType(ms).IsImage(); ss || sss {
+									if shouldSize(ms) {
 										w.tabf()
-										if ss {
-											w.Print(fmt.Sprintf(`<a href="/size/%s@%s?mt=%s&size=%d"><span title="%s">%d</span></a>`, w.repo, ds, ms, int64(bs), humanize.Bytes(n), n))
-										} else if sss {
-											w.Print(fmt.Sprintf(`<a href="/sizes/%s@%s?mt=%s&size=%d"><span title="%s">%d</span></a>`, w.repo, ds, ms, int64(bs), humanize.Bytes(n), n))
-										}
+										w.Print(fmt.Sprintf(`<a href="/size/%s@%s?mt=%s&size=%d"><span title="%s">%d</span></a>`, w.repo, ds, ms, int64(bs), humanize.Bytes(n), n))
 										w.unfresh()
 										w.key = false
 										// Don't fall through to renderRaw.
