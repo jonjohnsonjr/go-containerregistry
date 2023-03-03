@@ -159,6 +159,9 @@ func (s *MultiFS) Everything() ([]fs.DirEntry, error) {
 				}
 			}
 
+			if sde.IsDir() || fm.Size == 0 {
+				continue
+			}
 			have[fullname] = sfs.ref
 			des = append(des, sde)
 		}
@@ -479,7 +482,9 @@ func (s *SociFS) Everything() ([]fs.DirEntry, error) {
 	des := make([]fs.DirEntry, 0, len(s.files))
 	for _, fm := range s.files {
 		fm := fm
-		des = append(des, s.dirEntry("", &fm))
+		if fm.Size != 0 {
+			des = append(des, s.dirEntry("", &fm))
+		}
 	}
 	return des, nil
 }
