@@ -47,8 +47,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// We should not buffer blobs greater than 2MB
-const tooBig = 1 << 21
+// We should not buffer blobs greater than 4MB
+const tooBig = 1 << 22
 const respTooBig = 1 << 25
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
 
