@@ -427,6 +427,15 @@ func (s *SociFS) ReadDir(original string) ([]fs.DirEntry, error) {
 	return dc.entries, nil
 }
 
+func (s *SociFS) Everything() ([]fs.DirEntry, error) {
+	des := make([]fs.DirEntry, 0, len(s.files))
+	for _, fm := range s.files {
+		fm := fm
+		des = append(des, s.dirEntry("", &fm))
+	}
+	return des, nil
+}
+
 type dirContent struct {
 	entries      []fs.DirEntry
 	realDirs     map[string]struct{}

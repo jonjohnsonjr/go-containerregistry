@@ -193,6 +193,61 @@ type sociEntry interface {
 	Index() int
 }
 
+func DirList(w http.ResponseWriter, r *http.Request, prefix string, des []fs.DirEntry, render func() error) error {
+	logs.Debug.Printf("DirList: %q", prefix)
+
+	var dirs dirEntryDirs = des
+
+	less := func(i, j int) bool {
+		ii, err := dirs.info(i)
+		if err != nil {
+			logs.Debug.Printf("info(%d): %v", i, err)
+			return i < j
+		}
+		ji, err := dirs.info(j)
+		if err != nil {
+			logs.Debug.Printf("info(%d): %v", j, err)
+			return i < j
+		}
+
+		return ii.Size() > ji.Size()
+	}
+	sort.Slice(dirs, less)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if render != nil {
+		if err := render(); err != nil {
+			return fmt.Errorf("render(): %w", err)
+		}
+	}
+	showlayer := strings.HasPrefix(r.URL.Path, "/layers")
+
+	fmt.Fprintf(w, "<pre>\n")
+	for i, n := 0, dirs.len(); i < n; i++ {
+		name := dirs.name(i)
+		if dirs.isDir(i) {
+			name += "/"
+		}
+		info, err := dirs.info(i)
+		if err != nil {
+			log.Printf("(%q).info(): %v", err)
+		}
+		// name may contain '?' or '#', which must be escaped to remain
+		// part of the URL path, and not indicate the start of a query
+		// string or fragment.
+		url := url.URL{Path: strings.TrimPrefix(name, "/")}
+		if info == nil {
+			fmt.Fprintf(w, "<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
+		} else {
+			fmt.Fprint(w, tarListSize(i, dirs, showlayer, info, url, prefix))
+		}
+	}
+	fmt.Fprintf(w, "</pre>\n")
+
+	return nil
+}
+
 func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, render renderFunc) {
 	logs.Debug.Printf("dirList: %q", fname)
 	prefix := fname
@@ -361,6 +416,86 @@ func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, upr
 		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
 	} else {
 		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
+	}
+	return s
+}
+
+func tarListSize(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, uprefix string) string {
+	layer := dirs.layer(i)
+	whiteout := dirs.whiteout(i)
+	overwritten := dirs.overwritten(i)
+
+	prefix := "        "
+
+	header, ok := fi.Sys().(*tar.Header)
+	if !ok {
+		name := fi.Name()
+		ts := "????-??-?? ??:??"
+		ug := "?/?"
+		mode := "d?????????"
+		padding := 18 - len(ug)
+		s := fmt.Sprintf("%s %s %*d %s", mode, ug, padding, 0, ts)
+		if showlayer {
+			s = prefix + " " + s
+		}
+		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
+		return s
+	}
+	ts := header.ModTime.Format("2006-01-02 15:04")
+	ug := fmt.Sprintf("%d/%d", header.Uid, header.Gid)
+	mode := modeStr(header)
+	padding := 18 - len(ug)
+	s := fmt.Sprintf("%s %s <span title=%q>%*d</span> %s", mode, ug, humanize.Bytes(uint64(header.Size)), padding, header.Size, ts)
+	if showlayer {
+		if _, after, ok := strings.Cut(layer, "@"); ok {
+			if _, after, ok := strings.Cut(after, ":"); ok {
+				if len(after) > 8 {
+					href := after[:8]
+					u := url.URL{Path: "/fs/" + strings.TrimPrefix(layer, "/")}
+					prefix = fmt.Sprintf("<a class=\"fade\" href=%q>%s</a>", u.String(), href)
+				}
+			}
+		}
+		s = prefix + " " + s
+	}
+	name := dirs.name(i)
+	if header.Linkname != "" {
+		if header.Linkname == "." {
+			u.Path = path.Dir(u.Path)
+		} else if containsDotDot(header.Linkname) {
+			u.Path = strings.TrimPrefix(header.Linkname, "/")
+		} else if strings.HasPrefix(header.Linkname, "/") {
+			u.Path = path.Join(uprefix, header.Linkname)
+		} else {
+			u.Path = path.Join(u.Path, "..", header.Linkname)
+		}
+		if header.Typeflag == tar.TypeLink {
+			name += " link to " + header.Linkname
+		} else {
+			name += " -> " + header.Linkname
+		}
+	}
+
+	if whiteout != "" {
+		u.Path = path.Join("/fs/", layer, header.Name)
+		title := fmt.Sprintf("deleted by %s", whiteout)
+		if _, after, ok := strings.Cut(whiteout, "@"); ok {
+			if _, after, ok := strings.Cut(after, ":"); ok && len(after) > 8 {
+				title = fmt.Sprintf("deleted by %s", after[:8])
+			}
+		}
+		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+	} else if overwritten != "" {
+		u.Path = path.Join("/fs/", layer, header.Name)
+		title := fmt.Sprintf("overwritten by %s", overwritten)
+		if _, after, ok := strings.Cut(overwritten, "@"); ok {
+			if _, after, ok := strings.Cut(after, ":"); ok && len(after) > 8 {
+				title = fmt.Sprintf("overwritten by %s", after[:8])
+			}
+		}
+		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+	} else {
+		s += fmt.Sprintf(" %s\n", htmlReplacer.Replace(name))
 	}
 	return s
 }

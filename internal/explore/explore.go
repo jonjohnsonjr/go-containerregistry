@@ -97,6 +97,7 @@ func New(opts ...Option) http.Handler {
 	h.mux.HandleFunc("/", h.errHandler(h.renderResponse))
 
 	h.mux.HandleFunc("/fs/", h.errHandler(h.renderFS))
+	h.mux.HandleFunc("/blubber/", h.errHandler(h.renderFat))
 
 	// Janky workaround for downloading via the "urls" field.
 	h.mux.HandleFunc("/http/", h.errHandler(h.renderFS))
@@ -114,7 +115,7 @@ func New(opts ...Option) http.Handler {
 }
 
 func splitFsURL(p string) (string, string, error) {
-	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/blob/", "/cache/"} {
+	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/blob/", "/cache/", "/blubber/"} {
 		if strings.HasPrefix(p, prefix) {
 			return strings.TrimPrefix(p, prefix), prefix, nil
 		}
@@ -726,7 +727,60 @@ func (h *handler) renderFS(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("indexCache.Index(%q) = %w", dig.Identifier(), err)
 	}
 	if index != nil {
-		return h.renderIndexedFS(w, r, dig, ref, index)
+		fs, err := h.indexedFS(w, r, dig, ref, index)
+		if err != nil {
+			return err
+		}
+		httpserve.FileServer(httpserve.FS(fs)).ServeHTTP(w, r)
+		return nil
+	}
+
+	// Determine if this is actually a filesystem thing.
+	blob, ref, err := h.fetchBlob(w, r)
+	if err != nil {
+		return fmt.Errorf("fetchBlob: %w", err)
+	}
+
+	kind, original, unwrapped, err := h.tryNewIndex(w, r, dig, ref, blob)
+	if err != nil {
+		return fmt.Errorf("failed to index blob %q: %w", dig.String(), err)
+	}
+	if unwrapped != nil {
+		logs.Debug.Printf("unwrapped, kind = %q", kind)
+		seek := &sizeSeeker{unwrapped, -1, ref, nil, false}
+		return h.renderFile(w, r, dig, kind, seek)
+	}
+	if original != nil {
+		logs.Debug.Printf("original")
+		seek := &sizeSeeker{original, blob.size, ref, nil, false}
+		return h.renderFile(w, r, dig, kind, seek)
+	}
+
+	return nil
+}
+
+func (h *handler) renderFat(w http.ResponseWriter, r *http.Request) error {
+	mt := r.URL.Query().Get("mt")
+	dig, ref, err := h.getDigest(w, r)
+	if err != nil {
+		return fmt.Errorf("getDigest: %w", err)
+	}
+
+	index, err := h.getIndex(r.Context(), dig.Identifier())
+	if err != nil {
+		return fmt.Errorf("indexCache.Index(%q) = %w", dig.Identifier(), err)
+	}
+	if index != nil {
+		fs, err := h.indexedFS(w, r, dig, ref, index)
+		if err != nil {
+			return err
+		}
+		des, err := fs.Everything()
+		if err != nil {
+			return err
+		}
+		f := renderDirSize(w, index.TOC().Csize, dig, index.TOC().Type, types.MediaType(mt))
+		return httpserve.DirList(w, r, ref, des, f)
 	}
 
 	// Determine if this is actually a filesystem thing.
@@ -789,10 +843,10 @@ func (h *handler) renderImage(w http.ResponseWriter, r *http.Request, ref name.D
 	return nil
 }
 
-func (h *handler) renderIndexedFS(w http.ResponseWriter, r *http.Request, dig name.Digest, ref string, index soci.Index) error {
+func (h *handler) indexedFS(w http.ResponseWriter, r *http.Request, dig name.Digest, ref string, index soci.Index) (*soci.SociFS, error) {
 	toc := index.TOC()
 	if toc == nil {
-		return fmt.Errorf("this should not happen")
+		return nil, fmt.Errorf("this should not happen")
 	}
 	mt := r.URL.Query().Get("mt")
 	if mt == "" {
@@ -813,11 +867,11 @@ func (h *handler) renderIndexedFS(w http.ResponseWriter, r *http.Request, dig na
 	if err == nil {
 		b, err := base64.URLEncoding.DecodeString(cookie.Value)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		var v RedirectCookie
 		if err := json.Unmarshal(b, &v); err != nil {
-			return err
+			return nil, err
 		}
 		if v.Digest == dig.Identifier() {
 			cachedUrl = v.Url
@@ -841,7 +895,7 @@ func (h *handler) renderIndexedFS(w http.ResponseWriter, r *http.Request, dig na
 		if before, _, ok := strings.Cut(p, "@"); ok {
 			u, err := url.PathUnescape(before)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			u = scheme + u
 			cachedUrl = u
@@ -891,9 +945,8 @@ func (h *handler) renderIndexedFS(w http.ResponseWriter, r *http.Request, dig na
 	blob := remote.LazyBlob(dig, cachedUrl, setCookie, opts...)
 	prefix := strings.TrimPrefix(ref, "/")
 	fs := soci.FS(index, blob, prefix, dig.String(), respTooBig, types.MediaType(mt), renderHeader)
-	httpserve.FileServer(httpserve.FS(fs)).ServeHTTP(w, r)
 
-	return nil
+	return fs, nil
 }
 
 // Flatten layers of an image and serve as a filesystem.
@@ -1256,4 +1309,45 @@ func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType typ
 	header.JQ = crane("export") + " " + ref.String() + " | " + tarflags + " " + filename
 
 	return bodyTmpl.Execute(w, header)
+}
+
+func renderDirSize(w http.ResponseWriter, size int64, ref name.Reference, kind string, mediaType types.MediaType) func() error {
+	return func() error {
+		// This must be a directory because it wasn't part of a filesystem
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
+			return err
+		}
+
+		tarflags := "tar -tv "
+		if kind == "tar+gzip" {
+			tarflags = "tar -tvz "
+		} else if kind == "tar+zstd" {
+			tarflags = "tar --zstd -tv "
+		}
+		tarflags += " | sort -n -r -k3    (if on macos this probably needs to be -k5, sorry)"
+		// TODO: Check if useragent is macos
+
+		hash, err := v1.NewHash(ref.Identifier())
+		if err != nil {
+			return err
+		}
+
+		desc := v1.Descriptor{
+			Size:      size,
+			Digest:    hash,
+			MediaType: mediaType,
+		}
+		header := headerData(ref, desc)
+
+		header.Up = &RepoParent{
+			Parent:    ref.Context().String(),
+			Separator: "@",
+			Child:     ref.Identifier(),
+		}
+
+		header.JQ = crane("blob") + " " + ref.String() + " | " + tarflags
+
+		return bodyTmpl.Execute(w, header)
+	}
 }

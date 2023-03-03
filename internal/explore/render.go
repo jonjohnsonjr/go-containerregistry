@@ -1130,17 +1130,23 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 			}
 		case "size":
 			// check we're in a descriptor
-			if _, ok := rawMap["digest"]; ok {
-				if js, ok := o[k]; ok {
-					if bs, ok := js.(float64); ok {
-						n := uint64(bs)
-						// TODO: dedupe with Value
-						w.tabf()
-						w.Print(fmt.Sprintf(`<span title="%s">%d</span>`, humanize.Bytes(n), n))
-						w.unfresh()
-						w.key = false
-						// Don't fall through to renderRaw.
-						continue
+			if d, ok := o["digest"]; ok {
+				if ds, ok := d.(string); ok {
+					if js, ok := o[k]; ok {
+						if m, ok := o["mediaType"]; ok {
+							if ms, ok := m.(string); ok {
+								if bs, ok := js.(float64); ok {
+									n := uint64(bs)
+									// TODO: dedupe with Value
+									w.tabf()
+									w.Print(fmt.Sprintf(`<a href="/blubber/%s@%s?mt=%s"><span title="%s">%d</span></a>`, w.repo, ds, ms, humanize.Bytes(n), n))
+									w.unfresh()
+									w.key = false
+									// Don't fall through to renderRaw.
+									continue
+								}
+							}
+						}
 					}
 				}
 			}
