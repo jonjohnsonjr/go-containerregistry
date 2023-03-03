@@ -43,6 +43,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	hgzip "github.com/nanmu42/gzip"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/errgroup"
 )
@@ -53,7 +54,7 @@ const respTooBig = 1 << 25
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
 
 type handler struct {
-	mux    *http.ServeMux
+	mux    http.Handler
 	remote []remote.Option
 
 	// digest -> remote.desc
@@ -81,7 +82,6 @@ func WithRemote(opt []remote.Option) Option {
 
 func New(opts ...Option) http.Handler {
 	h := handler{
-		mux:        http.NewServeMux(),
 		manifests:  map[string]*remote.Descriptor{},
 		pings:      map[string]*transport.PingResp{},
 		sawTags:    map[string][]string{},
@@ -94,28 +94,33 @@ func New(opts ...Option) http.Handler {
 		opt(&h)
 	}
 
-	h.mux.HandleFunc("/", h.errHandler(h.renderResponse))
+	mux := http.NewServeMux()
 
-	h.mux.HandleFunc("/fs/", h.errHandler(h.renderFS))
-	h.mux.HandleFunc("/blubber/", h.errHandler(h.renderFat))
+	mux.HandleFunc("/", h.errHandler(h.renderResponse))
+
+	mux.HandleFunc("/fs/", h.errHandler(h.renderFS))
+	mux.HandleFunc("/size/", h.errHandler(h.renderFat))
+	mux.HandleFunc("/sizes/", h.errHandler(h.renderFats))
 
 	// Janky workaround for downloading via the "urls" field.
-	h.mux.HandleFunc("/http/", h.errHandler(h.renderFS))
-	h.mux.HandleFunc("/https/", h.errHandler(h.renderFS))
+	mux.HandleFunc("/http/", h.errHandler(h.renderFS))
+	mux.HandleFunc("/https/", h.errHandler(h.renderFS))
 
-	h.mux.HandleFunc("/layers/", h.errHandler(h.renderLayers))
-	h.mux.HandleFunc("/cache/", h.errHandler(h.renderIndex))
+	mux.HandleFunc("/layers/", h.errHandler(h.renderLayers))
+	mux.HandleFunc("/cache/", h.errHandler(h.renderIndex))
 
 	// Try to detect mediaType.
-	h.mux.HandleFunc("/blob/", h.errHandler(h.renderFS))
+	mux.HandleFunc("/blob/", h.errHandler(h.renderFS))
 
-	h.mux.HandleFunc("/oauth", h.oauthHandler)
+	mux.HandleFunc("/oauth", h.oauthHandler)
+
+	h.mux = hgzip.DefaultHandler().WrapHandler(mux)
 
 	return &h
 }
 
 func splitFsURL(p string) (string, string, error) {
-	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/blob/", "/cache/", "/blubber/"} {
+	for _, prefix := range []string{"/fs/", "/layers/", "/https/", "/http/", "/blob/", "/cache/", "/size/", "/sizes/"} {
 		if strings.HasPrefix(p, prefix) {
 			return strings.TrimPrefix(p, prefix), prefix, nil
 		}
@@ -492,6 +497,8 @@ func (h *handler) renderManifest(w http.ResponseWriter, r *http.Request, image s
 		header.JQ += ` | jq '.history[] | .v1Compatibility' -r | jq '.container_config.Cmd | join(" ")' -r | tac`
 	}
 
+	header.SizeLink = fmt.Sprintf("/sizes/%s?mt=%s&size=%d", ref.String(), desc.MediaType, desc.Size)
+
 	if err := bodyTmpl.Execute(w, header); err != nil {
 		return fmt.Errorf("bodyTmpl: %w", err)
 	}
@@ -770,41 +777,50 @@ func (h *handler) renderFat(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return fmt.Errorf("indexCache.Index(%q) = %w", dig.Identifier(), err)
 	}
-	if index != nil {
-		fs, err := h.indexedFS(w, r, dig, ref, index)
+	if index == nil {
+		// Determine if this is actually a filesystem thing.
+		blob, _, err := h.fetchBlob(w, r)
 		if err != nil {
-			return err
+			return fmt.Errorf("fetchBlob: %w", err)
 		}
-		des, err := fs.Everything()
+
+		index, err = h.createIndex(r.Context(), blob, blob.size, dig.String(), 0, mt)
 		if err != nil {
-			return err
+			return fmt.Errorf("createIndex: %w", err)
 		}
-		f := renderDirSize(w, index.TOC().Csize, dig, index.TOC().Type, types.MediaType(mt))
-		return httpserve.DirList(w, r, ref, des, f)
+		if index == nil {
+			// Non-indexable blobs are filtered later.
+			return fmt.Errorf("not a filesystem")
+		}
 	}
 
-	// Determine if this is actually a filesystem thing.
-	blob, ref, err := h.fetchBlob(w, r)
+	fs, err := h.indexedFS(w, r, dig, ref, index)
 	if err != nil {
-		return fmt.Errorf("fetchBlob: %w", err)
+		return err
 	}
-
-	kind, original, unwrapped, err := h.tryNewIndex(w, r, dig, ref, blob)
+	des, err := fs.Everything()
 	if err != nil {
-		return fmt.Errorf("failed to index blob %q: %w", dig.String(), err)
+		return err
 	}
-	if unwrapped != nil {
-		logs.Debug.Printf("unwrapped, kind = %q", kind)
-		seek := &sizeSeeker{unwrapped, -1, ref, nil, false}
-		return h.renderFile(w, r, dig, kind, seek)
-	}
-	if original != nil {
-		logs.Debug.Printf("original")
-		seek := &sizeSeeker{original, blob.size, ref, nil, false}
-		return h.renderFile(w, r, dig, kind, seek)
+	f := renderDirSize(w, r, index.TOC().Csize, dig, index.TOC().Type, types.MediaType(mt))
+	return httpserve.DirList(w, r, ref, des, f)
+}
+
+func (h *handler) renderFats(w http.ResponseWriter, r *http.Request) error {
+	_, ref, err := h.getDigest(w, r)
+	if err != nil {
+		return fmt.Errorf("getDigest: %w", err)
 	}
 
-	return nil
+	mfs, f, err := h.multiFS(w, r)
+	if err != nil {
+		return err
+	}
+	des, err := mfs.Everything()
+	if err != nil {
+		return err
+	}
+	return httpserve.DirList(w, r, ref, des, f)
 }
 
 func (h *handler) renderImage(w http.ResponseWriter, r *http.Request, ref name.Digest, mt string) error {
@@ -949,11 +965,10 @@ func (h *handler) indexedFS(w http.ResponseWriter, r *http.Request, dig name.Dig
 	return fs, nil
 }
 
-// Flatten layers of an image and serve as a filesystem.
-func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
+func (h *handler) multiFS(w http.ResponseWriter, r *http.Request) (*soci.MultiFS, func() error, error) {
 	dig, ref, err := h.getDigest(w, r)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	opts := h.remoteOptions(w, r, dig.Context().Name())
@@ -961,12 +976,12 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 
 	desc, err := h.fetchManifest(w, r, dig)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	m, err := v1.ParseManifest(bytes.NewReader(desc.Manifest))
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	fss := make([]*soci.SociFS, len(m.Layers))
@@ -1003,7 +1018,7 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 					return fmt.Errorf("createIndex: %w", err)
 				}
 				if index == nil {
-					// Non-indexable blobs are filtered later>
+					// Non-indexable blobs are filtered later.
 					return nil
 				}
 			}
@@ -1019,11 +1034,22 @@ func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if err := g.Wait(); err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	prefix := strings.TrimPrefix(ref, "/")
 	mfs := soci.NewMultiFS(fss, prefix, dig, desc.Size, desc.MediaType, renderDir)
+
+	f := renderDirSize(w, r, desc.Size, dig, "tar", desc.MediaType)
+	return mfs, f, nil
+}
+
+// Flatten layers of an image and serve as a filesystem.
+func (h *handler) renderLayers(w http.ResponseWriter, r *http.Request) error {
+	mfs, _, err := h.multiFS(w, r)
+	if err != nil {
+		return err
+	}
 
 	// Allow this to be cached for an hour.
 	w.Header().Set("Cache-Control", "max-age=3600, immutable")
@@ -1256,6 +1282,7 @@ func renderHeader(w http.ResponseWriter, fname string, prefix string, ref name.R
 
 		header.JQ = crane("blob") + " " + ref.String() + " | " + tarflags + " " + filelink
 	}
+	header.SizeLink = fmt.Sprintf("/size/%s?mt=%s&size=%d", ref.String(), mediaType, int64(size))
 
 	return bodyTmpl.Execute(w, header)
 }
@@ -1308,25 +1335,18 @@ func renderDir(w http.ResponseWriter, fname string, prefix string, mediaType typ
 	// TODO: Make filename clickable to go up a directory.
 	header.JQ = crane("export") + " " + ref.String() + " | " + tarflags + " " + filename
 
+	header.SizeLink = fmt.Sprintf("/sizes/%s?mt=%s&size=%d", ref.String(), mediaType, int64(size))
+
 	return bodyTmpl.Execute(w, header)
 }
 
-func renderDirSize(w http.ResponseWriter, size int64, ref name.Reference, kind string, mediaType types.MediaType) func() error {
+func renderDirSize(w http.ResponseWriter, r *http.Request, size int64, ref name.Reference, kind string, mediaType types.MediaType) func() error {
 	return func() error {
 		// This must be a directory because it wasn't part of a filesystem
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := headerTmpl.Execute(w, TitleData{ref.String()}); err != nil {
 			return err
 		}
-
-		tarflags := "tar -tv "
-		if kind == "tar+gzip" {
-			tarflags = "tar -tvz "
-		} else if kind == "tar+zstd" {
-			tarflags = "tar --zstd -tv "
-		}
-		tarflags += " | sort -n -r -k3    (if on macos this probably needs to be -k5, sorry)"
-		// TODO: Check if useragent is macos
 
 		hash, err := v1.NewHash(ref.Identifier())
 		if err != nil {
@@ -1346,7 +1366,25 @@ func renderDirSize(w http.ResponseWriter, size int64, ref name.Reference, kind s
 			Child:     ref.Identifier(),
 		}
 
-		header.JQ = crane("blob") + " " + ref.String() + " | " + tarflags
+		tarflags := "tar -tv "
+		if kind == "tar+gzip" {
+			tarflags = "tar -tvz "
+		} else if kind == "tar+zstd" {
+			tarflags = "tar --zstd -tv "
+		}
+
+		ua := r.UserAgent()
+		if strings.Contains(ua, "BSD") || strings.Contains(ua, "Mac") {
+			tarflags += " | sort -n -r -k5"
+		} else {
+			tarflags += " | sort -n -r -k3"
+		}
+
+		if mediaType.IsImage() {
+			header.JQ = crane("export") + " " + ref.String() + " | " + tarflags
+		} else {
+			header.JQ = crane("blob") + " " + ref.String() + " | " + tarflags
+		}
 
 		return bodyTmpl.Execute(w, header)
 	}

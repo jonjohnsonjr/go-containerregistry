@@ -198,6 +198,7 @@ func DirList(w http.ResponseWriter, r *http.Request, prefix string, des []fs.Dir
 
 	var dirs dirEntryDirs = des
 
+	showlayer := strings.HasPrefix(r.URL.Path, "/sizes")
 	less := func(i, j int) bool {
 		ii, err := dirs.info(i)
 		if err != nil {
@@ -209,8 +210,36 @@ func DirList(w http.ResponseWriter, r *http.Request, prefix string, des []fs.Dir
 			logs.Debug.Printf("info(%d): %v", j, err)
 			return i < j
 		}
-
 		return ii.Size() > ji.Size()
+	}
+	if showlayer {
+		less = func(i, j int) bool {
+			ii, err := dirs.info(i)
+			if err != nil {
+				logs.Debug.Printf("info(%d): %v", i, err)
+				return i < j
+			}
+			ji, err := dirs.info(j)
+			if err != nil {
+				logs.Debug.Printf("info(%d): %v", j, err)
+				return i < j
+			}
+
+			iw, jw := dirs.whiteout(i), dirs.whiteout(j)
+			io, jo := dirs.overwritten(i), dirs.overwritten(j)
+			iStays := iw == "" && io == ""
+			jStays := jw == "" && jo == ""
+			iStrike := iw != "" || io != ""
+			jStrike := jw != "" || jo != ""
+
+			if iStrike && jStays {
+				return true
+			} else if iStays && jStrike {
+				return false
+			}
+
+			return ii.Size() > ji.Size()
+		}
 	}
 	sort.Slice(dirs, less)
 
@@ -221,7 +250,6 @@ func DirList(w http.ResponseWriter, r *http.Request, prefix string, des []fs.Dir
 			return fmt.Errorf("render(): %w", err)
 		}
 	}
-	showlayer := strings.HasPrefix(r.URL.Path, "/layers")
 
 	fmt.Fprintf(w, "<pre>\n")
 	for i, n := 0, dirs.len(); i < n; i++ {
@@ -241,10 +269,10 @@ func DirList(w http.ResponseWriter, r *http.Request, prefix string, des []fs.Dir
 			fmt.Fprintf(w, "<a href=\"%s\">%s</a>\n", url.String(), htmlReplacer.Replace(name))
 		} else {
 			fmt.Fprint(w, tarListSize(i, dirs, showlayer, info, url, prefix))
+			fmt.Fprint(w, "\n")
 		}
 	}
-	fmt.Fprintf(w, "</pre>\n")
-
+	fmt.Fprintf(w, "</pre>\n</body>\n</html>")
 	return nil
 }
 
@@ -337,7 +365,7 @@ func dirList(w http.ResponseWriter, r *http.Request, fname string, f File, rende
 			fmt.Fprint(w, tarList(i, dirs, showlayer, info, url, prefix))
 		}
 	}
-	fmt.Fprintf(w, "</pre>\n")
+	fmt.Fprintf(w, "</pre>\n</body>\n</html>")
 }
 
 func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, uprefix string) string {
@@ -372,7 +400,7 @@ func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, upr
 				if len(after) > 8 {
 					href := after[:8]
 					u := url.URL{Path: "/fs/" + strings.TrimPrefix(layer, "/")}
-					prefix = fmt.Sprintf("<a class=\"fade\" href=%q>%s</a>", u.String(), href)
+					prefix = fmt.Sprintf("<a href=%q>%s</a>", u.String(), href)
 				}
 			}
 		}
@@ -404,7 +432,7 @@ func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, upr
 				title = fmt.Sprintf("deleted by %s", after[:8])
 			}
 		}
-		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+		s += fmt.Sprintf(" <a href=\"%s\"><strike title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
 	} else if overwritten != "" {
 		u.Path = path.Join("/fs/", layer, header.Name)
 		title := fmt.Sprintf("overwritten by %s", overwritten)
@@ -413,7 +441,7 @@ func tarList(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL, upr
 				title = fmt.Sprintf("overwritten by %s", after[:8])
 			}
 		}
-		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+		s += fmt.Sprintf(" <a href=\"%s\"><strike title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
 	} else {
 		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
 	}
@@ -438,7 +466,7 @@ func tarListSize(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL,
 		if showlayer {
 			s = prefix + " " + s
 		}
-		s += fmt.Sprintf(" <a href=\"%s\">%s</a>\n", u.String(), htmlReplacer.Replace(name))
+		s += fmt.Sprintf(" %s", htmlReplacer.Replace(name))
 		return s
 	}
 	ts := header.ModTime.Format("2006-01-02 15:04")
@@ -451,8 +479,7 @@ func tarListSize(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL,
 			if _, after, ok := strings.Cut(after, ":"); ok {
 				if len(after) > 8 {
 					href := after[:8]
-					u := url.URL{Path: "/fs/" + strings.TrimPrefix(layer, "/")}
-					prefix = fmt.Sprintf("<a class=\"fade\" href=%q>%s</a>", u.String(), href)
+					prefix = fmt.Sprintf("<small>%s</small>", href)
 				}
 			}
 		}
@@ -484,7 +511,7 @@ func tarListSize(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL,
 				title = fmt.Sprintf("deleted by %s", after[:8])
 			}
 		}
-		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+		s += fmt.Sprintf(" <strike title=%q><small>%s</small></strike>", title, htmlReplacer.Replace(name))
 	} else if overwritten != "" {
 		u.Path = path.Join("/fs/", layer, header.Name)
 		title := fmt.Sprintf("overwritten by %s", overwritten)
@@ -493,9 +520,9 @@ func tarListSize(i int, dirs anyDirs, showlayer bool, fi fs.FileInfo, u url.URL,
 				title = fmt.Sprintf("overwritten by %s", after[:8])
 			}
 		}
-		s += fmt.Sprintf(" <a href=\"%s\"><strike class=\"fade\" title=%q>%s</strike></a>\n", u.String(), title, htmlReplacer.Replace(name))
+		s += fmt.Sprintf(" <strike title=%q><small>%s</small></strike>", title, htmlReplacer.Replace(name))
 	} else {
-		s += fmt.Sprintf(" %s\n", htmlReplacer.Replace(name))
+		s += fmt.Sprintf(" %s", htmlReplacer.Replace(name))
 	}
 	return s
 }

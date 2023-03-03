@@ -219,10 +219,6 @@ I currently can't support oauth for non-Googlers (sorry), but if you're a Google
 	bottom: .125em;
 }
 
-.fade {
-	opacity: .65;
-}
-
 .crane {
 	height: 1em;
 	width: 1em;
@@ -276,7 +272,7 @@ td {
 {{ end }}
 {{ if .Descriptor }}
 Docker-Content-Digest: <a class="mt" href="/{{.Handler}}{{$.Repo}}@{{.Descriptor.Digest}}{{if .EscapedMediaType}}&mt={{.EscapedMediaType}}{{end}}&size={{.Descriptor.Size}}">{{.Descriptor.Digest}}<a><br>
-Content-Length: {{.Descriptor.Size}}<br>
+Content-Length: {{if .SizeLink}}<a class="mt" href="{{.SizeLink}}">{{.Descriptor.Size}}</a>{{else}}{{.Descriptor.Size}}{{end}}<br>
 Content-Type: {{if .MediaTypeLink}}<a class="mt" href="/{{.MediaTypeLink}}">{{.Descriptor.MediaType}}</a>{{else}}{{.Descriptor.MediaType}}{{end}}<br>
 {{end}}
 </div>
@@ -321,4 +317,5 @@ type HeaderData struct {
 	Handler          string
 	EscapedMediaType string
 	MediaTypeLink    string
+	SizeLink         string
 }

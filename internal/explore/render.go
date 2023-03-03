@@ -1130,24 +1130,36 @@ func renderMap(w *jsonOutputter, o map[string]interface{}, raw *json.RawMessage)
 			}
 		case "size":
 			// check we're in a descriptor
-			if d, ok := o["digest"]; ok {
-				if ds, ok := d.(string); ok {
-					if js, ok := o[k]; ok {
-						if m, ok := o["mediaType"]; ok {
-							if ms, ok := m.(string); ok {
-								if bs, ok := js.(float64); ok {
-									n := uint64(bs)
-									// TODO: dedupe with Value
-									w.tabf()
-									w.Print(fmt.Sprintf(`<a href="/blubber/%s@%s?mt=%s"><span title="%s">%d</span></a>`, w.repo, ds, ms, humanize.Bytes(n), n))
-									w.unfresh()
-									w.key = false
-									// Don't fall through to renderRaw.
-									continue
+			if js, ok := o[k]; ok {
+				if bs, ok := js.(float64); ok {
+					n := uint64(bs)
+					if d, ok := o["digest"]; ok {
+						if ds, ok := d.(string); ok {
+							if m, ok := o["mediaType"]; ok {
+								if ms, ok := m.(string); ok {
+									if ss, sss := shouldSize(ms), types.MediaType(ms).IsImage(); ss || sss {
+										w.tabf()
+										if ss {
+											w.Print(fmt.Sprintf(`<a href="/size/%s@%s?mt=%s&size=%d"><span title="%s">%d</span></a>`, w.repo, ds, ms, int64(bs), humanize.Bytes(n), n))
+										} else if sss {
+											w.Print(fmt.Sprintf(`<a href="/sizes/%s@%s?mt=%s&size=%d"><span title="%s">%d</span></a>`, w.repo, ds, ms, int64(bs), humanize.Bytes(n), n))
+										}
+										w.unfresh()
+										w.key = false
+										// Don't fall through to renderRaw.
+										continue
+									}
 								}
 							}
 						}
 					}
+
+					w.tabf()
+					w.Print(fmt.Sprintf(`<span title="%s">%d</span>`, humanize.Bytes(n), n))
+					w.unfresh()
+					w.key = false
+					// Don't fall through to renderRaw.
+					continue
 				}
 			}
 		case "created_by":
@@ -1506,4 +1518,11 @@ func shouldHistory(mt string) bool {
 		tmt == types.DockerManifestSchema1Signed ||
 		tmt == types.DockerConfigJSON ||
 		tmt == types.OCIConfigJSON
+}
+
+func shouldSize(mt string) bool {
+	return strings.HasSuffix(mt, "tar") ||
+		strings.HasSuffix(mt, "tar.gzip") ||
+		strings.HasSuffix(mt, "tar+gzip") ||
+		strings.HasSuffix(mt, "tar+zstd")
 }

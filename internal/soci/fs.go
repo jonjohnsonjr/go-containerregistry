@@ -121,6 +121,54 @@ func (s *MultiFS) find(name string) (*TOCFile, *SociFS, error) {
 	return nil, nil, fs.ErrNotExist
 }
 
+func (s *MultiFS) Everything() ([]fs.DirEntry, error) {
+	sum := 0
+	for _, sfs := range s.fss {
+		sum += len(sfs.files)
+	}
+	have := map[string]string{}
+	whiteouts := map[string]struct{}{}
+	des := make([]fs.DirEntry, 0, sum)
+	for i, sfs := range s.fss {
+		layerWhiteouts := map[string]struct{}{}
+		for _, fm := range sfs.files {
+			fm := fm
+			sde := sfs.dirEntry("", &fm)
+			name := path.Base(fm.Name)
+			dir := path.Dir(fm.Name)
+			fullname := path.Join(dir, name)
+
+			sde.layerIndex = i
+			wn := path.Join(dir, ".wh..wh..opq")
+			if _, sawOpaque := whiteouts[wn]; sawOpaque {
+				logs.Debug.Printf("multifs.Everything(%q): saw opaque whiteout %q", wn)
+				sde.whiteout = wn
+			} else {
+				wn := path.Join(dir, ".wh."+name)
+				if _, ok := whiteouts[wn]; ok {
+					logs.Debug.Printf("saw whiteout for %q from %q , skipping", name, wn)
+					sde.whiteout = wn
+				} else if source, ok := have[fullname]; ok {
+					if sde.IsDir() {
+						continue
+					}
+					logs.Debug.Printf("%q was overwritten by %q", name, source)
+					sde.overwritten = source
+				} else if strings.HasPrefix(name, ".wh.") {
+					layerWhiteouts[fullname] = struct{}{}
+				}
+			}
+
+			have[fullname] = sfs.ref
+			des = append(des, sde)
+		}
+		for k := range layerWhiteouts {
+			whiteouts[k] = struct{}{}
+		}
+	}
+	return des, nil
+}
+
 func (s *MultiFS) Open(original string) (fs.File, error) {
 	s.lastFile = original
 	logs.Debug.Printf("multifs.Open(%q)", original)
