@@ -60,6 +60,7 @@ func renderDockerfileSchema1(w io.Writer, b []byte) error {
 	return nil
 }
 
+// TODO: add timestamps
 func renderDockerfile(w io.Writer, b []byte, m *v1.Manifest, repo name.Repository) error {
 	cf, err := v1.ParseConfigFile(bytes.NewReader(b))
 	if err != nil {
