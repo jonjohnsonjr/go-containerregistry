@@ -36,6 +36,7 @@ import (
 
 	"github.com/google/go-containerregistry/internal/httpserve"
 	"github.com/google/go-containerregistry/internal/soci"
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -54,8 +55,8 @@ const respTooBig = 1 << 25
 const ua = "explore.ggcr.dev (jonjohnson at google dot com, if this is breaking you)"
 
 type handler struct {
-	mux    http.Handler
-	remote []remote.Option
+	mux      http.Handler
+	keychain authn.Keychain
 
 	// digest -> remote.desc
 	manifests map[string]*remote.Descriptor
@@ -74,9 +75,9 @@ type handler struct {
 
 type Option func(h *handler)
 
-func WithRemote(opt []remote.Option) Option {
+func WithKeychain(keychain authn.Keychain) Option {
 	return func(h *handler) {
-		h.remote = opt
+		h.keychain = keychain
 	}
 }
 

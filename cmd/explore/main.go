@@ -22,9 +22,8 @@ import (
 	"os"
 
 	"github.com/google/go-containerregistry/internal/explore"
-	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/gcrane"
 	"github.com/google/go-containerregistry/pkg/logs"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	sha256simd "github.com/minio/sha256-simd"
 )
@@ -58,10 +57,10 @@ func main() {
 		port = "8080"
 	}
 
-	opt := []remote.Option{remote.WithUserAgent(ua)}
-	if *auth {
-		opt = append(opt, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	opt := []explore.Option{}
+	if *auth || os.Getenv("AUTH") == "keychain" {
+		opt = append(opt, explore.WithKeychain(gcrane.Keychain))
 	}
 
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), explore.New(explore.WithRemote(opt))))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), explore.New(opt...)))
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/go-containerregistry/internal/verify"
 	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/google"
@@ -38,10 +39,22 @@ func (h *handler) remoteOptions(w http.ResponseWriter, r *http.Request, repo str
 
 	// TODO: Set timeout.
 	opts := []remote.Option{}
-	opts = append(opts, h.remote...)
 	opts = append(opts, remote.WithContext(ctx))
 
 	auth := authn.Anonymous
+	if h.keychain != nil {
+		ref, err := name.NewRepository(repo)
+		if err == nil {
+			maybeAuth, err := h.keychain.Resolve(ref)
+			if err == nil {
+				auth = maybeAuth
+			} else {
+				logs.Debug.Printf("Resolve(%q) = %v", repo, err)
+			}
+		} else {
+			logs.Debug.Printf("NewRepository(%q) = %v", repo, err)
+		}
+	}
 
 	parsed, err := name.NewRepository(repo)
 	if err == nil && isGoogle(parsed.Registry.String()) {
