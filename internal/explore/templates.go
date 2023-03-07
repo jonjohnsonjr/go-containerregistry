@@ -193,7 +193,7 @@ It looks like we encountered an auth error:
 {{.Error}}
 </code>
 <p>
-I currently can't support oauth for non-Googlers (sorry), but if you're a Googler and you trust <a class="mt" href="https://github.com/jonjohnsonjr">me</a>, click <a href="{{.Redirect}}">here</a>.
+If you trust <a class="mt" href="https://github.com/jonjohnsonjr">me</a>, click <a href="{{.Redirect}}">here</a> for oauth to use your own credentials.
 </p>
 </body>
 </html>

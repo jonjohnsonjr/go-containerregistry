@@ -91,12 +91,13 @@ func (h *handler) oauthHandler(w http.ResponseWriter, r *http.Request) {
 func buildOauth() *oauth2.Config {
 	ClientID := os.Getenv("CLIENT_ID")
 	ClientSecret := os.Getenv("CLIENT_SECRET")
+	RedirectURL := os.Getenv("REDIRECT_URL")
 
 	if ClientID != "" && ClientSecret != "" {
 		return &oauth2.Config{
 			ClientID:     ClientID,
 			ClientSecret: ClientSecret,
-			RedirectURL:  "https://explore.ggcr.dev/oauth",
+			RedirectURL:  RedirectURL,
 			Scopes: []string{
 				"https://www.googleapis.com/auth/cloud-platform.read-only",
 			},
