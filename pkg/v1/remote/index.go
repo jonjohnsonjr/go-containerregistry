@@ -265,6 +265,7 @@ func (r *remoteIndex) childDescriptor(child v1.Descriptor, platform v1.Platform)
 			Ref:     ref,
 			Client:  r.Client,
 			context: r.context,
+			options: r.fetcher.options,
 		},
 		Manifest:   manifest,
 		Descriptor: child,

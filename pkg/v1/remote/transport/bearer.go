@@ -32,6 +32,89 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 )
 
+// Some registries don't have "token" in the response. See #54.
+type TokenResponse struct {
+	Token        string `json:"token"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+}
+
+// NewBearer returns a bearer transport and the registry TokenResponse for reuse.
+func NewBearer(ctx context.Context, pr *PingResp, reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scopes []string) (*Wrapper, *TokenResponse, error) {
+	switch pr.challenge.Canonical() {
+	case anonymous, basic:
+		return &Wrapper{&BasicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil, nil
+	}
+	// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
+	realm, ok := pr.Parameters["realm"]
+	if !ok {
+		return nil, nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.Parameters)
+	}
+	service := pr.Parameters["service"]
+	bt := &bearerTransport{
+		inner:    t,
+		basic:    auth,
+		realm:    realm,
+		registry: reg,
+		service:  service,
+		scopes:   scopes,
+		scheme:   pr.Scheme,
+	}
+	authcfg, err := auth.Authorization()
+	if err != nil {
+		return nil, nil, err
+	}
+	tok, err := bt.Refresh(ctx, authcfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	if tok.Token != "" {
+		bt.bearer.RegistryToken = tok.Token
+	}
+	return &Wrapper{bt}, tok, nil
+}
+
+// OldBearer returns a bearer transport based on a cached TokenResponse (see NewBearer).
+func OldBearer(pr *PingResp, tok *TokenResponse, reg name.Registry, auth authn.Authenticator, t http.RoundTripper, scopes []string) (*Wrapper, error) {
+	switch pr.challenge.Canonical() {
+	case anonymous, basic:
+		return &Wrapper{&BasicTransport{inner: t, auth: auth, target: reg.RegistryStr()}}, nil
+	}
+	// We require the realm, which tells us where to send our Basic auth to turn it into Bearer auth.
+	realm, ok := pr.Parameters["realm"]
+	if !ok {
+		return nil, fmt.Errorf("malformed www-authenticate, missing realm: %v", pr.Parameters)
+	}
+	service := pr.Parameters["service"]
+	bt := &bearerTransport{
+		inner:    t,
+		basic:    auth,
+		realm:    realm,
+		registry: reg,
+		service:  service,
+		scopes:   scopes,
+		scheme:   pr.Scheme,
+	}
+	// Some registries set access_token instead of token.
+	if tok.AccessToken != "" {
+		tok.Token = tok.AccessToken
+	}
+
+	// Find a token to turn into a Bearer authenticator
+	if tok.Token != "" {
+		bt.bearer.RegistryToken = tok.Token
+	}
+
+	// If we obtained a refresh token from the oauth flow, use that for refresh() now.
+	if tok.RefreshToken != "" {
+		bt.basic = authn.FromConfig(authn.AuthConfig{
+			IdentityToken: tok.RefreshToken,
+		})
+	}
+	return &Wrapper{bt}, nil
+}
+
 type bearerTransport struct {
 	// Wrapped by bearerTransport.
 	inner http.RoundTripper
@@ -135,7 +218,36 @@ func (bt *bearerTransport) refresh(ctx context.Context) error {
 		return nil
 	}
 
-	var content []byte
+	response, err := bt.Refresh(ctx, auth)
+	if err != nil {
+		return err
+	}
+
+	// Some registries set access_token instead of token.
+	if response.AccessToken != "" {
+		response.Token = response.AccessToken
+	}
+
+	// Find a token to turn into a Bearer authenticator
+	if response.Token != "" {
+		bt.bearer.RegistryToken = response.Token
+	}
+
+	// If we obtained a refresh token from the oauth flow, use that for refresh() now.
+	if response.RefreshToken != "" {
+		bt.basic = authn.FromConfig(authn.AuthConfig{
+			IdentityToken: response.RefreshToken,
+		})
+	}
+
+	return nil
+}
+
+func (bt *bearerTransport) Refresh(ctx context.Context, auth *authn.AuthConfig) (*TokenResponse, error) {
+	var (
+		content []byte
+		err     error
+	)
 	if auth.IdentityToken != "" {
 		// If the secret being stored is an identity token,
 		// the Username should be set to <token>, which indicates
@@ -152,42 +264,19 @@ func (bt *bearerTransport) refresh(ctx context.Context) error {
 		content, err = bt.refreshBasic(ctx)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Some registries don't have "token" in the response. See #54.
-	type tokenResponse struct {
-		Token        string `json:"token"`
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		// TODO: handle expiry?
-	}
-
-	var response tokenResponse
+	var response TokenResponse
 	if err := json.Unmarshal(content, &response); err != nil {
-		return err
+		return nil, err
 	}
 
-	// Some registries set access_token instead of token.
-	if response.AccessToken != "" {
-		response.Token = response.AccessToken
+	if response.Token == "" && response.AccessToken == "" {
+		return &response, fmt.Errorf("no token in bearer response:\n%s", content)
 	}
 
-	// Find a token to turn into a Bearer authenticator
-	if response.Token != "" {
-		bt.bearer.RegistryToken = response.Token
-	} else {
-		return fmt.Errorf("no token in bearer response:\n%s", content)
-	}
-
-	// If we obtained a refresh token from the oauth flow, use that for refresh() now.
-	if response.RefreshToken != "" {
-		bt.basic = authn.FromConfig(authn.AuthConfig{
-			IdentityToken: response.RefreshToken,
-		})
-	}
-
-	return nil
+	return &response, nil
 }
 
 func matchesHost(reg name.Registry, in *http.Request, scheme string) bool {
@@ -283,7 +372,7 @@ func (bt *bearerTransport) refreshBasic(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &basicTransport{
+	b := &BasicTransport{
 		inner:  bt.inner,
 		auth:   bt.basic,
 		target: u.Host,

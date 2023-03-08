@@ -16,8 +16,10 @@ package remote
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"syscall"
@@ -47,6 +49,14 @@ type options struct {
 	retryBackoff                   Backoff
 	retryPredicate                 retry.Predicate
 	filter                         map[string]string
+	maxSize                        int64
+	urls                           []string
+
+	// Optimization in case we know the size already.
+	size int64
+
+	// Avoid breaking api because I'm lazy.
+	next string
 }
 
 var defaultPlatform = v1.Platform{
@@ -112,6 +122,9 @@ var DefaultTransport http.RoundTripper = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
+	ReadBufferSize:        1 << 16,
+	WriteBufferSize:       1 << 16,
+	TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper), // Disable HTTP/2
 }
 
 func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
@@ -123,6 +136,7 @@ func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
 		pageSize:       defaultPageSize,
 		retryPredicate: defaultRetryPredicate,
 		retryBackoff:   defaultRetryBackoff,
+		maxSize:        math.MaxInt64,
 	}
 
 	for _, option := range opts {
@@ -189,6 +203,7 @@ func WithTransport(t http.RoundTripper) Option {
 func WithAuth(auth authn.Authenticator) Option {
 	return func(o *options) error {
 		o.auth = auth
+		o.keychain = nil
 		return nil
 	}
 }
@@ -202,6 +217,7 @@ func WithAuth(auth authn.Authenticator) Option {
 func WithAuthFromKeychain(keys authn.Keychain) Option {
 	return func(o *options) error {
 		o.keychain = keys
+		o.auth = nil
 		return nil
 	}
 }
@@ -312,6 +328,34 @@ func WithFilter(key string, value string) Option {
 			o.filter = map[string]string{}
 		}
 		o.filter[key] = value
+		return nil
+	}
+}
+
+func WithMaxSize(size int64) Option {
+	return func(o *options) error {
+		o.maxSize = size
+		return nil
+	}
+}
+
+func WithSize(size int64) Option {
+	return func(o *options) error {
+		o.size = size
+		return nil
+	}
+}
+
+func WithUrls(urls []string) Option {
+	return func(o *options) error {
+		o.urls = urls
+		return nil
+	}
+}
+
+func WithNext(next string) Option {
+	return func(o *options) error {
+		o.next = next
 		return nil
 	}
 }

@@ -88,10 +88,14 @@ func newLister(repo name.Repository, options ...Option) (*lister, error) {
 }
 
 func (l *lister) list(repo name.Repository) (*Tags, error) {
+	path := "/v2/tags/list"
+	if r := repo.RepositoryStr(); r != "" {
+		path = fmt.Sprintf("/v2/%s/tags/list", repo.RepositoryStr())
+	}
 	uri := &url.URL{
 		Scheme: repo.Registry.Scheme(),
 		Host:   repo.Registry.RegistryStr(),
-		Path:   fmt.Sprintf("/v2/%s/tags/list", repo.RepositoryStr()),
+		Path:   path,
 		// ECR returns an error if n > 1000:
 		// https://github.com/google/go-containerregistry/issues/681
 		RawQuery: "n=1000",

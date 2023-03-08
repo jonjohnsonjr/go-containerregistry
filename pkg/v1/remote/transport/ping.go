@@ -39,22 +39,40 @@ const (
 // 300ms is the default fallback period for go's DNS dialer but we could make this configurable.
 var fallbackDelay = 300 * time.Millisecond
 
-type pingResp struct {
+type PingResp struct {
 	challenge challenge
 
 	// Following the challenge there are often key/value pairs
 	// e.g. Bearer service="gcr.io",realm="https://auth.gcr.io/v36/tokenz"
-	parameters map[string]string
+	Parameters map[string]string
 
 	// The registry's scheme to use. Communicates whether we fell back to http.
-	scheme string
+	Scheme string
 }
 
 func (c challenge) Canonical() challenge {
 	return challenge(strings.ToLower(string(c)))
 }
 
-func ping(ctx context.Context, reg name.Registry, t http.RoundTripper) (*pingResp, error) {
+func parseChallenge(suffix string) map[string]string {
+	kv := make(map[string]string)
+	for _, token := range strings.Split(suffix, ",") {
+		// Trim any whitespace around each token.
+		token = strings.Trim(token, " ")
+
+		// Break the token into a key/value pair
+		if parts := strings.SplitN(token, "=", 2); len(parts) == 2 {
+			// Unquote the value, if it is quoted.
+			kv[parts[0]] = strings.Trim(parts[1], `"`)
+		} else {
+			// If there was only one part, treat is as a key with an empty value
+			kv[token] = ""
+		}
+	}
+	return kv
+}
+
+func Ping(ctx context.Context, reg name.Registry, t http.RoundTripper) (*PingResp, error) {
 	// This first attempts to use "https" for every request, falling back to http
 	// if the registry matches our localhost heuristic or if it is intentionally
 	// set to insecure via name.NewInsecureRegistry.
@@ -68,7 +86,7 @@ func ping(ctx context.Context, reg name.Registry, t http.RoundTripper) (*pingRes
 	return pingParallel(ctx, reg, t, schemes)
 }
 
-func pingSingle(ctx context.Context, reg name.Registry, t http.RoundTripper, scheme string) (*pingResp, error) {
+func pingSingle(ctx context.Context, reg name.Registry, t http.RoundTripper, scheme string) (*PingResp, error) {
 	client := http.Client{Transport: t}
 	url := fmt.Sprintf("%s://%s/v2/", scheme, reg.Name())
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -89,24 +107,24 @@ func pingSingle(ctx context.Context, reg name.Registry, t http.RoundTripper, sch
 	switch resp.StatusCode {
 	case http.StatusOK:
 		// If we get a 200, then no authentication is needed.
-		return &pingResp{
+		return &PingResp{
 			challenge: anonymous,
-			scheme:    scheme,
+			Scheme:    scheme,
 		}, nil
 	case http.StatusUnauthorized:
 		if challenges := authchallenge.ResponseChallenges(resp); len(challenges) != 0 {
 			// If we hit more than one, let's try to find one that we know how to handle.
 			wac := pickFromMultipleChallenges(challenges)
-			return &pingResp{
+			return &PingResp{
 				challenge:  challenge(wac.Scheme).Canonical(),
-				parameters: wac.Parameters,
-				scheme:     scheme,
+				Parameters: wac.Parameters,
+				Scheme:     scheme,
 			}, nil
 		}
 		// Otherwise, just return the challenge without parameters.
-		return &pingResp{
+		return &PingResp{
 			challenge: challenge(resp.Header.Get("WWW-Authenticate")).Canonical(),
-			scheme:    scheme,
+			Scheme:    scheme,
 		}, nil
 	default:
 		return nil, CheckError(resp, http.StatusOK, http.StatusUnauthorized)
@@ -114,12 +132,12 @@ func pingSingle(ctx context.Context, reg name.Registry, t http.RoundTripper, sch
 }
 
 // Based on the golang happy eyeballs dialParallel impl in net/dial.go.
-func pingParallel(ctx context.Context, reg name.Registry, t http.RoundTripper, schemes []string) (*pingResp, error) {
+func pingParallel(ctx context.Context, reg name.Registry, t http.RoundTripper, schemes []string) (*PingResp, error) {
 	returned := make(chan struct{})
 	defer close(returned)
 
 	type pingResult struct {
-		*pingResp
+		*PingResp
 		error
 		primary bool
 		done    bool
@@ -130,7 +148,7 @@ func pingParallel(ctx context.Context, reg name.Registry, t http.RoundTripper, s
 	startRacer := func(ctx context.Context, scheme string) {
 		pr, err := pingSingle(ctx, reg, t, scheme)
 		select {
-		case results <- pingResult{pingResp: pr, error: err, primary: scheme == "https", done: true}:
+		case results <- pingResult{PingResp: pr, error: err, primary: scheme == "https", done: true}:
 		case <-returned:
 			if pr != nil {
 				logs.Debug.Printf("%s lost race", scheme)
@@ -156,7 +174,7 @@ func pingParallel(ctx context.Context, reg name.Registry, t http.RoundTripper, s
 
 		case res := <-results:
 			if res.error == nil {
-				return res.pingResp, nil
+				return res.PingResp, nil
 			}
 			if res.primary {
 				primary = res

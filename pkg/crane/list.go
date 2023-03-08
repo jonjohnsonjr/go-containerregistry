@@ -29,5 +29,9 @@ func ListTags(src string, opt ...Option) ([]string, error) {
 		return nil, fmt.Errorf("parsing repo %q: %w", src, err)
 	}
 
-	return remote.List(repo, o.Remote...)
+	tags, err := remote.List(repo, o.Remote...)
+	if err != nil {
+		return nil, err
+	}
+	return tags.Tags, nil
 }

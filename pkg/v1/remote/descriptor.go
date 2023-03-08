@@ -215,6 +215,7 @@ func (d *Descriptor) remoteIndex() *remoteIndex {
 type fetcher struct {
 	Ref     name.Reference
 	Client  *http.Client
+	options *options
 	context context.Context
 }
 
@@ -227,6 +228,7 @@ func makeFetcher(ref name.Reference, o *options) (*fetcher, error) {
 		Ref:     ref,
 		Client:  &http.Client{Transport: tr},
 		context: o.context,
+		options: o,
 	}, nil
 }
 
@@ -311,9 +313,13 @@ func (f *fetcher) fetchManifest(ref name.Reference, acceptable []types.MediaType
 		return nil, nil, err
 	}
 
-	manifest, err := io.ReadAll(resp.Body)
+	lr := io.LimitedReader{resp.Body, f.options.maxSize}
+	manifest, err := io.ReadAll(&lr)
 	if err != nil {
 		return nil, nil, err
+	}
+	if int64(len(manifest)) > f.options.maxSize {
+		return nil, nil, fmt.Errorf("manifest is bigger than %d", f.options.maxSize)
 	}
 
 	digest, size, err := v1.SHA256(bytes.NewReader(manifest))
@@ -420,21 +426,21 @@ func (f *fetcher) headManifest(ref name.Reference, acceptable []types.MediaType)
 	}, nil
 }
 
-func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.ReadCloser, error) {
+func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.ReadCloser, int64, error) {
 	u := f.url("blobs", h.String())
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 
 	resp, err := f.Client.Do(req.WithContext(ctx))
 	if err != nil {
-		return nil, redact.Error(err)
+		return nil, -1, redact.Error(err)
 	}
 
 	if err := transport.CheckError(resp, http.StatusOK); err != nil {
 		resp.Body.Close()
-		return nil, err
+		return nil, -1, err
 	}
 
 	// Do whatever we can.
@@ -444,11 +450,32 @@ func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.Read
 		if size == verify.SizeUnknown {
 			size = hsize
 		} else if hsize != size {
-			return nil, fmt.Errorf("GET %s: Content-Length header %d does not match expected size %d", u.String(), hsize, size)
+			return nil, -1, fmt.Errorf("GET %s: Content-Length header %d does not match expected size %d", u.String(), hsize, size)
 		}
 	}
 
-	return verify.ReadCloser(resp.Body, size, h)
+	rc, err := verify.ReadCloser(resp.Body, size, h)
+	return rc, size, err
+}
+
+func (f *fetcher) getBlob(h v1.Hash) (*http.Response, error) {
+	u := f.url("blobs", h.String())
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := f.Client.Do(req.WithContext(f.context))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := transport.CheckError(resp, http.StatusOK); err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 func (f *fetcher) headBlob(h v1.Hash) (*http.Response, error) {

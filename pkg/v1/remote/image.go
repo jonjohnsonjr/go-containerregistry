@@ -117,7 +117,7 @@ func (r *remoteImage) RawConfigFile() ([]byte, error) {
 		return r.config, nil
 	}
 
-	body, err := r.fetchBlob(r.context, m.Config.Size, m.Config.Digest)
+	body, _, err := r.fetchBlob(r.context, m.Config.Size, m.Config.Digest)
 	if err != nil {
 		return nil, err
 	}
