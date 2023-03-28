@@ -15,20 +15,34 @@
 package cmd
 
 import (
+	"runtime"
+
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/spf13/cobra"
 )
 
 // NewCmdCopy creates a new cobra.Command for the copy subcommand.
 func NewCmdCopy(options *[]crane.Option) *cobra.Command {
-	return &cobra.Command{
+	allTags := false
+	jobs := runtime.GOMAXPROCS(0)
+	cmd := &cobra.Command{
 		Use:     "copy SRC DST",
 		Aliases: []string{"cp"},
 		Short:   "Efficiently copy a remote image from src to dst while retaining the digest value",
 		Args:    cobra.ExactArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			src, dst := args[0], args[1]
+			if allTags {
+				opts := append(*options, crane.WithJobs(jobs))
+				return crane.CopyRepository(cmd.Context(), src, dst, opts...)
+			}
+
 			return crane.Copy(src, dst, *options...)
 		},
 	}
+
+	cmd.Flags().BoolVarP(&allTags, "all-tags", "a", false, "(Optional) if true, copy all tags from SRC to DST")
+	cmd.Flags().IntVarP(&jobs, "jobs", "j", runtime.GOMAXPROCS(0), "The maximum number of concurrent copies")
+
+	return cmd
 }

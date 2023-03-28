@@ -113,6 +113,8 @@ var DefaultTransport http.RoundTripper = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
+	// We usually are dealing with 2 hosts (at most), split MaxIdleConns between them.
+	MaxIdleConnsPerHost: 50,
 }
 
 func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
@@ -150,23 +152,64 @@ func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
 	// transport.Wrapper is a signal that consumers are opt-ing into providing their own transport without any additional wrapping.
 	// This is to allow consumers full control over the transports logic, such as providing retry logic.
 	if _, ok := o.transport.(*transport.Wrapper); !ok {
-		// Wrap the transport in something that logs requests and responses.
-		// It's expensive to generate the dumps, so skip it if we're writing
-		// to nothing.
-		if logs.Enabled(logs.Debug) {
-			o.transport = transport.NewLogger(o.transport)
-		}
-
-		// Wrap the transport in something that can retry network flakes.
-		o.transport = transport.NewRetry(o.transport, transport.WithRetryPredicate(defaultRetryPredicate), transport.WithRetryStatusCodes(retryableStatusCodes...))
-
-		// Wrap this last to prevent transport.New from double-wrapping.
-		if o.userAgent != "" {
-			o.transport = transport.NewUserAgent(o.transport, o.userAgent)
-		}
+		o.transport = wrapTransport(o.transport, o)
 	}
 
 	return o, nil
+}
+
+func wrapTransport(t http.RoundTripper, o *options) http.RoundTripper {
+	// Wrap the transport in something that logs requests and responses.
+	// It's expensive to generate the dumps, so skip it if we're writing
+	// to nothing.
+	if logs.Enabled(logs.Debug) {
+		t = transport.NewLogger(t)
+	}
+
+	// Wrap the transport in something that can retry network flakes.
+	t = transport.NewRetry(t, transport.WithRetryPredicate(defaultRetryPredicate), transport.WithRetryStatusCodes(retryableStatusCodes...))
+
+	// Wrap this last to prevent transport.New from double-wrapping.
+	if o.userAgent != "" {
+		t = transport.NewUserAgent(t, o.userAgent)
+	}
+
+	return t
+}
+
+// WrapTransport does default wrapping for a given transport.
+//
+// This is mostly useful in the case where you want to pass a pre-authenticated
+// transport to WithTransport, but want the same logging and retries that this
+// package will do by default.
+//
+// Normal use would look something like this:
+//
+// transport.New(reg, auth, remote.WrapTransport(remote.DefaultTransport), []string{repo.Scope(transport.PullScope)})
+//
+// ... which does the token handshake once in a way that can be reused across multiple remote function invocations.
+//
+// The existence of this function is mostly a failure of abstraction, but it's useful
+// enough that we've exposed it for ourselves.
+func WrapTransport(t http.RoundTripper, opts ...Option) http.RoundTripper {
+	o := &options{
+		transport:      DefaultTransport,
+		platform:       defaultPlatform,
+		context:        context.Background(),
+		jobs:           defaultJobs,
+		pageSize:       defaultPageSize,
+		retryPredicate: defaultRetryPredicate,
+		retryBackoff:   defaultRetryBackoff,
+	}
+
+	for _, option := range opts {
+		if err := option(o); err != nil {
+			// This can't really happen.
+			logs.Debug.Printf("option() = %v", err)
+		}
+	}
+
+	return wrapTransport(t, o)
 }
 
 // WithTransport is a functional option for overriding the default transport

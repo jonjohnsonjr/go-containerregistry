@@ -15,13 +15,17 @@
 package crane
 
 import (
+	"context"
 	"fmt"
+	"sync"
 
 	"github.com/google/go-containerregistry/internal/legacy"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"golang.org/x/sync/errgroup"
 )
 
 // Copy copies a remote image or index from src to dst.
@@ -85,4 +89,86 @@ func copyIndex(desc *remote.Descriptor, dstRef name.Reference, o Options) error 
 		return err
 	}
 	return remote.WriteIndex(dstRef, idx, o.Remote...)
+}
+
+// CopyRepository copies every tag from src to dst.
+func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
+	o := makeOptions(opt...)
+
+	srcRepo, err := name.NewRepository(src, o.Name...)
+	if err != nil {
+		return err
+	}
+
+	mu := sync.Mutex{}
+	writes := map[name.Reference]remote.Taggable{}
+
+	srcOpts := o.Remote
+	auth := o.auth
+	if auth == nil {
+		auth, err = o.Keychain.Resolve(srcRepo)
+		if err != nil {
+			return err
+		}
+	}
+	scopes := []string{srcRepo.Scope(transport.PullScope)}
+	tr, err := transport.NewWithContext(ctx, srcRepo.Registry, auth, remote.WrapTransport(o.transport, srcOpts...), scopes)
+	if err != nil {
+		return err
+	}
+	srcOpts = append(srcOpts, remote.WithTransport(tr))
+
+	// We will MultiWrite one page at a time, just because it will provide some forward progress
+	// and is a natural boundary.
+	next := ""
+	for {
+		tags, err := remote.ListPage(srcRepo, next, srcOpts...)
+		if err != nil {
+			return err
+		}
+
+		var g errgroup.Group
+		g.SetLimit(o.jobs)
+
+		for _, tag := range tags.Tags {
+			tag := tag
+
+			g.Go(func() error {
+				srcTag, err := name.ParseReference(src+":"+tag, o.Name...)
+				if err != nil {
+					return fmt.Errorf("failed to parse tag: %w", err)
+				}
+				dstTag, err := name.ParseReference(dst+":"+tag, o.Name...)
+				if err != nil {
+					return fmt.Errorf("failed to parse tag: %w", err)
+				}
+
+				logs.Progress.Printf("Fetching %s", srcTag)
+				desc, err := remote.Get(srcTag, srcOpts...)
+				if err != nil {
+					return err
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+				writes[dstTag] = desc
+
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return err
+		}
+		logs.Progress.Printf("Pushing %d images", len(writes))
+		if err := remote.MultiWrite(writes, o.Remote...); err != nil {
+			return err
+		}
+
+		if tags.Next == "" {
+			break
+		}
+		next = tags.Next
+	}
+
+	return nil
 }
