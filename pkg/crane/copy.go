@@ -118,6 +118,19 @@ func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
 	}
 	srcOpts = append(srcOpts, remote.WithTransport(tr))
 
+	ignoredTags := map[string]struct{}{}
+	if !o.force {
+		logs.Progress.Print("Listing existing tags to skip (use --force to override)")
+
+		have, err := ListTags(dst, opt...)
+		if err != nil {
+			return err
+		}
+		for _, tag := range have {
+			ignoredTags[tag] = struct{}{}
+		}
+	}
+
 	// We will MultiWrite one page at a time, just because it will provide some forward progress
 	// and is a natural boundary.
 	next := ""
@@ -132,6 +145,13 @@ func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
 
 		for _, tag := range tags.Tags {
 			tag := tag
+
+			if !o.force {
+				if _, ok := ignoredTags[tag]; ok {
+					logs.Progress.Printf("Skipping %s (already exists)", tag)
+					continue
+				}
+			}
 
 			g.Go(func() error {
 				srcTag, err := name.ParseReference(src+":"+tag, o.Name...)
@@ -159,9 +179,12 @@ func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
 		if err := g.Wait(); err != nil {
 			return err
 		}
-		logs.Progress.Printf("Pushing %d images", len(writes))
-		if err := remote.MultiWrite(writes, o.Remote...); err != nil {
-			return err
+
+		if len(writes) != 0 {
+			logs.Progress.Printf("Pushing %d images", len(writes))
+			if err := remote.MultiWrite(writes, o.Remote...); err != nil {
+				return err
+			}
 		}
 
 		if tags.Next == "" {

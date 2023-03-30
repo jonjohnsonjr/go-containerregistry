@@ -37,6 +37,7 @@ type Options struct {
 	transport http.RoundTripper
 	insecure  bool
 	jobs      int
+	force     bool
 }
 
 // GetOptions exposes the underlying []remote.Option, []name.Option, and
@@ -160,5 +161,14 @@ func WithJobs(jobs int) Option {
 	return func(o *Options) {
 		o.jobs = jobs
 		o.Remote = append(o.Remote, remote.WithJobs(jobs))
+	}
+}
+
+// WithForce modifies behavior to do things might be unintentional or unsafe.
+//
+// For example, overwriting tags
+func WithForce(force bool) Option {
+	return func(o *Options) {
+		o.force = force
 	}
 }

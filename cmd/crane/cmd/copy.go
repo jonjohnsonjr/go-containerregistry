@@ -24,6 +24,7 @@ import (
 // NewCmdCopy creates a new cobra.Command for the copy subcommand.
 func NewCmdCopy(options *[]crane.Option) *cobra.Command {
 	allTags := false
+	force := false
 	jobs := runtime.GOMAXPROCS(0)
 	cmd := &cobra.Command{
 		Use:     "copy SRC DST",
@@ -33,7 +34,7 @@ func NewCmdCopy(options *[]crane.Option) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src, dst := args[0], args[1]
 			if allTags {
-				opts := append(*options, crane.WithJobs(jobs))
+				opts := append(*options, crane.WithJobs(jobs), crane.WithForce(force))
 				return crane.CopyRepository(cmd.Context(), src, dst, opts...)
 			}
 
@@ -42,6 +43,7 @@ func NewCmdCopy(options *[]crane.Option) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVarP(&allTags, "all-tags", "a", false, "(Optional) if true, copy all tags from SRC to DST")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "(Optional) if true, allow overwriting existing tags")
 	cmd.Flags().IntVarP(&jobs, "jobs", "j", runtime.GOMAXPROCS(0), "The maximum number of concurrent copies")
 
 	return cmd

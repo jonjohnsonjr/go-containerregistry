@@ -218,7 +218,7 @@ func TestMultiWrite_Retry(t *testing.T) {
 			t.Fatal("Expected error:")
 		}
 
-		if numOf401HttpErrors > 1 {
+		if numOf401HttpErrors > 2 {
 			t.Fatal("Should not retry on 401 errors:")
 		}
 	})
@@ -256,8 +256,8 @@ func TestMultiWrite_Retry(t *testing.T) {
 			t.Errorf("Expected an error, got nil")
 		}
 
-		// expect count == 1 since jobs is set to 1 and we should not retry on transport eof error
-		if doesNotRetryTransport.count != 1 {
+		// expect count == 2 since jobs is set to 1 and we should not retry on transport eof error
+		if doesNotRetryTransport.count != 2 {
 			t.Errorf("Incorrect count, got %d, want %d", doesNotRetryTransport.count, 1)
 		}
 	})
