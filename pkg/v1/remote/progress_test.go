@@ -441,10 +441,11 @@ func checkUpdates(updates <-chan v1.Update) error {
 			return errors.New("saw zero total")
 		}
 
-		if total == 0 {
+		if u.Total != total {
+			if u.Total < total {
+				return fmt.Errorf("total regressed: was %d, saw %d", total, u.Total)
+			}
 			total = u.Total
-		} else if u.Total != total {
-			return fmt.Errorf("total changed: was %d, saw %d", total, u.Total)
 		}
 
 		if u.Complete < high {

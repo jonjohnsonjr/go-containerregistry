@@ -29,6 +29,8 @@ type progress struct {
 }
 
 func (p *progress) total(delta int64) {
+	p.Lock()
+	defer p.Unlock()
 	atomic.AddInt64(&p.lastUpdate.Total, delta)
 }
 

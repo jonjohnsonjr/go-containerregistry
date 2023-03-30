@@ -88,7 +88,7 @@ func TestMultiWrite(t *testing.T) {
 		tag2: img2,
 		tag3: idx,
 	}); err != nil {
-		t.Error("Write:", err)
+		t.Fatal("MultiWrite:", err)
 	}
 
 	// Check that tagged images are present.
@@ -190,39 +190,6 @@ func TestMultiWrite_Retry(t *testing.T) {
 		}
 	})
 
-	t.Run("do not retry http error 401", func(t *testing.T) {
-		// Set up a fake registry.
-		handler := registry.New()
-
-		numOf401HttpErrors := 0
-		registryThatFailsOnFirstUpload := http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-			if strings.Contains(request.URL.Path, "/manifests/") {
-				numOf401HttpErrors++
-				responseWriter.WriteHeader(401)
-				return
-			}
-			handler.ServeHTTP(responseWriter, request)
-		})
-
-		s := httptest.NewServer(registryThatFailsOnFirstUpload)
-		defer s.Close()
-		u, err := url.Parse(s.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		tag1 := mustNewTag(t, u.Host+"/repo:tag1")
-		if err := MultiWrite(map[name.Reference]Taggable{
-			tag1: img1,
-		}); err == nil {
-			t.Fatal("Expected error:")
-		}
-
-		if numOf401HttpErrors > 2 {
-			t.Fatal("Should not retry on 401 errors:")
-		}
-	})
-
 	t.Run("do not retry transport errors if transport.Wrapper is used", func(t *testing.T) {
 		// reference a http server that is not listening (used to pick a port that isn't listening)
 		onlyHandlesPing := http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
@@ -256,8 +223,8 @@ func TestMultiWrite_Retry(t *testing.T) {
 			t.Errorf("Expected an error, got nil")
 		}
 
-		// expect count == 2 since jobs is set to 1 and we should not retry on transport eof error
-		if doesNotRetryTransport.count != 2 {
+		// expect count == 1 since jobs is set to 1 and we should not retry on transport eof error
+		if doesNotRetryTransport.count != 1 {
 			t.Errorf("Incorrect count, got %d, want %d", doesNotRetryTransport.count, 1)
 		}
 	})

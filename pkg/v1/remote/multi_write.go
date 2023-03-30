@@ -16,6 +16,7 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -34,48 +35,91 @@ type manifest interface {
 	partial.Describable
 }
 
-type task struct {
-	i    manifest
-	ref  name.Reference
-	deps map[string]struct{}
+type workers struct {
+	// map[v1.Hash]*sync.Once
+	onces sync.Map
+
+	// map[v1.Hash]error
+	errors sync.Map
+}
+
+func (w *workers) Done(digest v1.Hash) error {
+	v, ok := w.errors.Load(digest)
+	if !ok || v == nil {
+		return nil
+	}
+	return v.(error)
+}
+
+func (w *workers) Do(digest v1.Hash, f func() error) error {
+	// We don't care if it was loaded or not because the sync.Once will do it for us.
+	once, _ := w.onces.LoadOrStore(digest, &sync.Once{})
+
+	once.(*sync.Once).Do(func() {
+		w.errors.Store(digest, f())
+	})
+
+	return w.Done(digest)
 }
 
 type multiWriter struct {
-	sync.Mutex
+	w    *writer
+	repo name.Repository
+	o    *options
 
-	manifests []map[name.Reference]manifest
-	blobs     map[v1.Hash]v1.Layer
-	images    map[name.Reference]manifest
-	indexes   map[name.Reference]manifest
+	work *workers
 
-	// Stuff that is in flight so we don't do it twice.
-	// Key is a manifest ref or blob digest.
-	inflight map[string]bool
-	wg       sync.WaitGroup
+	scopeLock sync.Mutex
+	scopeSet  map[string]struct{}
+	scopes    []string
 
-	// Key is always digest
-	waiting map[string][]task
-
-	// Upload individual blobs and collect any errors.
-	blobChan chan v1.Layer
-
-	// Upload manifests
-	manifestChan chan task
-
-	todo []task
+	roots     *errgroup.Group
+	manifests *errgroup.Group
+	blobs     *errgroup.Group
 }
 
-func (mw *multiWriter) requeueWaiters(waiters []task, finisher string) {
-	for _, t := range waiters {
-		delete(t.deps, finisher)
-
-		mw.requeueTask(t)
+func (mw *multiWriter) Wait() error {
+	if err := mw.roots.Wait(); err != nil {
+		return err
 	}
+
+	if err := mw.manifests.Wait(); err != nil {
+		return err
+	}
+
+	if err := mw.blobs.Wait(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (mw *multiWriter) requeueTask(t task) {
-	logs.Progress.Printf("requeue %s", t.ref)
-	mw.todo = append(mw.todo, t)
+func (mw *multiWriter) maybeUpdateScopes(ml *MountableLayer) error {
+	if ml.Reference.Context().String() == mw.repo.String() {
+		return nil
+	}
+	if ml.Reference.Context().Registry.String() != mw.repo.Registry.String() {
+		return nil
+	}
+
+	scope := ml.Reference.Scope(transport.PullScope)
+
+	mw.scopeLock.Lock()
+	defer mw.scopeLock.Unlock()
+
+	if _, ok := mw.scopeSet[scope]; !ok {
+		mw.scopeSet[scope] = struct{}{}
+		mw.scopes = append(mw.scopes, scope)
+
+		logs.Debug.Printf("Refreshing token to add scope %q", scope)
+		wt, err := transport.NewWithContext(mw.o.context, mw.repo.Registry, mw.o.auth, mw.o.transport, mw.scopes)
+		if err != nil {
+			return err
+		}
+		mw.w.client = &http.Client{Transport: wt}
+	}
+
+	return nil
 }
 
 var manifestTypes = append(acceptableImageMediaTypes, acceptableIndexMediaTypes...)
@@ -87,11 +131,11 @@ var manifestTypes = append(acceptableImageMediaTypes, acceptableIndexMediaTypes.
 // Current limitations:
 // - All refs must share the same repository.
 // - Images cannot consist of stream.Layers.
-func MultiWrite(m map[name.Reference]Taggable, options ...Option) (rerr error) {
+func MultiWrite(todo map[name.Reference]Taggable, options ...Option) (rerr error) {
 	// Determine the repository being pushed to; if asked to push to
 	// multiple repositories, give up.
 	var repo, zero name.Repository
-	for ref := range m {
+	for ref := range todo {
 		if repo == zero {
 			repo = ref.Context()
 		} else if ref.Context() != repo {
@@ -103,38 +147,31 @@ func MultiWrite(m map[name.Reference]Taggable, options ...Option) (rerr error) {
 	if err != nil {
 		return err
 	}
+	ctx := o.context
 	scope := repo.Scope(transport.PushScope)
 	scopes := []string{scope}
-	rt, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, scopes)
+	rt, err := transport.NewWithContext(ctx, repo.Registry, o.auth, o.transport, scopes)
 	if err != nil {
 		return err
 	}
-	fclient := &http.Client{Transport: rt}
 
-	// I'm just using this to lock around the map.
-	mw := &multiWriter{
-		manifests:    []map[name.Reference]manifest{},
-		blobs:        map[v1.Hash]v1.Layer{},
-		images:       map[name.Reference]manifest{},
-		indexes:      map[name.Reference]manifest{},
-		inflight:     map[string]bool{},
-		waiting:      map[string][]task{},
-		todo:         []task{},
-		blobChan:     make(chan v1.Layer, 10*o.jobs),
-		manifestChan: make(chan task, 10*o.jobs),
-	}
-
-	var scopeLock sync.Mutex
-	scopeSet := map[string]struct{}{
-		scope: struct{}{},
-	}
-
-	// If we don't have mountable layers, we can reuse the read transport.
 	w := &writer{
 		repo:      repo,
 		client:    &http.Client{Transport: rt},
 		backoff:   o.retryBackoff,
 		predicate: o.retryPredicate,
+	}
+
+	// I'm just using this to lock around the map.
+	mw := &multiWriter{
+		w:    w,
+		repo: repo,
+		o:    o,
+		work: &workers{},
+		scopeSet: map[string]struct{}{
+			scope: struct{}{},
+		},
+		scopes: scopes,
 	}
 
 	// Collect the total size of blobs and manifests we're about to write.
@@ -145,42 +182,20 @@ func MultiWrite(m map[name.Reference]Taggable, options ...Option) (rerr error) {
 		defer func() { _ = w.progress.err(rerr) }()
 	}
 
-	maybeUpdateScopes := func(ml *MountableLayer) error {
-		if ml.Reference.Context().String() == repo.String() {
-			return nil
-		}
-		if ml.Reference.Context().Registry.String() != repo.Registry.String() {
-			return nil
-		}
+	mw.blobs, _ = errgroup.WithContext(ctx)
+	mw.blobs.SetLimit(o.jobs)
 
-		scope := ml.Reference.Scope(transport.PullScope)
+	mw.manifests, _ = errgroup.WithContext(ctx)
+	mw.manifests.SetLimit(o.jobs)
 
-		scopeLock.Lock()
-		defer scopeLock.Unlock()
+	// Separate from manifests so we don't block our children.
+	mw.roots, ctx = errgroup.WithContext(ctx)
+	mw.roots.SetLimit(o.jobs)
 
-		if _, ok := scopeSet[scope]; !ok {
-			scopeSet[scope] = struct{}{}
-			scopes = append(scopes, scope)
+	for ref, i := range todo {
+		ref, i := ref, i
 
-			logs.Debug.Printf("Refreshing token to add scope %q", scope)
-			mw.Lock()
-			wt, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, scopes)
-			if err != nil {
-				return err
-			}
-			w.client = &http.Client{Transport: wt}
-			mw.Unlock()
-			// We need to update our scopes.
-		}
-
-		return nil
-	}
-
-	meta, ctx := errgroup.WithContext(o.context)
-	meta.Go(func() error {
-		for ref, i := range m {
-			ref, i := ref, i
-
+		mw.roots.Go(func() error {
 			// Make it so you can just pass the results of remote.Get into this.
 			if desc, ok := i.(*Descriptor); ok {
 				if desc.MediaType.IsIndex() {
@@ -199,429 +214,275 @@ func MultiWrite(m map[name.Reference]Taggable, options ...Option) (rerr error) {
 				}
 			}
 
-			// This should always be true.
-			if pd, ok := i.(partial.Describable); ok {
-				f := &fetcher{
-					Ref:     ref,
-					Client:  fclient,
-					context: ctx,
-				}
-				want, err := partial.Descriptor(pd)
-				if err != nil {
-					return err
-				}
-				got, err := f.headManifest(ref, manifestTypes)
-				if err == nil {
-					if want.Digest == got.Digest {
-						if tag, ok := ref.(name.Tag); ok {
-							logs.Progress.Printf("existing manifest: %s@%s", tag.Identifier(), got.Digest)
-						} else {
-							logs.Progress.Print("existing manifest: ", got.Digest)
-						}
-						return nil
-					}
-				}
-			} else {
-				logs.Warn.Printf("taggable was %T", i)
+			m, ok := i.(manifest)
+			if !ok {
+				return mw.commitManifest(ctx, ref, i)
 			}
 
-			if img, ok := i.(v1.Image); ok {
-				deps, err := mw.addImageBlobs(ctx, img, ref, o.allowNondistributableArtifacts)
-				if err != nil {
-					return err
-				}
-				t := task{img, ref, deps}
-
-				if len(deps) == 0 {
-					mw.Lock()
-					mw.inflight[ref.String()] = false
-					mw.Unlock()
-
-					select {
-					case mw.manifestChan <- t:
-						mw.wg.Add(1)
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				}
+			if exists, err := mw.manifestExists(ctx, ref, m); err != nil {
+				return err
+			} else if exists {
 				return nil
 			}
 
-			if idx, ok := i.(v1.ImageIndex); ok {
-				deps, err := mw.addIndexBlobs(ctx, idx, ref, repo, 0, o.allowNondistributableArtifacts)
-				if err != nil {
-					return err
-				}
-				t := task{idx, ref, deps}
+			return mw.writeManifest(ctx, ref, m)
+		})
+	}
 
-				if len(deps) == 0 {
-					mw.Lock()
-					mw.inflight[ref.String()] = false
-					mw.Unlock()
-
-					select {
-					case mw.manifestChan <- t:
-						mw.wg.Add(1)
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				}
-				return nil
-			}
-
-			return fmt.Errorf("pushable resource was not Image or ImageIndex: %T", i)
-		}
-
-		close(mw.blobChan)
-		defer close(mw.manifestChan)
-
-		for {
-			logs.Progress.Printf("Waiting")
-			mw.wg.Wait()
-			logs.Progress.Printf("Finished waiting")
-
-			mw.Lock()
-			if len(mw.todo) == 0 {
-				return nil
-			}
-
-			todos := mw.todo[:]
-			mw.todo = []task{}
-			mw.Unlock()
-
-			logs.Progress.Printf("Found %d to requeue", len(todos))
-			for _, t := range todos {
-				select {
-				case mw.manifestChan <- t:
-					mw.wg.Add(1)
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
-		}
-
-		return nil
-	})
-
-	meta.Go(func() error {
-		logs.Progress.Print("Starting blob uploads")
-		g, ctx := errgroup.WithContext(ctx)
-		g.SetLimit(o.jobs)
-		for b := range mw.blobChan {
-			b := b
-			if ml, ok := b.(*MountableLayer); ok {
-				if err := maybeUpdateScopes(ml); err != nil {
-					return err
-				}
-			}
-			if o.updates != nil {
-				size, err := b.Size()
-				if err != nil {
-					return err
-				}
-				w.progress.total(size)
-			}
-
-			g.Go(func() error {
-				if err := w.uploadOne(ctx, b); err != nil {
-					return err
-				}
-				digest, err := b.Digest()
-				if err != nil {
-					return err
-				}
-				key := digest.String()
-
-				mw.Lock()
-				defer mw.Unlock()
-
-				mw.inflight[key] = true
-				todo, ok := mw.waiting[key]
-				if ok {
-					delete(mw.waiting, key)
-					mw.requeueWaiters(todo, key)
-				}
-
-				return nil
-			})
-		}
-		return g.Wait()
-	})
-
-	meta.Go(func() error {
-		logs.Progress.Print("Starting manifest uploads")
-		g, ctx := errgroup.WithContext(ctx)
-		g.SetLimit(o.jobs)
-		for t := range mw.manifestChan {
-			t := t
-
-			g.Go(func() error {
-				defer mw.wg.Done()
-				mw.Lock()
-				if mw.inflight[t.ref.String()] {
-					logs.Progress.Printf("already uploaded %s", t.ref)
-					mw.Unlock()
-					return nil
-				}
-				for dep := range t.deps {
-					done, ok := mw.inflight[dep]
-					if !ok {
-						mw.Unlock()
-						return fmt.Errorf("missing dep %q for %q, deps=%v", dep, t.ref, t.deps)
-					}
-					if done {
-						delete(t.deps, dep)
-					}
-				}
-				if len(t.deps) != 0 {
-					mw.requeueTask(t)
-					mw.Unlock()
-					return nil
-				}
-				mw.Unlock()
-
-				if o.updates != nil {
-					if ws, ok := t.i.(interface {
-						Size() (int64, error)
-					}); ok {
-						size, err := ws.Size()
-						if err != nil {
-							return err
-						}
-						w.progress.total(size)
-					} else {
-						b, err := t.i.RawManifest()
-						if err != nil {
-							return err
-						}
-						w.progress.total(int64(len(b)))
-					}
-				}
-
-				if err := w.commitManifest(ctx, t.i, t.ref); err != nil {
-					return err
-				}
-
-				digest, err := t.i.Digest()
-				if err != nil {
-					return err
-				}
-				key := digest.String()
-
-				mw.Lock()
-				mw.inflight[t.ref.String()] = true
-				todo, ok := mw.waiting[key]
-				if ok {
-					mw.requeueWaiters(todo, key)
-				}
-				mw.Unlock()
-
-				return nil
-			})
-		}
-		return g.Wait()
-	})
-
-	return meta.Wait()
+	return mw.Wait()
 }
 
-// addIndexBlobs adds blobs to the set of blobs we intend to upload, and
-// returns the latest copy of the ordered collection of manifests to upload.
-func (mw *multiWriter) addIndexBlobs(ctx context.Context, idx v1.ImageIndex, ref name.Reference, repo name.Repository, lvl int, allowNondistributableArtifacts bool) (map[string]struct{}, error) {
+func (mw *multiWriter) writeDeps(ctx context.Context, m manifest) error {
+	if img, ok := m.(v1.Image); ok {
+		return mw.writeLayers(ctx, img)
+	}
+
+	if idx, ok := m.(v1.ImageIndex); ok {
+		return mw.writeChildren(ctx, idx)
+	}
+
+	return fmt.Errorf("pushable resource was not Image or ImageIndex: %T", m)
+}
+
+func (mw *multiWriter) writeManifest(ctx context.Context, ref name.Reference, m manifest) error {
+	digest, err := m.Digest()
+	if err != nil {
+		return err
+	}
+
+	// The first time we work.Do this digest, we want to PUT the manifest as well so that
+	// if this is a child of an index, we can depend on the digest to know that someone PUT
+	// it already for us.
+	//
+	// If we happen to be the first manifest with this digest, we want to do a PUT with our
+	// tag (if we have one), but not do it twice.
+	//
+	// If we are a subsequent manifest, we still need to do the PUT with our tag.
+	firstPut := false
+
+	if err := mw.work.Do(digest, func() error {
+		if err := mw.writeDeps(ctx, m); err != nil {
+			return err
+		}
+
+		firstPut = true
+		return mw.commitManifest(ctx, ref, m)
+	}); err != nil {
+		return err
+	}
+
+	if firstPut {
+		return nil
+	}
+
+	return mw.commitManifest(ctx, ref, m)
+}
+
+func (mw *multiWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) error {
 	im, err := idx.IndexManifest()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	deps := make(map[string]struct{}, len(im.Manifests))
+	var wg sync.WaitGroup
 	for _, desc := range im.Manifests {
-		deps[desc.Digest.String()] = struct{}{}
-	}
-
-	for _, desc := range im.Manifests {
-		childRef := repo.Digest(desc.Digest.String())
-		key := childRef.String()
-		waitKey := desc.Digest.String()
+		desc := desc
+		ref := mw.repo.Digest(desc.Digest.String())
 
 		switch desc.MediaType {
 		case types.OCIImageIndex, types.DockerManifestList:
-			childIdx, err := idx.ImageIndex(desc.Digest)
+			// For recursive index, we want to do a depth-first launching of goroutines
+			// to avoid deadlocking.
+			//
+			// Note that this is rare, so the impact of this should be really small.
+			idx, err := idx.ImageIndex(desc.Digest)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			childDeps, err := mw.addIndexBlobs(ctx, childIdx, childRef, repo, lvl+1, allowNondistributableArtifacts)
-			if err != nil {
-				return nil, err
+			if err := mw.writeManifest(ctx, ref, idx); err != nil {
+				return err
 			}
-
-			if len(childDeps) == 0 {
-				mw.Lock()
-				mw.inflight[key] = false
-				mw.Unlock()
-
-				t := task{childIdx, childRef, childDeps}
-				select {
-				case mw.manifestChan <- t:
-					mw.wg.Add(1)
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			}
-
-			mw.Lock()
-			if done, ok := mw.inflight[key]; ok {
-				if done {
-					delete(deps, key)
-					mw.Unlock()
-					continue
-				}
-
-				waiting, ok := mw.waiting[waitKey]
-				if !ok {
-					waiting = []task{}
-				}
-				waiting = append(waiting, task{idx, ref, deps})
-				mw.waiting[waitKey] = waiting
-			}
-			mw.Unlock()
 		case types.OCIManifestSchema1, types.DockerManifestSchema2:
-			img, err := idx.Image(desc.Digest)
-			if err != nil {
-				return nil, err
-			}
-			childDeps, err := mw.addImageBlobs(ctx, img, childRef, allowNondistributableArtifacts)
-			if err != nil {
-				return nil, err
-			}
+			wg.Add(1)
+			mw.manifests.Go(func() error {
+				defer wg.Done()
 
-			if len(childDeps) == 0 {
-				mw.Lock()
-				mw.inflight[key] = false
-				mw.Unlock()
-
-				t := task{img, childRef, childDeps}
-				select {
-				case mw.manifestChan <- t:
-					mw.wg.Add(1)
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				}
-			}
-
-			mw.Lock()
-			if done, ok := mw.inflight[key]; ok {
-				if done {
-					delete(deps, key)
-					mw.Unlock()
-					continue
+				img, err := idx.Image(desc.Digest)
+				if err != nil {
+					return err
 				}
 
-				waiting, ok := mw.waiting[waitKey]
-				if !ok {
-					waiting = []task{}
-				}
-				waiting = append(waiting, task{idx, ref, deps})
-				mw.waiting[waitKey] = waiting
-			}
-			mw.Unlock()
+				return mw.writeManifest(ctx, ref, img)
+			})
 		default:
+			if !(desc.MediaType.IsDistributable() || mw.o.allowNondistributableArtifacts) {
+				continue
+			}
+
 			// Workaround for #819.
-			if wl, ok := idx.(withLayer); ok {
-				layer, err := wl.Layer(desc.Digest)
+			wl, ok := idx.(withLayer)
+			if !ok {
+				return fmt.Errorf("unknown media type: %v", desc.MediaType)
+			}
+
+			wg.Add(1)
+			mw.blobs.Go(func() error {
+				defer wg.Done()
+
+				l, err := wl.Layer(desc.Digest)
 				if err != nil {
-					return nil, err
+					return err
 				}
-				done, err := mw.addLayerBlob(ctx, idx, ref, layer, allowNondistributableArtifacts)
-				if err != nil {
-					return nil, err
-				}
-				if done {
-					delete(deps, key)
-				}
-			} else {
-				return nil, fmt.Errorf("unknown media type: %v", desc.MediaType)
+				return mw.writeLayer(ctx, l)
+			})
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+func (mw *multiWriter) manifestExists(ctx context.Context, ref name.Reference, pd partial.Describable) (bool, error) {
+	f := &fetcher{
+		Ref:     ref,
+		Client:  mw.w.client,
+		context: ctx,
+	}
+	digest, err := pd.Digest()
+	if err != nil {
+		// Possibly due to streaming layers.
+		return false, nil
+	}
+	got, err := f.headManifest(ref, manifestTypes)
+	if err != nil {
+		var terr *transport.Error
+		if errors.As(err, &terr) {
+			if terr.StatusCode == http.StatusNotFound {
+				return false, nil
 			}
 		}
-	}
-	return deps, nil
-}
 
-func (mw *multiWriter) addLayerBlob(ctx context.Context, parent manifest, ref name.Reference, l v1.Layer, allowNondistributableArtifacts bool) (bool, error) {
-	// Ignore foreign layers.
-	mt, err := l.MediaType()
-	if err != nil {
 		return false, err
 	}
 
-	if !(mt.IsDistributable() || allowNondistributableArtifacts) {
-		return true, nil
+	if digest != got.Digest {
+		return false, nil
 	}
 
-	digest, err := l.Digest()
-	if err != nil {
-		return false, err
-	}
-
-	key := digest.String()
-	mw.Lock()
-	if done, ok := mw.inflight[key]; ok {
-		if done {
-			mw.Unlock()
-			return true, nil
-		}
-
-		waiting, ok := mw.waiting[key]
-		if !ok {
-			waiting = []task{}
-		}
-		waiting = append(waiting, task{parent, ref, nil})
-		mw.waiting[key] = waiting
-		mw.Unlock()
+	if tag, ok := ref.(name.Tag); ok {
+		logs.Progress.Printf("existing manifest: %s@%s", tag.Identifier(), got.Digest)
 	} else {
-		mw.inflight[key] = false
-		mw.Unlock()
-
-		select {
-		case mw.blobChan <- l:
-		case <-ctx.Done():
-			return false, ctx.Err()
-		}
+		logs.Progress.Print("existing manifest: ", got.Digest)
 	}
 
-	return false, nil
+	return true, nil
 }
 
-func (mw *multiWriter) addImageBlobs(ctx context.Context, img v1.Image, ref name.Reference, allowNondistributableArtifacts bool) (map[string]struct{}, error) {
+func manifestSize(i Taggable) (int64, error) {
+	if ws, ok := i.(interface {
+		Size() (int64, error)
+	}); ok {
+		return ws.Size()
+	}
+
+	b, err := i.RawManifest()
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(b)), nil
+}
+
+func (mw *multiWriter) commitManifest(ctx context.Context, ref name.Reference, i Taggable) error {
+	if mw.o.updates != nil {
+		size, err := manifestSize(i)
+		if err != nil {
+			return err
+		}
+		mw.w.progress.total(size)
+	}
+
+	return mw.w.commitManifest(ctx, i, ref)
+}
+
+func (mw *multiWriter) writeLayers(ctx context.Context, img v1.Image) error {
 	ls, err := img.Layers()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	cl, err := partial.ConfigLayer(img)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	ls = append(ls, cl)
 
-	deps := make(map[string]struct{}, len(ls)+1)
-
-	// Collect all layers.
+	var wg sync.WaitGroup
 	for _, l := range ls {
-		dig, err := l.Digest()
+		l := l
+
+		// Ignore foreign layers.
+		mt, err := l.MediaType()
 		if err != nil {
-			return nil, err
+			return err
 		}
 
-		done, err := mw.addLayerBlob(ctx, img, ref, l, allowNondistributableArtifacts)
-		if err != nil {
-			return nil, err
+		if !(mt.IsDistributable() || mw.o.allowNondistributableArtifacts) {
+			continue
 		}
 
-		if !done {
-			deps[dig.String()] = struct{}{}
+		wg.Add(1)
+		mw.blobs.Go(func() error {
+			defer wg.Done()
+
+			return mw.writeLayer(ctx, l)
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+func (mw *multiWriter) writeLayer(ctx context.Context, l v1.Layer) error {
+	if ml, ok := l.(*MountableLayer); ok {
+		if err := mw.maybeUpdateScopes(ml); err != nil {
+			return err
 		}
 	}
 
-	return deps, nil
+	digest, err := l.Digest()
+	if err != nil {
+		return err
+	}
+
+	return mw.work.Do(digest, func() error {
+		if mw.o.updates != nil {
+			size, err := l.Size()
+			if err != nil {
+				return err
+			}
+			mw.w.progress.total(size)
+		}
+		return mw.w.uploadOne(ctx, l)
+	})
 }
