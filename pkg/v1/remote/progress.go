@@ -50,6 +50,11 @@ func (p *progress) err(err error) error {
 	return err
 }
 
+func (p *progress) Close(err error) {
+	_ = p.err(err)
+	close(p.updates)
+}
+
 type progressReader struct {
 	rc io.ReadCloser
 

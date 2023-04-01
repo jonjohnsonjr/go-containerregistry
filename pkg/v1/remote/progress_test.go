@@ -17,6 +17,7 @@ package remote
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -437,6 +438,7 @@ func checkUpdates(updates <-chan v1.Update) error {
 			return u.Error
 		}
 
+		log.Printf("u.Total=%d, u.Complete=%d", u.Total, u.Complete)
 		if u.Total == 0 {
 			return errors.New("saw zero total")
 		}

@@ -50,21 +50,19 @@ func Write(ref name.Reference, img v1.Image, options ...Option) (rerr error) {
 		return err
 	}
 
-	var p *progress
-	if o.updates != nil {
-		p = &progress{updates: o.updates}
-		p.lastUpdate = &v1.Update{}
-		p.lastUpdate.Total, err = countImage(img, o.allowNondistributableArtifacts)
+	if o.progress != nil {
+		o.progress.lastUpdate.Total, err = countImage(img, o.allowNondistributableArtifacts)
 		if err != nil {
 			return err
 		}
-		defer close(o.updates)
-		defer func() { _ = p.err(rerr) }()
+		defer func() {
+			o.progress.Close(rerr)
+		}()
 	}
-	return writeImage(o.context, ref, img, o, p)
+	return writeImage(o.context, ref, img, o)
 }
 
-func writeImage(ctx context.Context, ref name.Reference, img v1.Image, o *options, progress *progress) error {
+func writeImage(ctx context.Context, ref name.Reference, img v1.Image, o *options) error {
 	ls, err := img.Layers()
 	if err != nil {
 		return err
@@ -74,10 +72,10 @@ func writeImage(ctx context.Context, ref name.Reference, img v1.Image, o *option
 	if err != nil {
 		return err
 	}
-	w := writer{
+	w := &writer{
 		repo:      ref.Context(),
 		client:    &http.Client{Transport: tr},
-		progress:  progress,
+		progress:  o.progress,
 		backoff:   o.retryBackoff,
 		predicate: o.retryPredicate,
 	}
@@ -478,13 +476,8 @@ type withLayer interface {
 	Layer(v1.Hash) (v1.Layer, error)
 }
 
-func (w *writer) writeIndex(ctx context.Context, ref name.Reference, ii v1.ImageIndex, options ...Option) error {
+func (w *writer) writeIndex(ctx context.Context, ref name.Reference, ii v1.ImageIndex, o *options) error {
 	index, err := ii.IndexManifest()
-	if err != nil {
-		return err
-	}
-
-	o, err := makeOptions(ref.Context(), options...)
 	if err != nil {
 		return err
 	}
@@ -507,7 +500,7 @@ func (w *writer) writeIndex(ctx context.Context, ref name.Reference, ii v1.Image
 			if err != nil {
 				return err
 			}
-			if err := w.writeIndex(ctx, ref, ii, options...); err != nil {
+			if err := w.writeIndex(ctx, ref, ii, o); err != nil {
 				return err
 			}
 		case types.OCIManifestSchema1, types.DockerManifestSchema2:
@@ -515,7 +508,7 @@ func (w *writer) writeIndex(ctx context.Context, ref name.Reference, ii v1.Image
 			if err != nil {
 				return err
 			}
-			if err := writeImage(ctx, ref, img, o, w.progress); err != nil {
+			if err := writeImage(ctx, ref, img, o); err != nil {
 				return err
 			}
 		default:
@@ -780,19 +773,18 @@ func WriteIndex(ref name.Reference, ii v1.ImageIndex, options ...Option) (rerr e
 	if err != nil {
 		return err
 	}
-	w := writer{
+	w := &writer{
 		repo:      ref.Context(),
 		client:    &http.Client{Transport: tr},
+		progress:  o.progress,
 		backoff:   o.retryBackoff,
 		predicate: o.retryPredicate,
 	}
 
-	if o.updates != nil {
-		w.progress = &progress{updates: o.updates}
-		w.progress.lastUpdate = &v1.Update{}
-
-		defer close(o.updates)
-		defer func() { w.progress.err(rerr) }()
+	if w.progress != nil {
+		defer func() {
+			w.progress.Close(rerr)
+		}()
 
 		w.progress.lastUpdate.Total, err = countIndex(ii, o.allowNondistributableArtifacts)
 		if err != nil {
@@ -800,7 +792,7 @@ func WriteIndex(ref name.Reference, ii v1.ImageIndex, options ...Option) (rerr e
 		}
 	}
 
-	return w.writeIndex(o.context, ref, ii, options...)
+	return w.writeIndex(o.context, ref, ii, o)
 }
 
 // countImage counts the total size of all layers + config blob + manifest for
@@ -922,19 +914,18 @@ func WriteLayer(repo name.Repository, layer v1.Layer, options ...Option) (rerr e
 	if err != nil {
 		return err
 	}
-	w := writer{
+	w := &writer{
 		repo:      repo,
 		client:    &http.Client{Transport: tr},
+		progress:  o.progress,
 		backoff:   o.retryBackoff,
 		predicate: o.retryPredicate,
 	}
 
-	if o.updates != nil {
-		w.progress = &progress{updates: o.updates}
-		w.progress.lastUpdate = &v1.Update{}
-
-		defer close(o.updates)
-		defer func() { w.progress.err(rerr) }()
+	if w.progress != nil {
+		defer func() {
+			w.progress.Close(rerr)
+		}()
 
 		// TODO: support streaming layers which update the total count as they write.
 		if _, ok := layer.(*stream.Layer); ok {
@@ -992,9 +983,10 @@ func Put(ref name.Reference, t Taggable, options ...Option) error {
 	if err != nil {
 		return err
 	}
-	w := writer{
+	w := &writer{
 		repo:      ref.Context(),
 		client:    &http.Client{Transport: tr},
+		progress:  o.progress,
 		backoff:   o.retryBackoff,
 		predicate: o.retryPredicate,
 	}

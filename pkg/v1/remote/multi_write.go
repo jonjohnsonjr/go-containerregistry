@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -29,6 +30,30 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"golang.org/x/sync/errgroup"
 )
+
+var acceptableManifestTypes = append(acceptableImageMediaTypes, acceptableIndexMediaTypes...)
+
+// MultiWrite writes the given Images or ImageIndexes to the given refs, as
+// efficiently as possible, by deduping shared layer blobs while uploading them
+// in parallel.
+//
+// Current limitations:
+// - Images cannot consist of stream.Layers.
+func MultiWrite(todo map[name.Reference]Taggable, options ...Option) (rerr error) {
+	o, err := makeOptions(nil, options...)
+	if err != nil {
+		return err
+	}
+	if o.progress != nil {
+		defer o.progress.Close(rerr)
+	}
+	p, ctx := newPusher(o.context, o)
+	for ref, t := range todo {
+		p.Go(ctx, ref, t)
+	}
+
+	return p.Wait()
+}
 
 type manifest interface {
 	Taggable
@@ -62,10 +87,69 @@ func (w *workers) Do(digest v1.Hash, f func() error) error {
 	return w.Done(digest)
 }
 
-type multiWriter struct {
-	w    *writer
+type Pusher struct {
+	o *options
+
+	// map[name.Repository]*repoWriter
+	writers sync.Map
+
+	roots *errgroup.Group
+}
+
+func NewPusher(ctx context.Context, keychain authn.Keychain, options ...Option) (*Pusher, context.Context, error) {
+	o, err := makeOptions(nil, options...)
+	if err != nil {
+		return nil, nil, err
+	}
+	o.keychain = keychain
+	o.auth = nil
+
+	p, ctx := newPusher(ctx, o)
+	return p, ctx, nil
+}
+
+func newPusher(ctx context.Context, o *options) (*Pusher, context.Context) {
+	p := &Pusher{
+		o: o,
+	}
+	p.roots, ctx = errgroup.WithContext(ctx)
+	p.roots.SetLimit(o.jobs)
+	return p, ctx
+}
+
+func (p *Pusher) writer(ctx context.Context, repo name.Repository, o *options) (*repoWriter, error) {
+	v, _ := p.writers.LoadOrStore(repo, &repoWriter{
+		repo: repo,
+		o:    o,
+	})
+	rw := v.(*repoWriter)
+	return rw, rw.init(ctx)
+}
+
+func (p *Pusher) Push(ctx context.Context, ref name.Reference, t Taggable) error {
+	w, err := p.writer(ctx, ref.Context(), p.o)
+	if err != nil {
+		return err
+	}
+	return w.write(ctx, ref, t)
+}
+
+func (p *Pusher) Go(ctx context.Context, ref name.Reference, t Taggable) {
+	p.roots.Go(func() error {
+		return p.Push(ctx, ref, t)
+	})
+}
+
+func (p *Pusher) Wait() error {
+	return p.roots.Wait()
+}
+
+type repoWriter struct {
 	repo name.Repository
 	o    *options
+	once sync.Once
+
+	w *writer
 
 	work *workers
 
@@ -73,178 +157,151 @@ type multiWriter struct {
 	scopeSet  map[string]struct{}
 	scopes    []string
 
-	roots     *errgroup.Group
-	manifests *errgroup.Group
-	blobs     *errgroup.Group
+	roots     errgroup.Group
+	manifests errgroup.Group
+	blobs     errgroup.Group
 }
 
-func (mw *multiWriter) Wait() error {
-	if err := mw.roots.Wait(); err != nil {
+// so you can use sync.Once but return an error
+func onceErr(once *sync.Once, f func() error) (err error) {
+	once.Do(func() {
+		err = f()
+	})
+	return
+}
+
+// this will run once per repoWriter instance
+func (r *repoWriter) init(ctx context.Context) error {
+	return onceErr(&r.once, func() (err error) {
+		scope := r.repo.Scope(transport.PushScope)
+		scopes := []string{scope}
+
+		auth := r.o.auth
+		if r.o.keychain != nil {
+			auth, err = r.o.keychain.Resolve(r.repo)
+			if err != nil {
+				return err
+			}
+		}
+
+		rt, err := transport.NewWithContext(ctx, r.repo.Registry, auth, r.o.transport, scopes)
+		if err != nil {
+			return err
+		}
+
+		r.w = &writer{
+			repo:      r.repo,
+			client:    &http.Client{Transport: rt},
+			progress:  r.o.progress,
+			backoff:   r.o.retryBackoff,
+			predicate: r.o.retryPredicate,
+		}
+		r.work = &workers{}
+		r.scopeSet = map[string]struct{}{
+			scope: struct{}{},
+		}
+		r.scopes = scopes
+
+		r.blobs.SetLimit(r.o.jobs)
+		r.manifests.SetLimit(r.o.jobs)
+
+		// Separate from manifests so we don't block our children.
+		r.roots.SetLimit(r.o.jobs)
+
+		return nil
+	})
+}
+
+func (r *repoWriter) Wait() error {
+	if err := r.roots.Wait(); err != nil {
 		return err
 	}
 
-	if err := mw.manifests.Wait(); err != nil {
+	if err := r.manifests.Wait(); err != nil {
 		return err
 	}
 
-	if err := mw.blobs.Wait(); err != nil {
+	if err := r.blobs.Wait(); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (mw *multiWriter) maybeUpdateScopes(ml *MountableLayer) error {
-	if ml.Reference.Context().String() == mw.repo.String() {
+func (r *repoWriter) maybeUpdateScopes(ml *MountableLayer) error {
+	if ml.Reference.Context().String() == r.repo.String() {
 		return nil
 	}
-	if ml.Reference.Context().Registry.String() != mw.repo.Registry.String() {
+	if ml.Reference.Context().Registry.String() != r.repo.Registry.String() {
 		return nil
 	}
 
 	scope := ml.Reference.Scope(transport.PullScope)
 
-	mw.scopeLock.Lock()
-	defer mw.scopeLock.Unlock()
+	r.scopeLock.Lock()
+	defer r.scopeLock.Unlock()
 
-	if _, ok := mw.scopeSet[scope]; !ok {
-		mw.scopeSet[scope] = struct{}{}
-		mw.scopes = append(mw.scopes, scope)
+	if _, ok := r.scopeSet[scope]; !ok {
+		r.scopeSet[scope] = struct{}{}
+		r.scopes = append(r.scopes, scope)
 
 		logs.Debug.Printf("Refreshing token to add scope %q", scope)
-		wt, err := transport.NewWithContext(mw.o.context, mw.repo.Registry, mw.o.auth, mw.o.transport, mw.scopes)
+		wt, err := transport.NewWithContext(r.o.context, r.repo.Registry, r.o.auth, r.o.transport, r.scopes)
 		if err != nil {
 			return err
 		}
-		mw.w.client = &http.Client{Transport: wt}
+		r.w.client = &http.Client{Transport: wt}
 	}
 
 	return nil
 }
 
-var manifestTypes = append(acceptableImageMediaTypes, acceptableIndexMediaTypes...)
+func (r *repoWriter) write(ctx context.Context, ref name.Reference, t Taggable) error {
+	// Make it so you can just pass the results of remote.Get into this.
+	if desc, ok := t.(*Descriptor); ok {
+		if desc.MediaType.IsIndex() {
+			idx, err := desc.ImageIndex()
+			if err != nil {
+				return err
+			}
+			t = idx
+		} else {
+			img, err := desc.Image()
+			if err != nil {
+				return err
+			}
+			t = img
 
-// MultiWrite writes the given Images or ImageIndexes to the given refs, as
-// efficiently as possible, by deduping shared layer blobs and uploading layers
-// in parallel, then uploading all manifests in parallel.
-//
-// Current limitations:
-// - All refs must share the same repository.
-// - Images cannot consist of stream.Layers.
-func MultiWrite(todo map[name.Reference]Taggable, options ...Option) (rerr error) {
-	// Determine the repository being pushed to; if asked to push to
-	// multiple repositories, give up.
-	var repo, zero name.Repository
-	for ref := range todo {
-		if repo == zero {
-			repo = ref.Context()
-		} else if ref.Context() != repo {
-			return fmt.Errorf("MultiWrite can only push to the same repository (saw %q and %q)", repo, ref.Context())
 		}
 	}
 
-	o, err := makeOptions(repo, options...)
-	if err != nil {
+	m, ok := t.(manifest)
+	if !ok {
+		return r.commitManifest(ctx, ref, t)
+	}
+
+	if exists, err := r.manifestExists(ctx, ref, m); err != nil {
 		return err
-	}
-	ctx := o.context
-	scope := repo.Scope(transport.PushScope)
-	scopes := []string{scope}
-	rt, err := transport.NewWithContext(ctx, repo.Registry, o.auth, o.transport, scopes)
-	if err != nil {
-		return err
+	} else if exists {
+		return nil
 	}
 
-	w := &writer{
-		repo:      repo,
-		client:    &http.Client{Transport: rt},
-		backoff:   o.retryBackoff,
-		predicate: o.retryPredicate,
-	}
-
-	// I'm just using this to lock around the map.
-	mw := &multiWriter{
-		w:    w,
-		repo: repo,
-		o:    o,
-		work: &workers{},
-		scopeSet: map[string]struct{}{
-			scope: struct{}{},
-		},
-		scopes: scopes,
-	}
-
-	// Collect the total size of blobs and manifests we're about to write.
-	if o.updates != nil {
-		w.progress = &progress{updates: o.updates}
-		w.progress.lastUpdate = &v1.Update{}
-		defer close(o.updates)
-		defer func() { _ = w.progress.err(rerr) }()
-	}
-
-	mw.blobs, _ = errgroup.WithContext(ctx)
-	mw.blobs.SetLimit(o.jobs)
-
-	mw.manifests, _ = errgroup.WithContext(ctx)
-	mw.manifests.SetLimit(o.jobs)
-
-	// Separate from manifests so we don't block our children.
-	mw.roots, ctx = errgroup.WithContext(ctx)
-	mw.roots.SetLimit(o.jobs)
-
-	for ref, i := range todo {
-		ref, i := ref, i
-
-		mw.roots.Go(func() error {
-			// Make it so you can just pass the results of remote.Get into this.
-			if desc, ok := i.(*Descriptor); ok {
-				if desc.MediaType.IsIndex() {
-					idx, err := desc.ImageIndex()
-					if err != nil {
-						return err
-					}
-					i = idx
-				} else {
-					img, err := desc.Image()
-					if err != nil {
-						return err
-					}
-					i = img
-
-				}
-			}
-
-			m, ok := i.(manifest)
-			if !ok {
-				return mw.commitManifest(ctx, ref, i)
-			}
-
-			if exists, err := mw.manifestExists(ctx, ref, m); err != nil {
-				return err
-			} else if exists {
-				return nil
-			}
-
-			return mw.writeManifest(ctx, ref, m)
-		})
-	}
-
-	return mw.Wait()
+	return r.writeManifest(ctx, ref, m)
 }
 
-func (mw *multiWriter) writeDeps(ctx context.Context, m manifest) error {
+func (r *repoWriter) writeDeps(ctx context.Context, m manifest) error {
 	if img, ok := m.(v1.Image); ok {
-		return mw.writeLayers(ctx, img)
+		return r.writeLayers(ctx, img)
 	}
 
 	if idx, ok := m.(v1.ImageIndex); ok {
-		return mw.writeChildren(ctx, idx)
+		return r.writeChildren(ctx, idx)
 	}
 
 	return fmt.Errorf("pushable resource was not Image or ImageIndex: %T", m)
 }
 
-func (mw *multiWriter) writeManifest(ctx context.Context, ref name.Reference, m manifest) error {
+func (r *repoWriter) writeManifest(ctx context.Context, ref name.Reference, m manifest) error {
 	digest, err := m.Digest()
 	if err != nil {
 		return err
@@ -260,13 +317,13 @@ func (mw *multiWriter) writeManifest(ctx context.Context, ref name.Reference, m 
 	// If we are a subsequent manifest, we still need to do the PUT with our tag.
 	firstPut := false
 
-	if err := mw.work.Do(digest, func() error {
-		if err := mw.writeDeps(ctx, m); err != nil {
+	if err := r.work.Do(digest, func() error {
+		if err := r.writeDeps(ctx, m); err != nil {
 			return err
 		}
 
 		firstPut = true
-		return mw.commitManifest(ctx, ref, m)
+		return r.commitManifest(ctx, ref, m)
 	}); err != nil {
 		return err
 	}
@@ -275,10 +332,10 @@ func (mw *multiWriter) writeManifest(ctx context.Context, ref name.Reference, m 
 		return nil
 	}
 
-	return mw.commitManifest(ctx, ref, m)
+	return r.commitManifest(ctx, ref, m)
 }
 
-func (mw *multiWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) error {
+func (r *repoWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) error {
 	im, err := idx.IndexManifest()
 	if err != nil {
 		return err
@@ -287,7 +344,7 @@ func (mw *multiWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) err
 	var wg sync.WaitGroup
 	for _, desc := range im.Manifests {
 		desc := desc
-		ref := mw.repo.Digest(desc.Digest.String())
+		ref := r.repo.Digest(desc.Digest.String())
 
 		switch desc.MediaType {
 		case types.OCIImageIndex, types.DockerManifestList:
@@ -299,12 +356,12 @@ func (mw *multiWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) err
 			if err != nil {
 				return err
 			}
-			if err := mw.writeManifest(ctx, ref, idx); err != nil {
+			if err := r.writeManifest(ctx, ref, idx); err != nil {
 				return err
 			}
 		case types.OCIManifestSchema1, types.DockerManifestSchema2:
 			wg.Add(1)
-			mw.manifests.Go(func() error {
+			r.manifests.Go(func() error {
 				defer wg.Done()
 
 				img, err := idx.Image(desc.Digest)
@@ -312,10 +369,10 @@ func (mw *multiWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) err
 					return err
 				}
 
-				return mw.writeManifest(ctx, ref, img)
+				return r.writeManifest(ctx, ref, img)
 			})
 		default:
-			if !(desc.MediaType.IsDistributable() || mw.o.allowNondistributableArtifacts) {
+			if !(desc.MediaType.IsDistributable() || r.o.allowNondistributableArtifacts) {
 				continue
 			}
 
@@ -326,14 +383,14 @@ func (mw *multiWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) err
 			}
 
 			wg.Add(1)
-			mw.blobs.Go(func() error {
+			r.blobs.Go(func() error {
 				defer wg.Done()
 
 				l, err := wl.Layer(desc.Digest)
 				if err != nil {
 					return err
 				}
-				return mw.writeLayer(ctx, l)
+				return r.writeLayer(ctx, l)
 			})
 		}
 	}
@@ -352,10 +409,10 @@ func (mw *multiWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) err
 	}
 }
 
-func (mw *multiWriter) manifestExists(ctx context.Context, ref name.Reference, pd partial.Describable) (bool, error) {
+func (r *repoWriter) manifestExists(ctx context.Context, ref name.Reference, pd partial.Describable) (bool, error) {
 	f := &fetcher{
 		Ref:     ref,
-		Client:  mw.w.client,
+		Client:  r.w.client,
 		context: ctx,
 	}
 	digest, err := pd.Digest()
@@ -363,7 +420,7 @@ func (mw *multiWriter) manifestExists(ctx context.Context, ref name.Reference, p
 		// Possibly due to streaming layers.
 		return false, nil
 	}
-	got, err := f.headManifest(ref, manifestTypes)
+	got, err := f.headManifest(ref, acceptableManifestTypes)
 	if err != nil {
 		var terr *transport.Error
 		if errors.As(err, &terr) {
@@ -388,33 +445,33 @@ func (mw *multiWriter) manifestExists(ctx context.Context, ref name.Reference, p
 	return true, nil
 }
 
-func manifestSize(i Taggable) (int64, error) {
-	if ws, ok := i.(interface {
+func manifestSize(t Taggable) (int64, error) {
+	if ws, ok := t.(interface {
 		Size() (int64, error)
 	}); ok {
 		return ws.Size()
 	}
 
-	b, err := i.RawManifest()
+	b, err := t.RawManifest()
 	if err != nil {
 		return 0, err
 	}
 	return int64(len(b)), nil
 }
 
-func (mw *multiWriter) commitManifest(ctx context.Context, ref name.Reference, i Taggable) error {
-	if mw.o.updates != nil {
-		size, err := manifestSize(i)
+func (r *repoWriter) commitManifest(ctx context.Context, ref name.Reference, t Taggable) error {
+	if r.o.progress != nil {
+		size, err := manifestSize(t)
 		if err != nil {
 			return err
 		}
-		mw.w.progress.total(size)
+		r.o.progress.total(size)
 	}
 
-	return mw.w.commitManifest(ctx, i, ref)
+	return r.w.commitManifest(ctx, t, ref)
 }
 
-func (mw *multiWriter) writeLayers(ctx context.Context, img v1.Image) error {
+func (r *repoWriter) writeLayers(ctx context.Context, img v1.Image) error {
 	ls, err := img.Layers()
 	if err != nil {
 		return err
@@ -437,15 +494,15 @@ func (mw *multiWriter) writeLayers(ctx context.Context, img v1.Image) error {
 			return err
 		}
 
-		if !(mt.IsDistributable() || mw.o.allowNondistributableArtifacts) {
+		if !(mt.IsDistributable() || r.o.allowNondistributableArtifacts) {
 			continue
 		}
 
 		wg.Add(1)
-		mw.blobs.Go(func() error {
+		r.blobs.Go(func() error {
 			defer wg.Done()
 
-			return mw.writeLayer(ctx, l)
+			return r.writeLayer(ctx, l)
 		})
 	}
 
@@ -463,9 +520,9 @@ func (mw *multiWriter) writeLayers(ctx context.Context, img v1.Image) error {
 	}
 }
 
-func (mw *multiWriter) writeLayer(ctx context.Context, l v1.Layer) error {
+func (r *repoWriter) writeLayer(ctx context.Context, l v1.Layer) error {
 	if ml, ok := l.(*MountableLayer); ok {
-		if err := mw.maybeUpdateScopes(ml); err != nil {
+		if err := r.maybeUpdateScopes(ml); err != nil {
 			return err
 		}
 	}
@@ -475,14 +532,14 @@ func (mw *multiWriter) writeLayer(ctx context.Context, l v1.Layer) error {
 		return err
 	}
 
-	return mw.work.Do(digest, func() error {
-		if mw.o.updates != nil {
+	return r.work.Do(digest, func() error {
+		if r.o.progress != nil {
 			size, err := l.Size()
 			if err != nil {
 				return err
 			}
-			mw.w.progress.total(size)
+			r.o.progress.total(size)
 		}
-		return mw.w.uploadOne(ctx, l)
+		return r.w.uploadOne(ctx, l)
 	})
 }

@@ -38,6 +38,7 @@ type Options struct {
 	insecure  bool
 	jobs      int
 	force     bool
+	ctx       context.Context
 }
 
 // GetOptions exposes the underlying []remote.Option, []name.Option, and
@@ -150,6 +151,7 @@ func WithNondistributable() Option {
 // WithContext is a functional option for setting the context.
 func WithContext(ctx context.Context) Option {
 	return func(o *Options) {
+		o.ctx = ctx
 		o.Remote = append(o.Remote, remote.WithContext(ctx))
 	}
 }

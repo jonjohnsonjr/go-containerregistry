@@ -17,7 +17,6 @@ package crane
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/google/go-containerregistry/internal/legacy"
 	"github.com/google/go-containerregistry/pkg/logs"
@@ -92,16 +91,13 @@ func copyIndex(desc *remote.Descriptor, dstRef name.Reference, o Options) error 
 }
 
 // CopyRepository copies every tag from src to dst.
-func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
+func CopyRepository(src, dst string, opt ...Option) error {
 	o := makeOptions(opt...)
 
 	srcRepo, err := name.NewRepository(src, o.Name...)
 	if err != nil {
 		return err
 	}
-
-	mu := sync.Mutex{}
-	writes := map[name.Reference]remote.Taggable{}
 
 	srcOpts := o.Remote
 	auth := o.auth
@@ -111,8 +107,9 @@ func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
 			return err
 		}
 	}
+	// TODO: remote.NewPuller
 	scopes := []string{srcRepo.Scope(transport.PullScope)}
-	tr, err := transport.NewWithContext(ctx, srcRepo.Registry, auth, remote.WrapTransport(o.transport, srcOpts...), scopes)
+	tr, err := transport.NewWithContext(o.ctx, srcRepo.Registry, auth, o.transport, scopes)
 	if err != nil {
 		return err
 	}
@@ -131,6 +128,11 @@ func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
 		}
 	}
 
+	pusher, ctx, err := remote.NewPusher(o.ctx, o.Keychain, o.Remote...)
+	if err != nil {
+		return err
+	}
+
 	// We will MultiWrite one page at a time, just because it will provide some forward progress
 	// and is a natural boundary.
 	next := ""
@@ -140,11 +142,15 @@ func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
 			return err
 		}
 
-		var g errgroup.Group
+		g, ctx := errgroup.WithContext(ctx)
 		g.SetLimit(o.jobs)
 
 		for _, tag := range tags.Tags {
 			tag := tag
+
+			if err := context.Cause(ctx); err != nil {
+				return err
+			}
 
 			if !o.force {
 				if _, ok := ignoredTags[tag]; ok {
@@ -169,9 +175,8 @@ func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
 					return err
 				}
 
-				mu.Lock()
-				defer mu.Unlock()
-				writes[dstTag] = desc
+				logs.Progress.Printf("Pushing %s", dstTag)
+				pusher.Go(ctx, dstTag, desc)
 
 				return nil
 			})
@@ -180,17 +185,14 @@ func CopyRepository(ctx context.Context, src, dst string, opt ...Option) error {
 			return err
 		}
 
-		if len(writes) != 0 {
-			logs.Progress.Printf("Pushing %d images", len(writes))
-			if err := remote.MultiWrite(writes, o.Remote...); err != nil {
-				return err
-			}
-		}
-
 		if tags.Next == "" {
 			break
 		}
 		next = tags.Next
+	}
+
+	if err := pusher.Wait(); err != nil {
+		return err
 	}
 
 	return nil
