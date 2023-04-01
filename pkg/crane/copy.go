@@ -128,7 +128,7 @@ func CopyRepository(src, dst string, opt ...Option) error {
 		}
 	}
 
-	pusher, ctx, err := remote.NewPusher(o.ctx, o.Keychain, o.Remote...)
+	pusher, err := remote.NewPusher(o.Keychain, o.Remote...)
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func CopyRepository(src, dst string, opt ...Option) error {
 			return err
 		}
 
-		g, ctx := errgroup.WithContext(ctx)
+		g, ctx := errgroup.WithContext(o.ctx)
 		g.SetLimit(o.jobs)
 
 		for _, tag := range tags.Tags {
@@ -176,9 +176,7 @@ func CopyRepository(src, dst string, opt ...Option) error {
 				}
 
 				logs.Progress.Printf("Pushing %s", dstTag)
-				pusher.Go(ctx, dstTag, desc)
-
-				return nil
+				return pusher.Push(ctx, dstTag, desc)
 			})
 		}
 		if err := g.Wait(); err != nil {
@@ -189,10 +187,6 @@ func CopyRepository(src, dst string, opt ...Option) error {
 			break
 		}
 		next = tags.Next
-	}
-
-	if err := pusher.Wait(); err != nil {
-		return err
 	}
 
 	return nil

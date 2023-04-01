@@ -19,6 +19,7 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/match"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
 // FindManifests given a v1.ImageIndex, find the manifests that fit the matcher.
@@ -82,4 +83,77 @@ func FindIndexes(index v1.ImageIndex, matcher match.Matcher) ([]v1.ImageIndex, e
 		matches = append(matches, idx)
 	}
 	return matches, nil
+}
+
+type withManifests interface {
+	Manifests() ([]Describable, error)
+}
+
+type withLayer interface {
+	Layer(v1.Hash) (v1.Layer, error)
+}
+
+func FromDescriptor(desc v1.Descriptor) Describable {
+	return descriptor{desc}
+}
+
+type descriptor struct {
+	desc v1.Descriptor
+}
+
+func (d descriptor) Digest() (v1.Hash, error) {
+	return d.desc.Digest, nil
+}
+
+func (d descriptor) Size() (int64, error) {
+	return d.desc.Size, nil
+}
+
+func (d descriptor) MediaType() (types.MediaType, error) {
+	return d.desc.MediaType, nil
+}
+
+// Manifests is analogous to v1.Image.Layers in that it allows values in the
+// returned list to be lazily evaluated, which enables an index to contain
+// an image that contains a streaming layer.
+//
+// This should have been part of the v1.ImageIndex interface, but wasn't.
+// It is instead usable through this extension interface.
+func Manifests(idx v1.ImageIndex) ([]Describable, error) {
+	if wm, ok := idx.(withManifests); ok {
+		return wm.Manifests()
+	}
+	m, err := idx.IndexManifest()
+	if err != nil {
+		return nil, err
+	}
+	manifests := []Describable{}
+	for _, desc := range m.Manifests {
+		switch {
+		case desc.MediaType.IsImage():
+			img, err := idx.Image(desc.Digest)
+			if err != nil {
+				return nil, err
+			}
+			manifests = append(manifests, img)
+		case desc.MediaType.IsIndex():
+			idx, err := idx.ImageIndex(desc.Digest)
+			if err != nil {
+				return nil, err
+			}
+			manifests = append(manifests, idx)
+		default:
+			if wl, ok := idx.(withLayer); ok {
+				layer, err := wl.Layer(desc.Digest)
+				if err != nil {
+					return nil, err
+				}
+				manifests = append(manifests, layer)
+			} else {
+				manifests = append(manifests, descriptor{desc})
+			}
+		}
+	}
+
+	return manifests, nil
 }

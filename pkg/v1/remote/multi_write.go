@@ -15,6 +15,7 @@
 package remote
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"github.com/google/go-containerregistry/pkg/v1/stream"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"golang.org/x/sync/errgroup"
 )
@@ -47,12 +49,19 @@ func MultiWrite(todo map[name.Reference]Taggable, options ...Option) (rerr error
 	if o.progress != nil {
 		defer o.progress.Close(rerr)
 	}
-	p, ctx := newPusher(o.context, o)
+	p := newPusher(o)
+
+	g, ctx := errgroup.WithContext(o.context)
+	g.SetLimit(o.jobs)
+
 	for ref, t := range todo {
-		p.Go(ctx, ref, t)
+		ref, t := ref, t
+		g.Go(func() error {
+			return p.Push(ctx, ref, t)
+		})
 	}
 
-	return p.Wait()
+	return g.Wait()
 }
 
 type manifest interface {
@@ -92,29 +101,23 @@ type Pusher struct {
 
 	// map[name.Repository]*repoWriter
 	writers sync.Map
-
-	roots *errgroup.Group
 }
 
-func NewPusher(ctx context.Context, keychain authn.Keychain, options ...Option) (*Pusher, context.Context, error) {
+func NewPusher(keychain authn.Keychain, options ...Option) (*Pusher, error) {
 	o, err := makeOptions(nil, options...)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	o.keychain = keychain
 	o.auth = nil
 
-	p, ctx := newPusher(ctx, o)
-	return p, ctx, nil
+	return newPusher(o), nil
 }
 
-func newPusher(ctx context.Context, o *options) (*Pusher, context.Context) {
-	p := &Pusher{
+func newPusher(o *options) *Pusher {
+	return &Pusher{
 		o: o,
 	}
-	p.roots, ctx = errgroup.WithContext(ctx)
-	p.roots.SetLimit(o.jobs)
-	return p, ctx
 }
 
 func (p *Pusher) writer(ctx context.Context, repo name.Repository, o *options) (*repoWriter, error) {
@@ -132,16 +135,6 @@ func (p *Pusher) Push(ctx context.Context, ref name.Reference, t Taggable) error
 		return err
 	}
 	return w.write(ctx, ref, t)
-}
-
-func (p *Pusher) Go(ctx context.Context, ref name.Reference, t Taggable) {
-	p.roots.Go(func() error {
-		return p.Push(ctx, ref, t)
-	})
-}
-
-func (p *Pusher) Wait() error {
-	return p.roots.Wait()
 }
 
 type repoWriter struct {
@@ -212,22 +205,6 @@ func (r *repoWriter) init(ctx context.Context) error {
 	})
 }
 
-func (r *repoWriter) Wait() error {
-	if err := r.roots.Wait(); err != nil {
-		return err
-	}
-
-	if err := r.manifests.Wait(); err != nil {
-		return err
-	}
-
-	if err := r.blobs.Wait(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func (r *repoWriter) maybeUpdateScopes(ml *MountableLayer) error {
 	if ml.Reference.Context().String() == r.repo.String() {
 		return nil
@@ -274,19 +251,13 @@ func (r *repoWriter) write(ctx context.Context, ref name.Reference, t Taggable) 
 
 		}
 	}
-
-	m, ok := t.(manifest)
-	if !ok {
-		return r.commitManifest(ctx, ref, t)
-	}
-
-	if exists, err := r.manifestExists(ctx, ref, m); err != nil {
+	if exists, err := r.manifestExists(ctx, ref, t); err != nil {
 		return err
 	} else if exists {
 		return nil
 	}
 
-	return r.writeManifest(ctx, ref, m)
+	return r.writeManifest(ctx, ref, t)
 }
 
 func (r *repoWriter) writeDeps(ctx context.Context, m manifest) error {
@@ -298,12 +269,82 @@ func (r *repoWriter) writeDeps(ctx context.Context, m manifest) error {
 		return r.writeChildren(ctx, idx)
 	}
 
-	return fmt.Errorf("pushable resource was not Image or ImageIndex: %T", m)
+	// This has no deps, not an error (e.g. something you want to just PUT).
+	return nil
 }
 
-func (r *repoWriter) writeManifest(ctx context.Context, ref name.Reference, m manifest) error {
+func (r *repoWriter) lazyWriteManifest(ctx context.Context, ref name.Reference, m manifest) error {
+	if err := r.writeDeps(ctx, m); err != nil {
+		return err
+	}
 	digest, err := m.Digest()
 	if err != nil {
+		return err
+	}
+	firstPut := false
+	if err := r.work.Do(digest, func() error {
+		firstPut = true
+		return r.commitManifest(ctx, ref, m)
+	}); err != nil {
+		return err
+	}
+
+	if firstPut {
+		return nil
+	}
+
+	return r.commitManifest(ctx, ref, m)
+}
+
+type tagManifest struct {
+	Taggable
+	partial.Describable
+}
+
+func taggableToManifest(t Taggable) (manifest, error) {
+	if m, ok := t.(manifest); ok {
+		return m, nil
+	}
+
+	if d, ok := t.(*Descriptor); ok {
+		return tagManifest{t, partial.FromDescriptor(d.toDesc())}, nil
+	}
+
+	desc := v1.Descriptor{
+		// A reasonable default if Taggable doesn't implement MediaType.
+		MediaType: types.DockerManifestSchema2,
+	}
+
+	b, err := t.RawManifest()
+	if err != nil {
+		return nil, err
+	}
+
+	if wmt, ok := t.(withMediaType); ok {
+		desc.MediaType, err = wmt.MediaType()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	desc.Digest, desc.Size, err = v1.SHA256(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+
+	return tagManifest{t, partial.FromDescriptor(desc)}, nil
+}
+
+func (r *repoWriter) writeManifest(ctx context.Context, ref name.Reference, t Taggable) error {
+	m, err := taggableToManifest(t)
+	if err != nil {
+		return err
+	}
+
+	digest, err := m.Digest()
+	if errors.Is(err, stream.ErrNotComputed) {
+		return r.lazyWriteManifest(ctx, ref, m)
+	} else if err != nil {
 		return err
 	}
 
@@ -409,13 +450,94 @@ func (r *repoWriter) writeChildren(ctx context.Context, idx v1.ImageIndex) error
 	}
 }
 
-func (r *repoWriter) manifestExists(ctx context.Context, ref name.Reference, pd partial.Describable) (bool, error) {
+func (r *repoWriter) writeChild(ctx context.Context, child partial.Describable, wg sync.WaitGroup) error {
+	if idx, ok := child.(v1.ImageIndex); ok {
+		// For recursive index, we want to do a depth-first launching of goroutines
+		// to avoid deadlocking.
+		//
+		// Note that this is rare, so the impact of this should be really small.
+		return r.writeManifest(ctx, nil, idx)
+	}
+
+	if img, ok := child.(v1.Image); ok {
+		wg.Add(1)
+
+		r.manifests.Go(func() error {
+			defer wg.Done()
+
+			return r.writeManifest(ctx, nil, img)
+		})
+	}
+
+	// Skip any non-distributable things.
+	mt, err := child.MediaType()
+	if err != nil {
+		return err
+	}
+	if !(mt.IsDistributable() || r.o.allowNondistributableArtifacts) {
+		return nil
+	}
+
+	if l, ok := child.(v1.Layer); ok {
+		wg.Add(1)
+		r.blobs.Go(func() error {
+			defer wg.Done()
+
+			return r.writeLayer(ctx, l)
+		})
+		return nil
+	}
+
+	desc, err := partial.Descriptor(child)
+	if err != nil {
+		return fmt.Errorf("cannot compute descriptor for %T: %w", child, err)
+	}
+	logs.Warn.Printf("Encountered unknown type: %T = %v", child, desc)
+	return nil
+}
+
+func (r *repoWriter) lazyWriteChildren(ctx context.Context, idx v1.ImageIndex) error {
+	children, err := partial.Manifests(idx)
+	if err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+	for _, child := range children {
+		child := child
+		if err := r.writeChild(ctx, child, wg); err != nil {
+			return err
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+func (r *repoWriter) manifestExists(ctx context.Context, ref name.Reference, t Taggable) (bool, error) {
 	f := &fetcher{
 		Ref:     ref,
 		Client:  r.w.client,
 		context: ctx,
 	}
-	digest, err := pd.Digest()
+
+	m, err := taggableToManifest(t)
+	if err != nil {
+		// Possibly due to streaming layers.
+		return false, nil
+	}
+
+	digest, err := m.Digest()
 	if err != nil {
 		// Possibly due to streaming layers.
 		return false, nil

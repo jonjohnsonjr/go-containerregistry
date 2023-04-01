@@ -65,6 +65,10 @@ type Descriptor struct {
 	platform v1.Platform
 }
 
+func (d *Descriptor) toDesc() v1.Descriptor {
+	return d.Descriptor
+}
+
 // RawManifest exists to satisfy the Taggable interface.
 func (d *Descriptor) RawManifest() ([]byte, error) {
 	return d.Manifest, nil
