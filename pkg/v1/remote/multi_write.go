@@ -32,8 +32,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var acceptableManifestTypes = append(acceptableImageMediaTypes, acceptableIndexMediaTypes...)
-
 // MultiWrite writes the given Images or ImageIndexes to the given refs, as
 // efficiently as possible, by deduping shared layer blobs while uploading them
 // in parallel.
@@ -275,6 +273,10 @@ func taggableToManifest(t Taggable) (manifest, error) {
 			return d.Image()
 		}
 
+		if d.MediaType.IsSchema1() {
+			return d.Schema1()
+		}
+
 		return tagManifest{t, describable{d.toDesc()}}, nil
 	}
 
@@ -435,7 +437,7 @@ func (rw *repoWriter) manifestExists(ctx context.Context, ref name.Reference, t 
 		// Possibly due to streaming layers.
 		return false, nil
 	}
-	got, err := f.headManifest(ref, acceptableManifestTypes)
+	got, err := f.headManifest(ref, allManifestMediaTypes)
 	if err != nil {
 		var terr *transport.Error
 		if errors.As(err, &terr) {
@@ -490,6 +492,15 @@ func (rw *repoWriter) writeLayers(pctx context.Context, img v1.Image) error {
 		g.Go(func() error {
 			return rw.writeLayer(ctx, l)
 		})
+	}
+
+	mt, err := img.MediaType()
+	if err != nil {
+		return err
+	}
+
+	if mt.IsSchema1() {
+		return g.Wait()
 	}
 
 	cl, err := partial.ConfigLayer(img)

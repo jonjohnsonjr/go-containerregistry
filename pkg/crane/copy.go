@@ -141,14 +141,12 @@ func CopyRepository(src, dst string, opt ...Option) error {
 
 	pusher, err := remote.NewPusher(o.Remote...)
 	if err != nil {
-		return fmt.Errorf("NewPusher: %w", err)
+		return err
 	}
 
 	g, ctx := errgroup.WithContext(o.ctx)
 	g.SetLimit(o.jobs)
 
-	// We will MultiWrite one page at a time, just because it will provide some forward progress
-	// and is a natural boundary.
 	next := ""
 	for {
 		tags, err := remote.ListPage(srcRepo, next, srcOpts...)
