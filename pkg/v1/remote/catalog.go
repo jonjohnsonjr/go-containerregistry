@@ -31,9 +31,15 @@ type catalog struct {
 
 // CatalogPage calls /_catalog, returning the list of repositories on the registry.
 func CatalogPage(target name.Registry, last string, n int, options ...Option) ([]string, error) {
-	o, err := makeOptions(target, options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return nil, err
+	}
+	if o.keychain != nil {
+		o.auth, err = o.keychain.Resolve(target)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	scopes := []string{target.Scope(transport.PullScope)}
@@ -76,7 +82,7 @@ func CatalogPage(target name.Registry, last string, n int, options ...Option) ([
 
 // Catalog calls /_catalog, returning the list of repositories on the registry.
 func Catalog(ctx context.Context, target name.Registry, options ...Option) ([]string, error) {
-	o, err := makeOptions(target, options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return nil, err
 	}

@@ -16,7 +16,9 @@ package crane
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/google/go-containerregistry/internal/legacy"
 	"github.com/google/go-containerregistry/pkg/logs"
@@ -121,17 +123,29 @@ func CopyRepository(src, dst string, opt ...Option) error {
 
 		have, err := ListTags(dst, opt...)
 		if err != nil {
-			return err
+			var terr *transport.Error
+			if errors.As(err, &terr) {
+				// Some registries create repository on first push, so listing tags will fail.
+				// If we see 404 or 403, assume we failed because the repository hasn't been created yet.
+				if !(terr.StatusCode == http.StatusNotFound || terr.StatusCode == http.StatusForbidden) {
+					return err
+				}
+			} else {
+				return err
+			}
 		}
 		for _, tag := range have {
 			ignoredTags[tag] = struct{}{}
 		}
 	}
 
-	pusher, err := remote.NewPusher(o.Keychain, o.Remote...)
+	pusher, err := remote.NewPusher(o.Remote...)
 	if err != nil {
-		return err
+		return fmt.Errorf("NewPusher: %w", err)
 	}
+
+	g, ctx := errgroup.WithContext(o.ctx)
+	g.SetLimit(o.jobs)
 
 	// We will MultiWrite one page at a time, just because it will provide some forward progress
 	// and is a natural boundary.
@@ -141,9 +155,6 @@ func CopyRepository(src, dst string, opt ...Option) error {
 		if err != nil {
 			return err
 		}
-
-		g, ctx := errgroup.WithContext(o.ctx)
-		g.SetLimit(o.jobs)
 
 		for _, tag := range tags.Tags {
 			tag := tag
@@ -179,9 +190,6 @@ func CopyRepository(src, dst string, opt ...Option) error {
 				return pusher.Push(ctx, dstTag, desc)
 			})
 		}
-		if err := g.Wait(); err != nil {
-			return err
-		}
 
 		if tags.Next == "" {
 			break
@@ -189,5 +197,5 @@ func CopyRepository(src, dst string, opt ...Option) error {
 		next = tags.Next
 	}
 
-	return nil
+	return g.Wait()
 }

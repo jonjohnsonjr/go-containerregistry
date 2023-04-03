@@ -34,6 +34,7 @@ var acceptableIndexMediaTypes = []types.MediaType{
 // remoteIndex accesses an index from a remote registry
 type remoteIndex struct {
 	fetcher
+	ref          name.Reference
 	manifestLock sync.Mutex // Protects manifest
 	manifest     []byte
 	mediaType    types.MediaType
@@ -75,7 +76,7 @@ func (r *remoteIndex) RawManifest() ([]byte, error) {
 	// NOTE(jonjohnsonjr): We should never get here because the public entrypoints
 	// do type-checking via remote.Descriptor. I've left this here for tests that
 	// directly instantiate a remoteIndex.
-	manifest, desc, err := r.fetchManifest(r.Ref, acceptableIndexMediaTypes)
+	manifest, desc, err := r.fetchManifest(r.ref, acceptableIndexMediaTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +141,7 @@ func (r *remoteIndex) Layer(h v1.Hash) (v1.Layer, error) {
 			}
 			return &MountableLayer{
 				Layer:     l,
-				Reference: r.Ref.Context().Digest(h.String()),
+				Reference: r.repo.Digest(h.String()),
 			}, nil
 		}
 	}
@@ -150,7 +151,7 @@ func (r *remoteIndex) Layer(h v1.Hash) (v1.Layer, error) {
 // Experiment with a better API for v1.ImageIndex. We might want to move this
 // to partial?
 func (r *remoteIndex) Manifests() ([]partial.Describable, error) {
-	return partial.Manifests(r)
+	return partial.ComputeManifests(r)
 }
 
 func (r *remoteIndex) imageByPlatform(platform v1.Platform) (v1.Image, error) {
@@ -188,7 +189,7 @@ func (r *remoteIndex) childByPlatform(platform v1.Platform) (*Descriptor, error)
 			return r.childDescriptor(childDesc, platform)
 		}
 	}
-	return nil, fmt.Errorf("no child with platform %+v in index %s", platform, r.Ref)
+	return nil, fmt.Errorf("no child with platform %+v in index %s", platform, r.ref)
 }
 
 func (r *remoteIndex) childByHash(h v1.Hash) (*Descriptor, error) {
@@ -201,12 +202,12 @@ func (r *remoteIndex) childByHash(h v1.Hash) (*Descriptor, error) {
 			return r.childDescriptor(childDesc, defaultPlatform)
 		}
 	}
-	return nil, fmt.Errorf("no child with digest %s in index %s", h, r.Ref)
+	return nil, fmt.Errorf("no child with digest %s in index %s", h, r.ref)
 }
 
 // Convert one of this index's child's v1.Descriptor into a remote.Descriptor, with the given platform option.
 func (r *remoteIndex) childDescriptor(child v1.Descriptor, platform v1.Platform) (*Descriptor, error) {
-	ref := r.Ref.Context().Digest(child.Digest.String())
+	ref := r.repo.Digest(child.Digest.String())
 	var (
 		manifest []byte
 		err      error
@@ -233,11 +234,8 @@ func (r *remoteIndex) childDescriptor(child v1.Descriptor, platform v1.Platform)
 	}
 
 	return &Descriptor{
-		fetcher: fetcher{
-			Ref:     ref,
-			Client:  r.Client,
-			context: r.context,
-		},
+		fetcher:    r.fetcher,
+		ref:        ref,
 		Manifest:   manifest,
 		Descriptor: child,
 		platform:   platform,

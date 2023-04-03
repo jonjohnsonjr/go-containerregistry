@@ -118,7 +118,7 @@ var DefaultTransport http.RoundTripper = &http.Transport{
 	MaxIdleConnsPerHost: 50,
 }
 
-func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
+func makeOptions(opts ...Option) (*options, error) {
 	o := &options{
 		transport:      DefaultTransport,
 		platform:       defaultPlatform,
@@ -140,14 +140,6 @@ func makeOptions(target authn.Resource, opts ...Option) (*options, error) {
 		// It is a better experience to explicitly tell a caller their auth is misconfigured
 		// than potentially fail silently when the correct auth is overridden by option misuse.
 		return nil, errors.New("provide an option for either authn.Authenticator or authn.Keychain, not both")
-	case o.keychain != nil:
-		if target != nil {
-			auth, err := o.keychain.Resolve(target)
-			if err != nil {
-				return nil, err
-			}
-			o.auth = auth
-		}
 	case o.auth == nil:
 		o.auth = authn.Anonymous
 	}

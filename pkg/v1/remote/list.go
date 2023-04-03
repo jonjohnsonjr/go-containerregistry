@@ -42,16 +42,14 @@ func ListWithContext(ctx context.Context, repo name.Repository, options ...Optio
 // List calls /tags/list for the given repository, returning the list of tags
 // in the "tags" property.
 func List(repo name.Repository, options ...Option) ([]string, error) {
-	o, err := makeOptions(repo, options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return nil, err
 	}
-	scopes := []string{repo.Scope(transport.PullScope)}
-	tr, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, scopes)
+	f, err := makeFetcher(repo, o)
 	if err != nil {
 		return nil, err
 	}
-
 	uri := &url.URL{
 		Scheme: repo.Registry.Scheme(),
 		Host:   repo.Registry.RegistryStr(),
@@ -62,7 +60,6 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 		uri.RawQuery = fmt.Sprintf("n=%d", o.pageSize)
 	}
 
-	client := http.Client{Transport: tr}
 	tagList := []string{}
 	next := uri.String()
 
@@ -74,7 +71,7 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 		default:
 		}
 
-		page, err := listPage(o.context, client, next)
+		page, err := listPage(o.context, f.Client, next)
 		if err != nil {
 			return nil, err
 		}
@@ -84,6 +81,7 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 	}
 
 	return tagList, nil
+
 }
 
 // getNextPageURL checks if there is a Link header in a http.Response which
@@ -119,12 +117,11 @@ func getNextPageURL(resp *http.Response) (*url.URL, error) {
 // ListPage lists a single page of tags. The "next" parameter should be empty for the first page.
 // For subsequent pages, "next" should be given by the previous page.
 func ListPage(repo name.Repository, next string, options ...Option) (*Tags, error) {
-	o, err := makeOptions(repo, options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return nil, err
 	}
-	scopes := []string{repo.Scope(transport.PullScope)}
-	tr, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, scopes)
+	f, err := makeFetcher(repo, o)
 	if err != nil {
 		return nil, err
 	}
@@ -142,12 +139,10 @@ func ListPage(repo name.Repository, next string, options ...Option) (*Tags, erro
 		next = uri.String()
 	}
 
-	client := http.Client{Transport: tr}
-
-	return listPage(o.context, client, next)
+	return listPage(o.context, f.Client, next)
 }
 
-func listPage(ctx context.Context, client http.Client, uri string) (*Tags, error) {
+func listPage(ctx context.Context, client *http.Client, uri string) (*Tags, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", uri, nil)
 	if err != nil {
 		return nil, err

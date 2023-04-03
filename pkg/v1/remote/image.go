@@ -38,6 +38,7 @@ var acceptableImageMediaTypes = []types.MediaType{
 // remoteImage accesses an image from a remote registry
 type remoteImage struct {
 	fetcher
+	ref          name.Reference
 	manifestLock sync.Mutex // Protects manifest
 	manifest     []byte
 	configLock   sync.Mutex // Protects config
@@ -84,7 +85,7 @@ func (r *remoteImage) RawManifest() ([]byte, error) {
 	// NOTE(jonjohnsonjr): We should never get here because the public entrypoints
 	// do type-checking via remote.Descriptor. I've left this here for tests that
 	// directly instantiate a remoteImage.
-	manifest, desc, err := r.fetchManifest(r.Ref, acceptableImageMediaTypes)
+	manifest, desc, err := r.fetchManifest(r.ref, acceptableImageMediaTypes)
 	if err != nil {
 		return nil, err
 	}

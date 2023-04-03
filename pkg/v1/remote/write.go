@@ -45,7 +45,7 @@ type Taggable interface {
 
 // Write pushes the provided img to the specified image reference.
 func Write(ref name.Reference, img v1.Image, options ...Option) (rerr error) {
-	o, err := makeOptions(ref.Context(), options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return err
 	}
@@ -67,17 +67,10 @@ func writeImage(ctx context.Context, ref name.Reference, img v1.Image, o *option
 	if err != nil {
 		return err
 	}
-	scopes := scopesForUploadingImage(ref.Context(), ls)
-	tr, err := transport.NewWithContext(o.context, ref.Context().Registry, o.auth, o.transport, scopes)
+
+	w, err := makeWriter(ref.Context(), ls, o)
 	if err != nil {
 		return err
-	}
-	w := &writer{
-		repo:      ref.Context(),
-		client:    &http.Client{Transport: tr},
-		progress:  o.progress,
-		backoff:   o.retryBackoff,
-		predicate: o.retryPredicate,
 	}
 
 	// Upload individual blobs and collect any errors.
@@ -174,6 +167,28 @@ type writer struct {
 	progress  *progress
 	backoff   Backoff
 	predicate retry.Predicate
+}
+
+func makeWriter(repo name.Repository, ls []v1.Layer, o *options) (*writer, error) {
+	if o.keychain != nil {
+		auth, err := o.keychain.Resolve(repo)
+		if err != nil {
+			return nil, err
+		}
+		o.auth = auth
+	}
+	scopes := scopesForUploadingImage(repo, ls)
+	tr, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, scopes)
+	if err != nil {
+		return nil, err
+	}
+	return &writer{
+		repo:      repo,
+		client:    &http.Client{Transport: tr},
+		progress:  o.progress,
+		backoff:   o.retryBackoff,
+		predicate: o.retryPredicate,
+	}, nil
 }
 
 // url returns a url.Url for the specified path in the context of this remote image reference.
@@ -763,24 +778,15 @@ func scopesForUploadingImage(repo name.Repository, layers []v1.Layer) []string {
 // WriteIndex will attempt to push all of the referenced manifests before
 // attempting to push the ImageIndex, to retain referential integrity.
 func WriteIndex(ref name.Reference, ii v1.ImageIndex, options ...Option) (rerr error) {
-	o, err := makeOptions(ref.Context(), options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return err
 	}
 
-	scopes := []string{ref.Scope(transport.PushScope)}
-	tr, err := transport.NewWithContext(o.context, ref.Context().Registry, o.auth, o.transport, scopes)
+	w, err := makeWriter(ref.Context(), nil, o)
 	if err != nil {
 		return err
 	}
-	w := &writer{
-		repo:      ref.Context(),
-		client:    &http.Client{Transport: tr},
-		progress:  o.progress,
-		backoff:   o.retryBackoff,
-		predicate: o.retryPredicate,
-	}
-
 	if w.progress != nil {
 		defer func() {
 			w.progress.Close(rerr)
@@ -905,21 +911,13 @@ func countIndex(idx v1.ImageIndex, allowNondistributableArtifacts bool) (int64, 
 
 // WriteLayer uploads the provided Layer to the specified repo.
 func WriteLayer(repo name.Repository, layer v1.Layer, options ...Option) (rerr error) {
-	o, err := makeOptions(repo, options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return err
 	}
-	scopes := scopesForUploadingImage(repo, []v1.Layer{layer})
-	tr, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, scopes)
+	w, err := makeWriter(repo, []v1.Layer{layer}, o)
 	if err != nil {
 		return err
-	}
-	w := &writer{
-		repo:      repo,
-		client:    &http.Client{Transport: tr},
-		progress:  o.progress,
-		backoff:   o.retryBackoff,
-		predicate: o.retryPredicate,
 	}
 
 	if w.progress != nil {
@@ -967,28 +965,14 @@ func Tag(tag name.Tag, t Taggable, options ...Option) error {
 // should ensure that all blobs or manifests that are referenced by t exist
 // in the target registry.
 func Put(ref name.Reference, t Taggable, options ...Option) error {
-	o, err := makeOptions(ref.Context(), options...)
+	repo := ref.Context()
+	o, err := makeOptions(options...)
 	if err != nil {
 		return err
 	}
-	scopes := []string{ref.Scope(transport.PushScope)}
-
-	// TODO: This *always* does a token exchange. For some registries,
-	// that's pretty slow. Some ideas;
-	// * Tag could take a list of tags.
-	// * Allow callers to pass in a transport.Transport, typecheck
-	//   it to allow them to reuse the transport across multiple calls.
-	// * WithTag option to do multiple manifest PUTs in commitManifest.
-	tr, err := transport.NewWithContext(o.context, ref.Context().Registry, o.auth, o.transport, scopes)
+	w, err := makeWriter(repo, nil, o)
 	if err != nil {
 		return err
-	}
-	w := &writer{
-		repo:      ref.Context(),
-		client:    &http.Client{Transport: tr},
-		progress:  o.progress,
-		backoff:   o.retryBackoff,
-		predicate: o.retryPredicate,
 	}
 
 	return w.commitManifest(o.context, t, ref)

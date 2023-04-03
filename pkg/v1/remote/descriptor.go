@@ -59,6 +59,8 @@ func (e *ErrSchema1) Error() string {
 type Descriptor struct {
 	fetcher
 	v1.Descriptor
+
+	ref      name.Reference
 	Manifest []byte
 
 	// So we can share this implementation with Image.
@@ -104,12 +106,12 @@ func Head(ref name.Reference, options ...Option) (*v1.Descriptor, error) {
 	acceptable = append(acceptable, acceptableImageMediaTypes...)
 	acceptable = append(acceptable, acceptableIndexMediaTypes...)
 
-	o, err := makeOptions(ref.Context(), options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return nil, err
 	}
 
-	f, err := makeFetcher(ref, o)
+	f, err := makeFetcher(ref.Context(), o)
 	if err != nil {
 		return nil, err
 	}
@@ -120,11 +122,11 @@ func Head(ref name.Reference, options ...Option) (*v1.Descriptor, error) {
 // Handle options and fetch the manifest with the acceptable MediaTypes in the
 // Accept header.
 func get(ref name.Reference, acceptable []types.MediaType, options ...Option) (*Descriptor, error) {
-	o, err := makeOptions(ref.Context(), options...)
+	o, err := makeOptions(options...)
 	if err != nil {
 		return nil, err
 	}
-	f, err := makeFetcher(ref, o)
+	f, err := makeFetcher(ref.Context(), o)
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +136,7 @@ func get(ref name.Reference, acceptable []types.MediaType, options ...Option) (*
 	}
 	return &Descriptor{
 		fetcher:    *f,
+		ref:        ref,
 		Manifest:   b,
 		Descriptor: *desc,
 		platform:   o.platform,
@@ -173,7 +176,7 @@ func (d *Descriptor) Image() (v1.Image, error) {
 	}
 	return &mountableImage{
 		Image:     imgCore,
-		Reference: d.Ref,
+		Reference: d.ref,
 	}, nil
 }
 
@@ -200,6 +203,7 @@ func (d *Descriptor) ImageIndex() (v1.ImageIndex, error) {
 func (d *Descriptor) remoteImage() *remoteImage {
 	return &remoteImage{
 		fetcher:    d.fetcher,
+		ref:        d.ref,
 		manifest:   d.Manifest,
 		mediaType:  d.MediaType,
 		descriptor: &d.Descriptor,
@@ -209,6 +213,7 @@ func (d *Descriptor) remoteImage() *remoteImage {
 func (d *Descriptor) remoteIndex() *remoteIndex {
 	return &remoteIndex{
 		fetcher:    d.fetcher,
+		ref:        d.ref,
 		manifest:   d.Manifest,
 		mediaType:  d.MediaType,
 		descriptor: &d.Descriptor,
@@ -217,18 +222,25 @@ func (d *Descriptor) remoteIndex() *remoteIndex {
 
 // fetcher implements methods for reading from a registry.
 type fetcher struct {
-	Ref     name.Reference
+	repo    name.Repository
 	Client  *http.Client
 	context context.Context
 }
 
-func makeFetcher(ref name.Reference, o *options) (*fetcher, error) {
-	tr, err := transport.NewWithContext(o.context, ref.Context().Registry, o.auth, o.transport, []string{ref.Scope(transport.PullScope)})
+func makeFetcher(repo name.Repository, o *options) (*fetcher, error) {
+	if o.keychain != nil {
+		auth, err := o.keychain.Resolve(repo)
+		if err != nil {
+			return nil, err
+		}
+		o.auth = auth
+	}
+	tr, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, []string{repo.Scope(transport.PullScope)})
 	if err != nil {
 		return nil, err
 	}
 	return &fetcher{
-		Ref:     ref,
+		repo:    repo,
 		Client:  &http.Client{Transport: tr},
 		context: o.context,
 	}, nil
@@ -237,9 +249,9 @@ func makeFetcher(ref name.Reference, o *options) (*fetcher, error) {
 // url returns a url.Url for the specified path in the context of this remote image reference.
 func (f *fetcher) url(resource, identifier string) url.URL {
 	return url.URL{
-		Scheme: f.Ref.Context().Registry.Scheme(),
-		Host:   f.Ref.Context().RegistryStr(),
-		Path:   fmt.Sprintf("/v2/%s/%s/%s", f.Ref.Context().RepositoryStr(), resource, identifier),
+		Scheme: f.repo.Registry.Scheme(),
+		Host:   f.repo.RegistryStr(),
+		Path:   fmt.Sprintf("/v2/%s/%s/%s", f.repo.RepositoryStr(), resource, identifier),
 	}
 }
 
@@ -336,7 +348,7 @@ func (f *fetcher) fetchManifest(ref name.Reference, acceptable []types.MediaType
 	// Validate the digest matches what we asked for, if pulling by digest.
 	if dgst, ok := ref.(name.Digest); ok {
 		if digest.String() != dgst.DigestStr() {
-			return nil, nil, fmt.Errorf("manifest digest: %q does not match requested digest: %q for %q", digest, dgst.DigestStr(), f.Ref)
+			return nil, nil, fmt.Errorf("manifest digest: %q does not match requested digest: %q for %q", digest, dgst.DigestStr(), ref)
 		}
 	}
 
@@ -412,7 +424,7 @@ func (f *fetcher) headManifest(ref name.Reference, acceptable []types.MediaType)
 	// Validate the digest matches what we asked for, if pulling by digest.
 	if dgst, ok := ref.(name.Digest); ok {
 		if digest.String() != dgst.DigestStr() {
-			return nil, fmt.Errorf("manifest digest: %q does not match requested digest: %q for %q", digest, dgst.DigestStr(), f.Ref)
+			return nil, fmt.Errorf("manifest digest: %q does not match requested digest: %q for %q", digest, dgst.DigestStr(), ref)
 		}
 	}
 

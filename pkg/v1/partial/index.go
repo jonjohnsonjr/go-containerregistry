@@ -93,23 +93,19 @@ type withLayer interface {
 	Layer(v1.Hash) (v1.Layer, error)
 }
 
-func FromDescriptor(desc v1.Descriptor) Describable {
-	return descriptor{desc}
-}
-
-type descriptor struct {
+type describable struct {
 	desc v1.Descriptor
 }
 
-func (d descriptor) Digest() (v1.Hash, error) {
+func (d describable) Digest() (v1.Hash, error) {
 	return d.desc.Digest, nil
 }
 
-func (d descriptor) Size() (int64, error) {
+func (d describable) Size() (int64, error) {
 	return d.desc.Size, nil
 }
 
-func (d descriptor) MediaType() (types.MediaType, error) {
+func (d describable) MediaType() (types.MediaType, error) {
 	return d.desc.MediaType, nil
 }
 
@@ -123,6 +119,13 @@ func Manifests(idx v1.ImageIndex) ([]Describable, error) {
 	if wm, ok := idx.(withManifests); ok {
 		return wm.Manifests()
 	}
+
+	return ComputeManifests(idx)
+}
+
+// ComputeManifests is like Manifests but without any unwrapping so implemenations
+// can use it without overflowing their stack.
+func ComputeManifests(idx v1.ImageIndex) ([]Describable, error) {
 	m, err := idx.IndexManifest()
 	if err != nil {
 		return nil, err
@@ -150,7 +153,7 @@ func Manifests(idx v1.ImageIndex) ([]Describable, error) {
 				}
 				manifests = append(manifests, layer)
 			} else {
-				manifests = append(manifests, descriptor{desc})
+				manifests = append(manifests, describable{desc})
 			}
 		}
 	}

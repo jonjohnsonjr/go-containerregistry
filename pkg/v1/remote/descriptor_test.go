@@ -225,7 +225,7 @@ func TestHead_MissingHeaders(t *testing.T) {
 func TestRedactFetchBlob(t *testing.T) {
 	ctx := context.Background()
 	f := fetcher{
-		Ref: mustNewTag(t, "original.com/repo:latest"),
+		repo: mustNewTag(t, "original.com/repo:latest").Context(),
 		Client: &http.Client{
 			Transport: errTransport{},
 		},
