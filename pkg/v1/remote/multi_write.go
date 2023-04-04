@@ -434,7 +434,7 @@ func (rw *repoWriter) manifestExists(ctx context.Context, ref name.Reference, t 
 		// Possibly due to streaming layers.
 		return false, nil
 	}
-	got, err := f.headManifest(ref, allManifestMediaTypes)
+	got, err := f.headManifest(ctx, ref, allManifestMediaTypes)
 	if err != nil {
 		var terr *transport.Error
 		if errors.As(err, &terr) {

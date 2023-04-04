@@ -76,7 +76,7 @@ func (r *remoteIndex) RawManifest() ([]byte, error) {
 	// NOTE(jonjohnsonjr): We should never get here because the public entrypoints
 	// do type-checking via remote.Descriptor. I've left this here for tests that
 	// directly instantiate a remoteIndex.
-	manifest, desc, err := r.fetchManifest(r.ref, acceptableIndexMediaTypes)
+	manifest, desc, err := r.fetchManifest(r.context, r.ref, acceptableIndexMediaTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +218,7 @@ func (r *remoteIndex) childDescriptor(child v1.Descriptor, platform v1.Platform)
 		}
 		manifest = child.Data
 	} else {
-		manifest, _, err = r.fetchManifest(ref, []types.MediaType{child.MediaType})
+		manifest, _, err = r.fetchManifest(r.context, ref, []types.MediaType{child.MediaType})
 		if err != nil {
 			return nil, err
 		}

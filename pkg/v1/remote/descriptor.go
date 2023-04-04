@@ -106,7 +106,7 @@ func Head(ref name.Reference, options ...Option) (*v1.Descriptor, error) {
 		return nil, err
 	}
 
-	return f.headManifest(ref, allManifestMediaTypes)
+	return f.headManifest(o.context, ref, allManifestMediaTypes)
 }
 
 // Handle options and fetch the manifest with the acceptable MediaTypes in the
@@ -120,7 +120,11 @@ func get(ref name.Reference, acceptable []types.MediaType, options ...Option) (*
 	if err != nil {
 		return nil, err
 	}
-	b, desc, err := f.fetchManifest(ref, acceptable)
+	return f.get(o.context, ref, acceptable)
+}
+
+func (f *fetcher) get(ctx context.Context, ref name.Reference, acceptable []types.MediaType) (*Descriptor, error) {
+	b, desc, err := f.fetchManifest(ctx, ref, acceptable)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +133,7 @@ func get(ref name.Reference, acceptable []types.MediaType, options ...Option) (*
 		ref:        ref,
 		Manifest:   b,
 		Descriptor: *desc,
-		platform:   o.platform,
+		platform:   f.o.platform,
 	}, nil
 }
 
@@ -235,6 +239,7 @@ type fetcher struct {
 	repo    name.Repository
 	Client  *http.Client
 	context context.Context
+	o       *options
 }
 
 func makeFetcher(repo name.Repository, o *options) (*fetcher, error) {
@@ -253,6 +258,7 @@ func makeFetcher(repo name.Repository, o *options) (*fetcher, error) {
 		repo:    repo,
 		Client:  &http.Client{Transport: tr},
 		context: o.context,
+		o:       o,
 	}, nil
 }
 
@@ -297,7 +303,7 @@ func (f *fetcher) fetchReferrers(ctx context.Context, filter map[string]string, 
 	}
 
 	// The registry doesn't support the Referrers API endpoint, so we'll use the fallback tag scheme.
-	b, _, err := f.fetchManifest(fallbackTag(d), []types.MediaType{types.OCIImageIndex})
+	b, _, err := f.fetchManifest(ctx, fallbackTag(d), []types.MediaType{types.OCIImageIndex})
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +321,7 @@ func (f *fetcher) fetchReferrers(ctx context.Context, filter map[string]string, 
 	return filterReferrersResponse(filter, &im), nil
 }
 
-func (f *fetcher) fetchManifest(ref name.Reference, acceptable []types.MediaType) ([]byte, *v1.Descriptor, error) {
+func (f *fetcher) fetchManifest(ctx context.Context, ref name.Reference, acceptable []types.MediaType) ([]byte, *v1.Descriptor, error) {
 	u := f.url("manifests", ref.Identifier())
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -327,7 +333,7 @@ func (f *fetcher) fetchManifest(ref name.Reference, acceptable []types.MediaType
 	}
 	req.Header.Set("Accept", strings.Join(accept, ","))
 
-	resp, err := f.Client.Do(req.WithContext(f.context))
+	resp, err := f.Client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -389,7 +395,7 @@ func (f *fetcher) fetchManifest(ref name.Reference, acceptable []types.MediaType
 	return manifest, &desc, nil
 }
 
-func (f *fetcher) headManifest(ref name.Reference, acceptable []types.MediaType) (*v1.Descriptor, error) {
+func (f *fetcher) headManifest(ctx context.Context, ref name.Reference, acceptable []types.MediaType) (*v1.Descriptor, error) {
 	u := f.url("manifests", ref.Identifier())
 	req, err := http.NewRequest(http.MethodHead, u.String(), nil)
 	if err != nil {
@@ -401,7 +407,7 @@ func (f *fetcher) headManifest(ref name.Reference, acceptable []types.MediaType)
 	}
 	req.Header.Set("Accept", strings.Join(accept, ","))
 
-	resp, err := f.Client.Do(req.WithContext(f.context))
+	resp, err := f.Client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}

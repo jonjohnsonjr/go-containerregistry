@@ -85,7 +85,7 @@ func (r *remoteImage) RawManifest() ([]byte, error) {
 	// NOTE(jonjohnsonjr): We should never get here because the public entrypoints
 	// do type-checking via remote.Descriptor. I've left this here for tests that
 	// directly instantiate a remoteImage.
-	manifest, desc, err := r.fetchManifest(r.ref, acceptableImageMediaTypes)
+	manifest, desc, err := r.fetchManifest(r.context, r.ref, acceptableImageMediaTypes)
 	if err != nil {
 		return nil, err
 	}
