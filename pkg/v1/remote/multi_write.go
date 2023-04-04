@@ -178,7 +178,7 @@ func (rw *repoWriter) init(ctx context.Context) error {
 		scope := rw.repo.Scope(transport.PushScope)
 		scopes := []string{scope}
 
-		w, err := makeWriter(rw.repo, nil, rw.o)
+		w, err := makeWriter(ctx, rw.repo, nil, rw.o)
 		if err != nil {
 			return err
 		}

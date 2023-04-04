@@ -72,7 +72,7 @@ func Layer(ref name.Digest, options ...Option) (v1.Layer, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := makeFetcher(ref.Context(), o)
+	f, err := makeFetcher(o.context, ref.Context(), o)
 	if err != nil {
 		return nil, err
 	}

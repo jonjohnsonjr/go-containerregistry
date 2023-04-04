@@ -34,6 +34,7 @@ func (p *Puller) reader(ctx context.Context, repo name.Repository, o *options) (
 	return rr, rr.init(ctx)
 }
 
+// Get is like remote.Get, but avoids re-authenticating when possible.
 func (p *Puller) Get(ctx context.Context, ref name.Reference) (*Descriptor, error) {
 	r, err := p.reader(ctx, ref.Context(), p.o)
 	if err != nil {
@@ -63,7 +64,7 @@ type repoReader struct {
 // this will run once per repoWriter instance
 func (r *repoReader) init(ctx context.Context) error {
 	return onceErr(&r.once, func() (err error) {
-		f, err := makeFetcher(r.repo, r.o)
+		f, err := makeFetcher(ctx, r.repo, r.o)
 		if err != nil {
 			return err
 		}

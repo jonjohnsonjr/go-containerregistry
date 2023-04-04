@@ -101,7 +101,7 @@ func Head(ref name.Reference, options ...Option) (*v1.Descriptor, error) {
 		return nil, err
 	}
 
-	f, err := makeFetcher(ref.Context(), o)
+	f, err := makeFetcher(o.context, ref.Context(), o)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func get(ref name.Reference, acceptable []types.MediaType, options ...Option) (*
 	if err != nil {
 		return nil, err
 	}
-	f, err := makeFetcher(ref.Context(), o)
+	f, err := makeFetcher(o.context, ref.Context(), o)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +242,7 @@ type fetcher struct {
 	o       *options
 }
 
-func makeFetcher(repo name.Repository, o *options) (*fetcher, error) {
+func makeFetcher(ctx context.Context, repo name.Repository, o *options) (*fetcher, error) {
 	if o.keychain != nil {
 		auth, err := o.keychain.Resolve(repo)
 		if err != nil {
@@ -250,14 +250,14 @@ func makeFetcher(repo name.Repository, o *options) (*fetcher, error) {
 		}
 		o.auth = auth
 	}
-	tr, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, []string{repo.Scope(transport.PullScope)})
+	tr, err := transport.NewWithContext(ctx, repo.Registry, o.auth, o.transport, []string{repo.Scope(transport.PullScope)})
 	if err != nil {
 		return nil, err
 	}
 	return &fetcher{
 		repo:    repo,
 		Client:  &http.Client{Transport: tr},
-		context: o.context,
+		context: ctx,
 		o:       o,
 	}, nil
 }

@@ -46,7 +46,7 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := makeFetcher(repo, o)
+	f, err := makeFetcher(o.context, repo, o)
 	if err != nil {
 		return nil, err
 	}

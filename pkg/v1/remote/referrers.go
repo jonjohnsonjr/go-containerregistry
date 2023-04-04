@@ -27,7 +27,7 @@ func Referrers(d name.Digest, options ...Option) (*v1.IndexManifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := makeFetcher(d.Context(), o)
+	f, err := makeFetcher(o.context, d.Context(), o)
 	if err != nil {
 		return nil, err
 	}

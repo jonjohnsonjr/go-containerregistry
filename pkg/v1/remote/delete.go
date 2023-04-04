@@ -29,7 +29,7 @@ func Delete(ref name.Reference, options ...Option) error {
 	if err != nil {
 		return err
 	}
-	w, err := makeWriter(ref.Context(), nil, o)
+	w, err := makeWriter(o.context, ref.Context(), nil, o)
 	if err != nil {
 		return err
 	}

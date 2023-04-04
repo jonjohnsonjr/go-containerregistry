@@ -68,7 +68,7 @@ func writeImage(ctx context.Context, ref name.Reference, img v1.Image, o *option
 		return err
 	}
 
-	w, err := makeWriter(ref.Context(), ls, o)
+	w, err := makeWriter(ctx, ref.Context(), ls, o)
 	if err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ type writer struct {
 	predicate retry.Predicate
 }
 
-func makeWriter(repo name.Repository, ls []v1.Layer, o *options) (*writer, error) {
+func makeWriter(ctx context.Context, repo name.Repository, ls []v1.Layer, o *options) (*writer, error) {
 	if o.keychain != nil {
 		auth, err := o.keychain.Resolve(repo)
 		if err != nil {
@@ -178,7 +178,7 @@ func makeWriter(repo name.Repository, ls []v1.Layer, o *options) (*writer, error
 		o.auth = auth
 	}
 	scopes := scopesForUploadingImage(repo, ls)
-	tr, err := transport.NewWithContext(o.context, repo.Registry, o.auth, o.transport, scopes)
+	tr, err := transport.NewWithContext(ctx, repo.Registry, o.auth, o.transport, scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -783,7 +783,7 @@ func WriteIndex(ref name.Reference, ii v1.ImageIndex, options ...Option) (rerr e
 		return err
 	}
 
-	w, err := makeWriter(ref.Context(), nil, o)
+	w, err := makeWriter(o.context, ref.Context(), nil, o)
 	if err != nil {
 		return err
 	}
@@ -915,7 +915,7 @@ func WriteLayer(repo name.Repository, layer v1.Layer, options ...Option) (rerr e
 	if err != nil {
 		return err
 	}
-	w, err := makeWriter(repo, []v1.Layer{layer}, o)
+	w, err := makeWriter(o.context, repo, []v1.Layer{layer}, o)
 	if err != nil {
 		return err
 	}
@@ -970,7 +970,7 @@ func Put(ref name.Reference, t Taggable, options ...Option) error {
 	if err != nil {
 		return err
 	}
-	w, err := makeWriter(repo, nil, o)
+	w, err := makeWriter(o.context, repo, nil, o)
 	if err != nil {
 		return err
 	}
