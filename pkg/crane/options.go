@@ -37,7 +37,7 @@ type Options struct {
 	transport http.RoundTripper
 	insecure  bool
 	jobs      int
-	force     bool
+	noclobber bool
 	ctx       context.Context
 }
 
@@ -161,16 +161,16 @@ func WithContext(ctx context.Context) Option {
 // The default number of jobs is GOMAXPROCS.
 func WithJobs(jobs int) Option {
 	return func(o *Options) {
-		o.jobs = jobs
-		o.Remote = append(o.Remote, remote.WithJobs(jobs))
+		if jobs > 0 {
+			o.jobs = jobs
+		}
+		o.Remote = append(o.Remote, remote.WithJobs(o.jobs))
 	}
 }
 
-// WithForce modifies behavior to do things might be unintentional or unsafe.
-//
-// For example, overwriting tags
-func WithForce(force bool) Option {
+// WithNoClobber modifies behavior to avoid overwriting existing tags, if possible.
+func WithNoClobber(noclobber bool) Option {
 	return func(o *Options) {
-		o.force = force
+		o.noclobber = noclobber
 	}
 }

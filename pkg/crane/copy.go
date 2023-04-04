@@ -42,6 +42,25 @@ func Copy(src, dst string, opt ...Option) error {
 		return fmt.Errorf("parsing reference for %q: %w", dst, err)
 	}
 
+	if tag, ok := dstRef.(name.Tag); ok {
+		if o.noclobber {
+			logs.Progress.Printf("Checking existing tag %v", tag)
+			head, err := remote.Head(tag, o.Remote...)
+			var terr *transport.Error
+			if errors.As(err, &terr) {
+				if terr.StatusCode != http.StatusNotFound && terr.StatusCode != http.StatusForbidden {
+					return err
+				}
+			} else if err != nil {
+				return err
+			}
+
+			if head != nil {
+				return fmt.Errorf("refusing to clobber existing tag %s@%s", tag, head.Digest)
+			}
+		}
+	}
+
 	logs.Progress.Printf("Copying from %v to %v", srcRef, dstRef)
 	desc, err := remote.Get(srcRef, o.Remote...)
 	if err != nil {
@@ -118,9 +137,7 @@ func CopyRepository(src, dst string, opt ...Option) error {
 	srcOpts = append(srcOpts, remote.WithTransport(tr))
 
 	ignoredTags := map[string]struct{}{}
-	if !o.force {
-		logs.Progress.Print("Listing existing tags to skip (use --force to override)")
-
+	if o.noclobber {
 		have, err := ListTags(dst, opt...)
 		if err != nil {
 			var terr *transport.Error
@@ -161,7 +178,7 @@ func CopyRepository(src, dst string, opt ...Option) error {
 				return err
 			}
 
-			if !o.force {
+			if o.noclobber {
 				if _, ok := ignoredTags[tag]; ok {
 					logs.Progress.Printf("Skipping %s (already exists)", tag)
 					continue
