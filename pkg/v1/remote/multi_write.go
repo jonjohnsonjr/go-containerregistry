@@ -35,9 +35,6 @@ import (
 // MultiWrite writes the given Images or ImageIndexes to the given refs, as
 // efficiently as possible, by deduping shared layer blobs while uploading them
 // in parallel.
-//
-// Current limitations:
-// - Images cannot consist of stream.Layers.
 func MultiWrite(todo map[name.Reference]Taggable, options ...Option) (rerr error) {
 	o, err := makeOptions(options...)
 	if err != nil {

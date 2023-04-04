@@ -81,7 +81,6 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 	}
 
 	return tagList, nil
-
 }
 
 // getNextPageURL checks if there is a Link header in a http.Response which
