@@ -50,34 +50,29 @@ func List(repo name.Repository, options ...Option) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	uri := &url.URL{
-		Scheme: repo.Registry.Scheme(),
-		Host:   repo.Registry.RegistryStr(),
-		Path:   fmt.Sprintf("/v2/%s/tags/list", repo.RepositoryStr()),
-	}
 
-	if o.pageSize > 0 {
-		uri.RawQuery = fmt.Sprintf("n=%d", o.pageSize)
-	}
-
+	ctx := o.context
+	next := ""
 	tagList := []string{}
-	next := uri.String()
 
-	// get responses until there is no next page
-	for next != "" {
+	for {
 		select {
-		case <-o.context.Done():
+		case <-ctx.Done():
 			return nil, o.context.Err()
 		default:
 		}
 
-		page, err := listPage(o.context, f.Client, next)
+		page, err := f.listPage(ctx, next)
 		if err != nil {
 			return nil, err
 		}
-
 		tagList = append(tagList, page.Tags...)
+
 		next = page.Next
+
+		if next == "" {
+			break
+		}
 	}
 
 	return tagList, nil
@@ -113,32 +108,20 @@ func getNextPageURL(resp *http.Response) (*url.URL, error) {
 	return linkURL, nil
 }
 
-// ListPage lists a single page of tags. The "next" parameter should be empty for the first page.
-// For subsequent pages, "next" should be given by the previous page.
-func ListPage(repo name.Repository, next string, options ...Option) (*Tags, error) {
-	o, err := makeOptions(options...)
-	if err != nil {
-		return nil, err
-	}
-	f, err := makeFetcher(repo, o)
-	if err != nil {
-		return nil, err
-	}
-
-	uri := &url.URL{
-		Scheme: repo.Registry.Scheme(),
-		Host:   repo.Registry.RegistryStr(),
-		Path:   fmt.Sprintf("/v2/%s/tags/list", repo.RepositoryStr()),
-	}
-	if o.pageSize > 0 {
-		uri.RawQuery = fmt.Sprintf("n=%d", o.pageSize)
-	}
-
+func (f *fetcher) listPage(ctx context.Context, next string) (*Tags, error) {
 	if next == "" {
+		uri := &url.URL{
+			Scheme: f.repo.Registry.Scheme(),
+			Host:   f.repo.Registry.RegistryStr(),
+			Path:   fmt.Sprintf("/v2/%s/tags/list", f.repo.RepositoryStr()),
+		}
+		if f.o.pageSize > 0 {
+			uri.RawQuery = fmt.Sprintf("n=%d", f.o.pageSize)
+		}
 		next = uri.String()
 	}
 
-	return listPage(o.context, f.Client, next)
+	return listPage(ctx, f.Client, next)
 }
 
 func listPage(ctx context.Context, client *http.Client, uri string) (*Tags, error) {

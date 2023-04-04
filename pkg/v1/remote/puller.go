@@ -7,7 +7,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 )
 
-// TODO: Caching in some way?
 type Puller struct {
 	o *options
 
@@ -15,7 +14,6 @@ type Puller struct {
 	readers sync.Map
 }
 
-// TODO: func New()?
 func NewPuller(options ...Option) (*Puller, error) {
 	o, err := makeOptions(options...)
 	if err != nil {
@@ -36,18 +34,22 @@ func (p *Puller) reader(ctx context.Context, repo name.Repository, o *options) (
 	return rr, rr.init(ctx)
 }
 
-// TODO: Implements partial.Describable
-// TODO: Very similar to remote.Descriptor
-// TODO: May actually be remote.Descriptor?
-type todo struct {
-}
-
-func (p *Puller) Get(ctx context.Context, ref name.Reference) (*todo, error) {
+func (p *Puller) Get(ctx context.Context, ref name.Reference) (*Descriptor, error) {
 	r, err := p.reader(ctx, ref.Context(), p.o)
 	if err != nil {
 		return nil, err
 	}
-	return r.get(ctx, ref)
+	return r.f.get(ctx, ref, allManifestMediaTypes)
+}
+
+// ListPage lists a single page of tags. The "next" parameter should be empty for the first page.
+// For subsequent pages, "next" should be passed from the previous page's response.
+func (p *Puller) ListPage(ctx context.Context, repo name.Repository, next string) (*Tags, error) {
+	r, err := p.reader(ctx, repo, p.o)
+	if err != nil {
+		return nil, err
+	}
+	return r.f.listPage(ctx, next)
 }
 
 type repoReader struct {
@@ -56,8 +58,6 @@ type repoReader struct {
 	once sync.Once
 
 	f *fetcher
-
-	work *workers
 }
 
 // this will run once per repoWriter instance
@@ -69,12 +69,7 @@ func (r *repoReader) init(ctx context.Context) error {
 		}
 
 		r.f = f
-		r.work = &workers{}
 
 		return nil
 	})
-}
-
-func (r *repoReader) get(ctx context.Context, ref name.Reference) (*todo, error) {
-	return nil, nil
 }

@@ -120,21 +120,10 @@ func CopyRepository(src, dst string, opt ...Option) error {
 		return err
 	}
 
-	srcOpts := o.Remote
-	auth := o.auth
-	if auth == nil {
-		auth, err = o.Keychain.Resolve(srcRepo)
-		if err != nil {
-			return err
-		}
-	}
-	// TODO: remote.NewPuller
-	scopes := []string{srcRepo.Scope(transport.PullScope)}
-	tr, err := transport.NewWithContext(o.ctx, srcRepo.Registry, auth, o.transport, scopes)
+	puller, err := remote.NewPuller(o.Remote...)
 	if err != nil {
 		return err
 	}
-	srcOpts = append(srcOpts, remote.WithTransport(tr))
 
 	ignoredTags := map[string]struct{}{}
 	if o.noclobber {
@@ -166,7 +155,7 @@ func CopyRepository(src, dst string, opt ...Option) error {
 
 	next := ""
 	for {
-		tags, err := remote.ListPage(srcRepo, next, srcOpts...)
+		tags, err := puller.ListPage(ctx, srcRepo, next)
 		if err != nil {
 			return err
 		}
@@ -196,7 +185,7 @@ func CopyRepository(src, dst string, opt ...Option) error {
 				}
 
 				logs.Progress.Printf("Fetching %s", srcTag)
-				desc, err := remote.Get(srcTag, srcOpts...)
+				desc, err := puller.Get(ctx, srcTag)
 				if err != nil {
 					return err
 				}
