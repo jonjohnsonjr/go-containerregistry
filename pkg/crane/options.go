@@ -56,6 +56,7 @@ func makeOptions(opts ...Option) Options {
 		},
 		Keychain: authn.DefaultKeychain,
 		jobs:     runtime.GOMAXPROCS(0),
+		ctx:      context.Background(),
 	}
 
 	for _, o := range opts {

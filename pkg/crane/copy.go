@@ -20,12 +20,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/google/go-containerregistry/internal/legacy"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
-	"github.com/google/go-containerregistry/pkg/v1/types"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -67,48 +65,20 @@ func Copy(src, dst string, opt ...Option) error {
 		return fmt.Errorf("fetching %q: %w", src, err)
 	}
 
-	switch desc.MediaType {
-	case types.OCIImageIndex, types.DockerManifestList:
-		// Handle indexes separately.
-		if o.Platform != nil {
-			// If platform is explicitly set, don't copy the whole index, just the appropriate image.
-			if err := copyImage(desc, dstRef, o); err != nil {
-				return fmt.Errorf("failed to copy image: %w", err)
-			}
-		} else {
-			if err := copyIndex(desc, dstRef, o); err != nil {
-				return fmt.Errorf("failed to copy index: %w", err)
-			}
-		}
-	case types.DockerManifestSchema1, types.DockerManifestSchema1Signed:
-		// Handle schema 1 images separately.
-		if err := legacy.CopySchema1(desc, srcRef, dstRef, o.Remote...); err != nil {
-			return fmt.Errorf("failed to copy schema 1 image: %w", err)
-		}
-	default:
-		// Assume anything else is an image, since some registries don't set mediaTypes properly.
-		if err := copyImage(desc, dstRef, o); err != nil {
-			return fmt.Errorf("failed to copy image: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func copyImage(desc *remote.Descriptor, dstRef name.Reference, o Options) error {
-	img, err := desc.Image()
+	pusher, err := remote.NewPusher(o.Remote...)
 	if err != nil {
 		return err
 	}
-	return remote.Write(dstRef, img, o.Remote...)
-}
 
-func copyIndex(desc *remote.Descriptor, dstRef name.Reference, o Options) error {
-	idx, err := desc.ImageIndex()
-	if err != nil {
-		return err
+	if o.Platform != nil {
+		img, err := desc.Image()
+		if err != nil {
+			return err
+		}
+		return pusher.Push(o.ctx, dstRef, img)
 	}
-	return remote.WriteIndex(dstRef, idx, o.Remote...)
+
+	return pusher.Push(o.ctx, dstRef, desc)
 }
 
 // CopyRepository copies every tag from src to dst.

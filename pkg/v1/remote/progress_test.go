@@ -15,7 +15,6 @@
 package remote
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -321,7 +320,7 @@ func TestWriteLayer_Progress_Retry(t *testing.T) {
 		everyUpdate = append(everyUpdate, update)
 	}
 
-	if diff := cmp.Diff(everyUpdate, []v1.Update{
+	want := []v1.Update{
 		{Total: 101921, Complete: 32768},
 		{Total: 101921, Complete: 65536},
 		{Total: 101921, Complete: 98304},
@@ -332,7 +331,10 @@ func TestWriteLayer_Progress_Retry(t *testing.T) {
 		{Total: 101921, Complete: 65536},
 		{Total: 101921, Complete: 98304},
 		{Total: 101921, Complete: 101921},
-	}); diff != "" {
+	}
+	got := everyUpdate
+
+	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("received updates (-want +got) = %s", diff)
 	}
 }
@@ -349,6 +351,7 @@ func TestWriteLayer_Progress_Error(t *testing.T) {
 	registryThatAlwaysFails := http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		if request.Method == http.MethodPatch && strings.Contains(request.URL.Path, "blobs/uploads") {
 			responseWriter.WriteHeader(403)
+			return
 		}
 		handler.ServeHTTP(responseWriter, request)
 	})
@@ -374,14 +377,16 @@ func TestWriteLayer_Progress_Error(t *testing.T) {
 		everyUpdate = append(everyUpdate, update)
 	}
 
-	if diff := cmp.Diff(everyUpdate[:len(everyUpdate)-1], []v1.Update{
+	want := []v1.Update{
 		{Total: 101921, Complete: 32768},
 		{Total: 101921, Complete: 65536},
 		{Total: 101921, Complete: 98304},
 		{Total: 101921, Complete: 101921},
 		// retry results in the same messages sent to the updates channel
 		{Total: 101921, Complete: 0},
-	}); diff != "" {
+	}
+	got := everyUpdate[:len(everyUpdate)-1]
+	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("received updates (-want +got) = %s", diff)
 	}
 	if everyUpdate[len(everyUpdate)-1].Error == nil {
@@ -439,10 +444,6 @@ func checkUpdates(updates <-chan v1.Update) error {
 		}
 
 		log.Printf("u.Total=%d, u.Complete=%d", u.Total, u.Complete)
-		if u.Total == 0 {
-			return errors.New("saw zero total")
-		}
-
 		if u.Total != total {
 			if u.Total < total {
 				return fmt.Errorf("total regressed: was %d, saw %d", total, u.Total)

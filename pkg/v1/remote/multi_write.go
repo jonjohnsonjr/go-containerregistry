@@ -41,7 +41,7 @@ func MultiWrite(todo map[name.Reference]Taggable, options ...Option) (rerr error
 		return err
 	}
 	if o.progress != nil {
-		defer o.progress.Close(rerr)
+		defer func() { o.progress.Close(rerr) }()
 	}
 	p := newPusher(o)
 
@@ -153,6 +153,14 @@ func (p *Pusher) Push(ctx context.Context, ref name.Reference, t Taggable) error
 		return err
 	}
 	return w.writeManifest(ctx, ref, t)
+}
+
+func (p *Pusher) Upload(ctx context.Context, repo name.Repository, l v1.Layer) error {
+	w, err := p.writer(ctx, repo, p.o)
+	if err != nil {
+		return err
+	}
+	return w.writeLayer(ctx, l)
 }
 
 type repoWriter struct {
@@ -399,9 +407,6 @@ func (rw *repoWriter) manifestExists(ctx context.Context, ref name.Reference, t 
 		return false, err
 	}
 
-	// Mark that we saw this digest in the registry so we don't check again.
-	rw.work.Do(got.Digest, nop)
-
 	if digest != got.Digest {
 		return false, nil
 	}
@@ -476,7 +481,7 @@ func (rw *repoWriter) writeLayers(pctx context.Context, img v1.Image) error {
 	return g.Wait()
 }
 
-func (rw *repoWriter) writeLayer(ctx context.Context, l v1.Layer) (rerr error) {
+func (rw *repoWriter) writeLayer(ctx context.Context, l v1.Layer) error {
 	// Skip any non-distributable things.
 	mt, err := l.MediaType()
 	if err != nil {
@@ -506,7 +511,7 @@ func (rw *repoWriter) writeLayer(ctx context.Context, l v1.Layer) (rerr error) {
 	})
 }
 
-func (rw *repoWriter) lazyWriteLayer(ctx context.Context, l v1.Layer) (rerr error) {
+func (rw *repoWriter) lazyWriteLayer(ctx context.Context, l v1.Layer) error {
 	return rw.work.Stream(l, func() error {
 		if err := rw.w.uploadOne(ctx, l); err != nil {
 			return err

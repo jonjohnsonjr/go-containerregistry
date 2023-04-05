@@ -568,6 +568,10 @@ func TestDedupeLayers(t *testing.T) {
 		case commitPath:
 			http.Error(w, "Created", http.StatusCreated)
 		case manifestPath:
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			if r.Method != http.MethodPut {
 				t.Errorf("Method; got %v, want %v", r.Method, http.MethodPut)
 			}
@@ -927,6 +931,10 @@ func TestWrite(t *testing.T) {
 			}
 			http.Error(w, "Mounted", http.StatusCreated)
 		case manifestPath:
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			if r.Method != http.MethodPut {
 				t.Errorf("Method; got %v, want %v", r.Method, http.MethodPut)
 			}
@@ -978,6 +986,10 @@ func TestWriteWithErrors(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(errorBody))
 		default:
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			t.Fatalf("Unexpected path: %v", r.URL.Path)
 		}
 	}))
@@ -1283,8 +1295,8 @@ func TestWriteIndex(t *testing.T) {
 	manifestPath := fmt.Sprintf("/v2/%s/manifests/latest", expectedRepo)
 	childDigest := mustIndexManifest(t, idx).Manifests[0].Digest
 	childPath := fmt.Sprintf("/v2/%s/manifests/%s", expectedRepo, childDigest)
-	existinChildDigest := mustIndexManifest(t, idx).Manifests[1].Digest
-	existingChildPath := fmt.Sprintf("/v2/%s/manifests/%s", expectedRepo, existinChildDigest)
+	existingChildDigest := mustIndexManifest(t, idx).Manifests[1].Digest
+	existingChildPath := fmt.Sprintf("/v2/%s/manifests/%s", expectedRepo, existingChildDigest)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead && strings.HasPrefix(r.URL.Path, headPathPrefix) && r.URL.Path != initiatePath {
@@ -1300,12 +1312,17 @@ func TestWriteIndex(t *testing.T) {
 			}
 			http.Error(w, "Mounted", http.StatusCreated)
 		case manifestPath:
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			if r.Method != http.MethodPut {
 				t.Errorf("Method; got %v, want %v", r.Method, http.MethodPut)
 			}
 			http.Error(w, "Created", http.StatusCreated)
 		case existingChildPath:
 			if r.Method == http.MethodHead {
+				w.Header().Set("Docker-Content-Digest", existingChildDigest.String())
 				http.Error(w, http.StatusText(http.StatusOK), http.StatusOK)
 				return
 			}
@@ -1440,6 +1457,10 @@ func TestWriteForeignLayerIfOptionSet(t *testing.T) {
 		case commitPath:
 			http.Error(w, "Created", http.StatusCreated)
 		case manifestPath:
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			if r.Method != http.MethodPut {
 				t.Errorf("Method; got %v, want %v", r.Method, http.MethodPut)
 			}
