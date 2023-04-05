@@ -202,7 +202,7 @@ func (rl *remoteImageLayer) Compressed() (io.ReadCloser, error) {
 			return nil, err
 		}
 
-		resp, err := rl.ri.Client.Do(req.WithContext(ctx))
+		resp, err := rl.ri.client.Do(req.WithContext(ctx))
 		if err != nil {
 			lastErr = err
 			continue
@@ -260,7 +260,7 @@ func (rl *remoteImageLayer) Descriptor() (*v1.Descriptor, error) {
 
 // See partial.Exists.
 func (rl *remoteImageLayer) Exists() (bool, error) {
-	return rl.ri.blobExists(rl.digest)
+	return rl.ri.blobExists(rl.ri.context, rl.digest)
 }
 
 // LayerByDigest implements partial.CompressedLayer

@@ -40,7 +40,7 @@ func (rl *remoteLayer) Compressed() (io.ReadCloser, error) {
 
 // Compressed implements partial.CompressedLayer
 func (rl *remoteLayer) Size() (int64, error) {
-	resp, err := rl.headBlob(rl.digest)
+	resp, err := rl.headBlob(rl.context, rl.digest)
 	if err != nil {
 		return -1, err
 	}
@@ -60,7 +60,7 @@ func (rl *remoteLayer) MediaType() (types.MediaType, error) {
 
 // See partial.Exists.
 func (rl *remoteLayer) Exists() (bool, error) {
-	return rl.blobExists(rl.digest)
+	return rl.blobExists(rl.context, rl.digest)
 }
 
 // Layer reads the given blob reference from a registry as a Layer. A blob

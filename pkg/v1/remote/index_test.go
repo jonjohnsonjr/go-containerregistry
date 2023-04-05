@@ -143,7 +143,7 @@ func TestIndexRawManifestDigests(t *testing.T) {
 				ref: ref,
 				fetcher: fetcher{
 					repo:    ref.Context(),
-					Client:  http.DefaultClient,
+					client:  http.DefaultClient,
 					context: context.Background(),
 				},
 			}

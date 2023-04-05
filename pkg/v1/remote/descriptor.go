@@ -133,7 +133,7 @@ func (f *fetcher) get(ctx context.Context, ref name.Reference, acceptable []type
 		ref:        ref,
 		Manifest:   b,
 		Descriptor: *desc,
-		platform:   f.o.platform,
+		platform:   f.platform,
 	}, nil
 }
 
@@ -236,29 +236,32 @@ func (d *Descriptor) remoteIndex() *remoteIndex {
 
 // fetcher implements methods for reading from a registry.
 type fetcher struct {
-	repo    name.Repository
-	Client  *http.Client
-	context context.Context
-	o       *options
+	repo     name.Repository
+	client   *http.Client
+	context  context.Context
+	platform v1.Platform
+	pageSize int
 }
 
 func makeFetcher(ctx context.Context, repo name.Repository, o *options) (*fetcher, error) {
+	oauth := o.auth
 	if o.keychain != nil {
 		auth, err := o.keychain.Resolve(repo)
 		if err != nil {
 			return nil, err
 		}
-		o.auth = auth
+		oauth = auth
 	}
-	tr, err := transport.NewWithContext(ctx, repo.Registry, o.auth, o.transport, []string{repo.Scope(transport.PullScope)})
+	tr, err := transport.NewWithContext(ctx, repo.Registry, oauth, o.transport, []string{repo.Scope(transport.PullScope)})
 	if err != nil {
 		return nil, err
 	}
 	return &fetcher{
-		repo:    repo,
-		Client:  &http.Client{Transport: tr},
-		context: ctx,
-		o:       o,
+		repo:     repo,
+		client:   &http.Client{Transport: tr},
+		context:  ctx,
+		platform: o.platform,
+		pageSize: o.pageSize,
 	}, nil
 }
 
@@ -285,7 +288,7 @@ func (f *fetcher) fetchReferrers(ctx context.Context, filter map[string]string, 
 	}
 	req.Header.Set("Accept", string(types.OCIImageIndex))
 
-	resp, err := f.Client.Do(req)
+	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +336,7 @@ func (f *fetcher) fetchManifest(ctx context.Context, ref name.Reference, accepta
 	}
 	req.Header.Set("Accept", strings.Join(accept, ","))
 
-	resp, err := f.Client.Do(req.WithContext(ctx))
+	resp, err := f.client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -407,7 +410,7 @@ func (f *fetcher) headManifest(ctx context.Context, ref name.Reference, acceptab
 	}
 	req.Header.Set("Accept", strings.Join(accept, ","))
 
-	resp, err := f.Client.Do(req.WithContext(ctx))
+	resp, err := f.client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -459,7 +462,7 @@ func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.Read
 		return nil, err
 	}
 
-	resp, err := f.Client.Do(req.WithContext(ctx))
+	resp, err := f.client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, redact.Error(err)
 	}
@@ -483,14 +486,14 @@ func (f *fetcher) fetchBlob(ctx context.Context, size int64, h v1.Hash) (io.Read
 	return verify.ReadCloser(resp.Body, size, h)
 }
 
-func (f *fetcher) headBlob(h v1.Hash) (*http.Response, error) {
+func (f *fetcher) headBlob(ctx context.Context, h v1.Hash) (*http.Response, error) {
 	u := f.url("blobs", h.String())
 	req, err := http.NewRequest(http.MethodHead, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := f.Client.Do(req.WithContext(f.context))
+	resp, err := f.client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, redact.Error(err)
 	}
@@ -503,14 +506,14 @@ func (f *fetcher) headBlob(h v1.Hash) (*http.Response, error) {
 	return resp, nil
 }
 
-func (f *fetcher) blobExists(h v1.Hash) (bool, error) {
+func (f *fetcher) blobExists(ctx context.Context, h v1.Hash) (bool, error) {
 	u := f.url("blobs", h.String())
 	req, err := http.NewRequest(http.MethodHead, u.String(), nil)
 	if err != nil {
 		return false, err
 	}
 
-	resp, err := f.Client.Do(req.WithContext(f.context))
+	resp, err := f.client.Do(req.WithContext(ctx))
 	if err != nil {
 		return false, redact.Error(err)
 	}

@@ -115,13 +115,13 @@ func (f *fetcher) listPage(ctx context.Context, next string) (*Tags, error) {
 			Host:   f.repo.Registry.RegistryStr(),
 			Path:   fmt.Sprintf("/v2/%s/tags/list", f.repo.RepositoryStr()),
 		}
-		if f.o.pageSize > 0 {
-			uri.RawQuery = fmt.Sprintf("n=%d", f.o.pageSize)
+		if f.pageSize > 0 {
+			uri.RawQuery = fmt.Sprintf("n=%d", f.pageSize)
 		}
 		next = uri.String()
 	}
 
-	return listPage(ctx, f.Client, next)
+	return listPage(ctx, f.client, next)
 }
 
 func listPage(ctx context.Context, client *http.Client, uri string) (*Tags, error) {

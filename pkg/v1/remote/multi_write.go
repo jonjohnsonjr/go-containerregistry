@@ -164,53 +164,15 @@ type repoWriter struct {
 	err error
 
 	work *workers
-
-	scopeLock sync.Mutex
-	scopeSet  map[string]struct{}
-	scopes    []string
 }
 
 // this will run once per repoWriter instance
 func (rw *repoWriter) init(ctx context.Context) error {
 	rw.once.Do(func() {
-		scope := rw.repo.Scope(transport.PushScope)
-		rw.scopes = []string{scope}
-		rw.scopeSet = map[string]struct{}{
-			scope: struct{}{},
-		}
 		rw.work = &workers{}
-
 		rw.w, rw.err = makeWriter(ctx, rw.repo, nil, rw.o)
 	})
 	return rw.err
-}
-
-func (rw *repoWriter) maybeUpdateScopes(ml *MountableLayer) error {
-	if ml.Reference.Context().String() == rw.repo.String() {
-		return nil
-	}
-	if ml.Reference.Context().Registry.String() != rw.repo.Registry.String() {
-		return nil
-	}
-
-	scope := ml.Reference.Scope(transport.PullScope)
-
-	rw.scopeLock.Lock()
-	defer rw.scopeLock.Unlock()
-
-	if _, ok := rw.scopeSet[scope]; !ok {
-		rw.scopeSet[scope] = struct{}{}
-		rw.scopes = append(rw.scopes, scope)
-
-		logs.Debug.Printf("Refreshing token to add scope %q", scope)
-		wt, err := transport.NewWithContext(rw.o.context, rw.repo.Registry, rw.o.auth, rw.o.transport, rw.scopes)
-		if err != nil {
-			return err
-		}
-		rw.w.client = &http.Client{Transport: wt}
-	}
-
-	return nil
 }
 
 func (rw *repoWriter) writeDeps(ctx context.Context, m manifest) error {
@@ -411,7 +373,7 @@ func (rw *repoWriter) writeChild(ctx context.Context, child partial.Describable,
 func (rw *repoWriter) manifestExists(ctx context.Context, ref name.Reference, t Taggable) (bool, error) {
 	f := &fetcher{
 		repo:    ref.Context(),
-		Client:  rw.w.client,
+		client:  rw.w.client,
 		context: ctx,
 	}
 
@@ -522,12 +484,6 @@ func (rw *repoWriter) writeLayer(ctx context.Context, l v1.Layer) (rerr error) {
 	}
 	if !mt.IsDistributable() && !rw.o.allowNondistributableArtifacts {
 		return nil
-	}
-
-	if ml, ok := l.(*MountableLayer); ok {
-		if err := rw.maybeUpdateScopes(ml); err != nil {
-			return err
-		}
 	}
 
 	digest, err := l.Digest()

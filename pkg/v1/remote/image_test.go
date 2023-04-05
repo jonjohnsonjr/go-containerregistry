@@ -181,7 +181,7 @@ func TestRawManifestDigests(t *testing.T) {
 				ref: ref,
 				fetcher: fetcher{
 					repo:    ref.Context(),
-					Client:  http.DefaultClient,
+					client:  http.DefaultClient,
 					context: context.Background(),
 				},
 			}
@@ -218,7 +218,7 @@ func TestRawManifestNotFound(t *testing.T) {
 		ref: ref,
 		fetcher: fetcher{
 			repo:    ref.Context(),
-			Client:  http.DefaultClient,
+			client:  http.DefaultClient,
 			context: context.Background(),
 		},
 	}
@@ -260,7 +260,7 @@ func TestRawConfigFileNotFound(t *testing.T) {
 		ref: ref,
 		fetcher: fetcher{
 			repo:    ref.Context(),
-			Client:  http.DefaultClient,
+			client:  http.DefaultClient,
 			context: context.Background(),
 		},
 	}
@@ -302,7 +302,7 @@ func TestAcceptHeaders(t *testing.T) {
 		ref: ref,
 		fetcher: fetcher{
 			repo:    ref.Context(),
-			Client:  http.DefaultClient,
+			client:  http.DefaultClient,
 			context: context.Background(),
 		},
 	}

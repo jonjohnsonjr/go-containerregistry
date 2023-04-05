@@ -226,7 +226,7 @@ func TestRedactFetchBlob(t *testing.T) {
 	ctx := context.Background()
 	f := fetcher{
 		repo: mustNewTag(t, "original.com/repo:latest").Context(),
-		Client: &http.Client{
+		client: &http.Client{
 			Transport: errTransport{},
 		},
 		context: ctx,
