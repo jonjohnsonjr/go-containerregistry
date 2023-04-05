@@ -127,6 +127,7 @@ func CopyRepository(src, dst string, opt ...Option) error {
 
 	ignoredTags := map[string]struct{}{}
 	if o.noclobber {
+		// TODO: We could combine this handshake with NewPusher if we add remote.Pusher.ListTags.
 		have, err := ListTags(dst, opt...)
 		if err != nil {
 			var terr *transport.Error

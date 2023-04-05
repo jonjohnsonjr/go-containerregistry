@@ -76,7 +76,7 @@ func nop() error {
 	return nil
 }
 
-func (w *workers) Done(digest v1.Hash) error {
+func (w *workers) err(digest v1.Hash) error {
 	v, ok := w.errors.Load(digest)
 	if !ok || v == nil {
 		return nil
@@ -92,7 +92,12 @@ func (w *workers) Do(digest v1.Hash, f func() error) error {
 		w.errors.Store(digest, f())
 	})
 
-	return w.Done(digest)
+	err := w.err(digest)
+	if err != nil {
+		// Allow this to be retried by another caller.
+		w.onces.Delete(digest)
+	}
+	return err
 }
 
 func (w *workers) Stream(layer v1.Layer, f func() error) error {
@@ -155,7 +160,8 @@ type repoWriter struct {
 	o    *options
 	once sync.Once
 
-	w *writer
+	w   *writer
+	err error
 
 	work *workers
 
@@ -164,34 +170,19 @@ type repoWriter struct {
 	scopes    []string
 }
 
-// so you can use sync.Once but return an error
-func onceErr(once *sync.Once, f func() error) (err error) {
-	once.Do(func() {
-		err = f()
-	})
-	return
-}
-
 // this will run once per repoWriter instance
 func (rw *repoWriter) init(ctx context.Context) error {
-	return onceErr(&rw.once, func() (err error) {
+	rw.once.Do(func() {
 		scope := rw.repo.Scope(transport.PushScope)
-		scopes := []string{scope}
-
-		w, err := makeWriter(ctx, rw.repo, nil, rw.o)
-		if err != nil {
-			return err
-		}
-
-		rw.w = w
-		rw.work = &workers{}
+		rw.scopes = []string{scope}
 		rw.scopeSet = map[string]struct{}{
 			scope: struct{}{},
 		}
-		rw.scopes = scopes
+		rw.work = &workers{}
 
-		return nil
+		rw.w, rw.err = makeWriter(ctx, rw.repo, nil, rw.o)
 	})
+	return rw.err
 }
 
 func (rw *repoWriter) maybeUpdateScopes(ml *MountableLayer) error {

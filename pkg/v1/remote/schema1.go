@@ -41,7 +41,7 @@ func (s *schema1) Layers() ([]v1.Layer, error) {
 	}
 
 	layers := []v1.Layer{}
-	for i := len(m.FSLayers); i >= 0; i-- {
+	for i := len(m.FSLayers) - 1; i >= 0; i-- {
 		fsl := m.FSLayers[i]
 
 		h, err := v1.NewHash(fsl.BlobSum)

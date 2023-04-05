@@ -58,19 +58,14 @@ type repoReader struct {
 	o    *options
 	once sync.Once
 
-	f *fetcher
+	f   *fetcher
+	err error
 }
 
 // this will run once per repoWriter instance
 func (r *repoReader) init(ctx context.Context) error {
-	return onceErr(&r.once, func() (err error) {
-		f, err := makeFetcher(ctx, r.repo, r.o)
-		if err != nil {
-			return err
-		}
-
-		r.f = f
-
-		return nil
+	r.once.Do(func() {
+		r.f, r.err = makeFetcher(ctx, r.repo, r.o)
 	})
+	return r.err
 }

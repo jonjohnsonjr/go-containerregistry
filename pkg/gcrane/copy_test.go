@@ -374,25 +374,25 @@ func TestRetryErrors(t *testing.T) {
 	var b bytes.Buffer
 	logs.Warn.SetOutput(&b)
 
-	err := backoffErrors(retry.Backoff{
+	err := backoff(retry.Backoff{
 		Duration: 1 * time.Millisecond,
 		Steps:    3,
 	}, func() error {
 		return &transport.Error{StatusCode: http.StatusTooManyRequests}
-	})
+	})()
 
 	if err == nil {
-		t.Fatal("backoffErrors should return internal err, got nil")
+		t.Fatal("backoff should return internal err, got nil")
 	}
 	var terr *transport.Error
 	if !errors.As(err, &terr) {
-		t.Fatalf("backoffErrors should return internal err, got different error: %v", err)
+		t.Fatalf("backoff should return internal err, got different error: %v", err)
 	} else if terr.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("backoffErrors should return internal err, got different status code: %v", terr.StatusCode)
+		t.Fatalf("backoff should return internal err, got different status code: %v", terr.StatusCode)
 	}
 
 	if b.Len() == 0 {
-		t.Fatal("backoffErrors didn't log to logs.Warn")
+		t.Fatal("backoff didn't log to logs.Warn")
 	}
 }
 

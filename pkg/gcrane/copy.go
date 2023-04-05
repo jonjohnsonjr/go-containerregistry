@@ -74,19 +74,14 @@ func CopyRepository(ctx context.Context, src, dst string, opts ...Option) error 
 	return recursiveCopy(ctx, src, dst, o)
 }
 
-type task struct {
-	digest   string
-	manifest google.ManifestInfo
-	oldRepo  name.Repository
-	newRepo  name.Repository
-}
-
 type copier struct {
 	srcRepo name.Repository
 	dstRepo name.Repository
 
-	tasks chan task
-	opt   *options
+	opt *options
+
+	puller *remote.Puller
+	pusher *remote.Pusher
 }
 
 func newCopier(src, dst string, o *options) (*copier, error) {
@@ -100,10 +95,23 @@ func newCopier(src, dst string, o *options) (*copier, error) {
 		return nil, fmt.Errorf("parsing repo %q: %w", dst, err)
 	}
 
-	// A queue of size 2*jobs should keep each goroutine busy.
-	tasks := make(chan task, o.jobs*2)
+	puller, err := remote.NewPuller(o.remote...)
+	if err != nil {
+		return nil, err
+	}
 
-	return &copier{srcRepo, dstRepo, tasks, o}, nil
+	pusher, err := remote.NewPusher(o.remote...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &copier{
+		srcRepo: srcRepo,
+		dstRepo: dstRepo,
+		opt:     o,
+		puller:  puller,
+		pusher:  pusher,
+	}, nil
 }
 
 // recursiveCopy copies images from repo src to repo dst.
@@ -113,50 +121,98 @@ func recursiveCopy(ctx context.Context, src, dst string, o *options) error {
 		return err
 	}
 
-	g, ctx := errgroup.WithContext(ctx)
-	walkFn := func(repo name.Repository, tags *google.Tags, err error) error {
-		if err != nil {
-			logs.Warn.Printf("failed walkFn for repo %s: %v", repo, err)
-			// If we hit an error when listing the repo, try re-listing with backoff.
-			if err := backoffErrors(GCRBackoff(), func() error {
-				tags, err = google.List(repo, o.google...)
-				return err
-			}); err != nil {
-				return fmt.Errorf("failed List for repo %s: %w", repo, err)
-			}
-		}
+	return c.copyRepo(ctx, c.srcRepo)
+}
 
-		// If we hit an error when trying to diff the repo, re-diff with backoff.
-		if err := backoffErrors(GCRBackoff(), func() error {
-			return c.copyRepo(ctx, repo, tags)
-		}); err != nil {
-			return fmt.Errorf("failed to copy repo %q: %w", repo, err)
-		}
-
-		return nil
+// copyRepo figures out the name for our destination repo (newRepo), lists the
+// contents of newRepo, calculates the diff of what needs to be copied, then
+// fires off a goroutine to copy the diff and another to copy children.
+func (c *copier) copyRepo(ctx context.Context, oldRepo name.Repository) error {
+	want, err := c.list(ctx, oldRepo)
+	if err != nil {
+		return err
 	}
 
-	// Start walking the repo, enqueuing items in c.tasks.
-	g.Go(func() error {
-		defer close(c.tasks)
-		if err := google.Walk(c.srcRepo, walkFn, o.google...); err != nil {
-			return fmt.Errorf("failed to Walk: %w", err)
-		}
-		return nil
-	})
+	if len(want.Children) == 0 {
+		return c.copyImages(ctx, oldRepo, want)
+	}
 
-	// Pull items off of c.tasks and copy the images.
-	for i := 0; i < o.jobs; i++ {
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(backoff(GCRBackoff(), func() error {
+		return c.copyImages(ctx, oldRepo, want)
+	}))
+
+	for _, path := range want.Children {
+		child, err := name.NewRepository(fmt.Sprintf("%s/%s", oldRepo, path), name.StrictValidation)
+		if err != nil {
+			return fmt.Errorf("unexpected path failure: %w", err)
+		}
+
 		g.Go(func() error {
-			for task := range c.tasks {
-				// If we hit an error when trying to copy the images,
-				// retry with backoff.
-				if err := backoffErrors(GCRBackoff(), func() error {
-					return c.copyImages(ctx, task)
-				}); err != nil {
-					return fmt.Errorf("failed to copy %q: %w", task.digest, err)
+			return c.copyRepo(ctx, child)
+		})
+	}
+
+	return g.Wait()
+}
+
+// pulled out into a method to hide the backoff grossness
+func (c *copier) list(ctx context.Context, repo name.Repository) (want *google.Tags, err error) {
+	err = backoff(GCRBackoff(), func() error {
+		want, err = google.List(repo, c.opt.google...)
+		return err
+	})()
+	return
+}
+
+func (c *copier) copyImages(ctx context.Context, oldRepo name.Repository, want *google.Tags) error {
+	newRepo, err := c.rename(oldRepo)
+	if err != nil {
+		return fmt.Errorf("rename failed: %w", err)
+	}
+
+	have, err := google.List(newRepo, c.opt.google...)
+	if err != nil {
+		if !hasStatusCode(err, http.StatusNotFound) {
+			return err
+		}
+		// This is a 404 code, so we just need to copy everything.
+		logs.Warn.Printf("failed to list %s: %v", newRepo, err)
+		have = &google.Tags{Manifests: map[string]google.ManifestInfo{}}
+	}
+
+	// Figure out what we actually need to copy.
+	need := diffImages(want.Manifests, have.Manifests)
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(c.opt.jobs)
+
+	// Push everything we need.
+	for digest, manifest := range need {
+		digest, manifest := digest, manifest
+
+		g.Go(func() error {
+			src, err := c.puller.Get(ctx, oldRepo.Digest(digest))
+			if err != nil {
+				return err
+			}
+
+			refs := []name.Reference{}
+			for _, tag := range manifest.Tags {
+				refs = append(refs, newRepo.Tag(tag))
+			}
+			if len(refs) == 0 {
+				refs = append(refs, newRepo.Digest(digest))
+			}
+
+			for _, ref := range refs {
+				ref := ref
+
+				if err := c.pusher.Push(ctx, ref, src); err != nil {
+					return err
 				}
 			}
+
 			return nil
 		})
 	}
@@ -164,104 +220,19 @@ func recursiveCopy(ctx context.Context, src, dst string, o *options) error {
 	return g.Wait()
 }
 
-// copyRepo figures out the name for our destination repo (newRepo), lists the
-// contents of newRepo, calculates the diff of what needs to be copied, then
-// starts a goroutine to copy each image we need, and waits for them to finish.
-func (c *copier) copyRepo(ctx context.Context, oldRepo name.Repository, tags *google.Tags) error {
-	newRepo, err := c.rename(oldRepo)
-	if err != nil {
-		return fmt.Errorf("rename failed: %w", err)
-	}
-
-	// Figure out what we actually need to copy.
-	want := tags.Manifests
-	have := make(map[string]google.ManifestInfo)
-	haveTags, err := google.List(newRepo, c.opt.google...)
-	if err != nil {
-		if !hasStatusCode(err, http.StatusNotFound) {
-			return err
-		}
-		// This is a 404 code, so we just need to copy everything.
-		logs.Warn.Printf("failed to list %s: %v", newRepo, err)
-	} else {
-		have = haveTags.Manifests
-	}
-	need := diffImages(want, have)
-
-	// Queue up every image as a task.
-	for digest, manifest := range need {
-		t := task{
-			digest:   digest,
-			manifest: manifest,
-			oldRepo:  oldRepo,
-			newRepo:  newRepo,
-		}
-		select {
-		case c.tasks <- t:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	return nil
-}
-
-// copyImages starts a goroutine for each tag that points to the image
-// oldRepo@digest, or just copies the image by digest if there are no tags.
-func (c *copier) copyImages(_ context.Context, t task) error {
-	// We only have to explicitly copy by digest if there are no tags pointing to this manifest.
-	if len(t.manifest.Tags) == 0 {
-		srcImg := fmt.Sprintf("%s@%s", t.oldRepo, t.digest)
-		dstImg := fmt.Sprintf("%s@%s", t.newRepo, t.digest)
-
-		return crane.Copy(srcImg, dstImg, c.opt.crane...)
-	}
-
-	// We only need to push the whole image once.
-	tag := t.manifest.Tags[0]
-	srcImg := fmt.Sprintf("%s:%s", t.oldRepo, tag)
-	dstImg := fmt.Sprintf("%s:%s", t.newRepo, tag)
-
-	if err := crane.Copy(srcImg, dstImg, c.opt.crane...); err != nil {
-		return err
-	}
-
-	if len(t.manifest.Tags) <= 1 {
-		// If there's only one tag, we're done.
-		return nil
-	}
-
-	// Add the rest of the tags.
-	srcRef, err := name.ParseReference(srcImg)
-	if err != nil {
-		return err
-	}
-	desc, err := remote.Get(srcRef, c.opt.remote...)
-	if err != nil {
-		return err
-	}
-
-	for _, tag := range t.manifest.Tags[1:] {
-		dstImg := t.newRepo.Tag(tag)
-
-		if err := remote.Tag(dstImg, desc, c.opt.remote...); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // Retry temporary errors, 429, and 500+ with backoff.
-func backoffErrors(bo retry.Backoff, f func() error) error {
-	p := func(err error) bool {
-		b := retry.IsTemporary(err) || hasStatusCode(err, http.StatusTooManyRequests) || isServerError(err)
-		if b {
-			logs.Warn.Printf("Retrying %v", err)
+// TODO: ctx cancellation
+func backoff(bo retry.Backoff, f func() error) func() error {
+	return func() error {
+		p := func(err error) bool {
+			b := retry.IsTemporary(err) || hasStatusCode(err, http.StatusTooManyRequests) || isServerError(err)
+			if b {
+				logs.Warn.Printf("Retrying %v", err)
+			}
+			return b
 		}
-		return b
+		return retry.Retry(f, p, bo)
 	}
-	return retry.Retry(f, p, bo)
 }
 
 func hasStatusCode(err error, code int) bool {
