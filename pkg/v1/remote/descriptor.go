@@ -107,7 +107,11 @@ func Head(ref name.Reference, options ...Option) (*v1.Descriptor, error) {
 		return nil, err
 	}
 
-	return f.headManifest(o.context, ref, allManifestMediaTypes)
+	return f.head(o.context, ref)
+}
+
+func (f *fetcher) head(ctx context.Context, ref name.Reference) (*v1.Descriptor, error) {
+	return f.headManifest(ctx, ref, allManifestMediaTypes)
 }
 
 // Handle options and fetch the manifest with the acceptable MediaTypes in the
@@ -249,6 +253,7 @@ type fetcher struct {
 	client   *http.Client
 	context  context.Context
 	platform v1.Platform
+	pageSize int
 }
 
 func makeFetcher(ctx context.Context, target resource, o *options) (*fetcher, error) {
@@ -279,6 +284,7 @@ func makeFetcher(ctx context.Context, target resource, o *options) (*fetcher, er
 		client:   &http.Client{Transport: tr},
 		context:  ctx,
 		platform: o.platform,
+		pageSize: o.pageSize,
 	}, nil
 }
 
