@@ -408,6 +408,9 @@ func (rw *repoWriter) manifestExists(ctx context.Context, ref name.Reference, t 
 	}
 
 	if digest != got.Digest {
+		// Mark that we saw this digest in the registry so we don't have to check it again.
+		rw.work.Do(got.Digest, nop)
+
 		return false, nil
 	}
 
