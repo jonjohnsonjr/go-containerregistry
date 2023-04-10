@@ -24,15 +24,15 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
-type schema1 struct {
-	fetcher
+type Schema1 struct {
+	fetcher    fetcher
 	ref        name.Reference
 	manifest   []byte
 	mediaType  types.MediaType
 	descriptor *v1.Descriptor
 }
 
-func (s *schema1) Layers() ([]v1.Layer, error) {
+func (s *Schema1) Layers() ([]v1.Layer, error) {
 	m := schema1Manifest{}
 	if err := json.NewDecoder(bytes.NewReader(s.manifest)).Decode(&m); err != nil {
 		return nil, err
@@ -56,39 +56,23 @@ func (s *schema1) Layers() ([]v1.Layer, error) {
 	return layers, nil
 }
 
-func (s *schema1) MediaType() (types.MediaType, error) {
+func (s *Schema1) MediaType() (types.MediaType, error) {
 	return s.mediaType, nil
 }
 
-func (s *schema1) Size() (int64, error) {
+func (s *Schema1) Size() (int64, error) {
 	return s.descriptor.Size, nil
 }
 
-func (s *schema1) ConfigName() (v1.Hash, error) {
-	return partial.ConfigName(s)
-}
-
-func (s *schema1) ConfigFile() (*v1.ConfigFile, error) {
-	return nil, newErrSchema1(s.mediaType)
-}
-
-func (s *schema1) RawConfigFile() ([]byte, error) {
-	return []byte("{}"), nil
-}
-
-func (s *schema1) Digest() (v1.Hash, error) {
+func (s *Schema1) Digest() (v1.Hash, error) {
 	return s.descriptor.Digest, nil
 }
 
-func (s *schema1) Manifest() (*v1.Manifest, error) {
-	return nil, newErrSchema1(s.mediaType)
-}
-
-func (s *schema1) RawManifest() ([]byte, error) {
+func (s *Schema1) RawManifest() ([]byte, error) {
 	return s.manifest, nil
 }
 
-func (s *schema1) LayerByDigest(h v1.Hash) (v1.Layer, error) {
+func (s *Schema1) LayerByDigest(h v1.Hash) (v1.Layer, error) {
 	l, err := partial.CompressedToLayer(&remoteLayer{
 		fetcher: s.fetcher,
 		digest:  h,
@@ -100,10 +84,6 @@ func (s *schema1) LayerByDigest(h v1.Hash) (v1.Layer, error) {
 		Layer:     l,
 		Reference: s.ref.Context().Digest(h.String()),
 	}, nil
-}
-
-func (s *schema1) LayerByDiffID(v1.Hash) (v1.Layer, error) {
-	return nil, newErrSchema1(s.mediaType)
 }
 
 type fslayer struct {

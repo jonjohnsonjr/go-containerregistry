@@ -16,6 +16,7 @@ package remote
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -102,20 +103,14 @@ func TestSchema1(t *testing.T) {
 	pulled := must(Get(tag))
 	img := must(pulled.Schema1())
 
-	if err := Write(ref.Context().Tag("repushed"), img); err != nil {
+	pusher, err := NewPusher()
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	mustErr := func(a any, err error) {
-		t.Helper()
-		if err == nil {
-			t.Fatalf("should have failed, got %T", a)
-		}
+	if err := pusher.Push(context.TODO(), ref.Context().Tag("repushed"), img); err != nil {
+		t.Fatal(err)
 	}
-
-	mustErr(img.ConfigFile())
-	mustErr(img.Manifest())
-	mustErr(img.LayerByDiffID(v1.Hash{}))
 
 	h, sz, err := v1.SHA256(bytes.NewReader(s1.b))
 	if err != nil {

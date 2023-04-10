@@ -180,18 +180,13 @@ func (d *Descriptor) Image() (v1.Image, error) {
 // The v1.Image returned by this method does not implement the entire interface because it would be inefficient.
 // This exists mostly to make it easier to copy schema 1 images around or look at their filesystems.
 // This is separate from Image() to avoid a backward incompatible change for callers expecting ErrSchema1.
-func (d *Descriptor) Schema1() (v1.Image, error) {
-	i := &schema1{
+func (d *Descriptor) Schema1() (*Schema1, error) {
+	return &Schema1{
 		fetcher:    d.fetcher,
 		ref:        d.ref,
 		manifest:   d.Manifest,
 		mediaType:  d.MediaType,
 		descriptor: &d.Descriptor,
-	}
-
-	return &mountableImage{
-		Image:     i,
-		Reference: d.ref,
 	}, nil
 }
 

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/google/go-containerregistry/internal/with"
 	"github.com/google/go-containerregistry/pkg/logs"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -158,8 +159,8 @@ func (rw *repoWriter) init(ctx context.Context) error {
 }
 
 func (rw *repoWriter) writeDeps(ctx context.Context, m manifest) error {
-	if img, ok := m.(v1.Image); ok {
-		return rw.writeLayers(ctx, img)
+	if _, ok := m.(with.Layers); ok {
+		return rw.writeLayers(ctx, m)
 	}
 
 	if idx, ok := m.(v1.ImageIndex); ok {
@@ -409,8 +410,13 @@ func (rw *repoWriter) commitManifest(ctx context.Context, ref name.Reference, m 
 	return rw.w.commitManifest(ctx, m, ref)
 }
 
-func (rw *repoWriter) writeLayers(pctx context.Context, img v1.Image) error {
-	ls, err := img.Layers()
+func (rw *repoWriter) writeLayers(pctx context.Context, img manifest) error {
+	wl, ok := img.(with.Layers)
+	if !ok {
+		return nil
+	}
+
+	ls, err := wl.Layers()
 	if err != nil {
 		return err
 	}
@@ -426,22 +432,18 @@ func (rw *repoWriter) writeLayers(pctx context.Context, img v1.Image) error {
 		})
 	}
 
-	mt, err := img.MediaType()
-	if err != nil {
-		return err
-	}
-
-	if mt.IsSchema1() {
+	wc, ok := img.(with.RawConfigFile)
+	if !ok {
 		return g.Wait()
 	}
 
-	cl, err := partial.ConfigLayer(img)
+	cl, err := partial.ConfigLayer(wc)
 	if errors.Is(err, stream.ErrNotComputed) {
 		if err := g.Wait(); err != nil {
 			return err
 		}
 
-		cl, err := partial.ConfigLayer(img)
+		cl, err := partial.ConfigLayer(wc)
 		if err != nil {
 			return err
 		}

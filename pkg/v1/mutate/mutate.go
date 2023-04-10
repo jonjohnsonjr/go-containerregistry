@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/internal/gzip"
+	"github.com/google/go-containerregistry/internal/with"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/match"
@@ -246,7 +247,7 @@ func CreatedAt(base v1.Image, created v1.Time) (v1.Image, error) {
 //
 // If a caller doesn't read the full contents, they should Close it to free up
 // resources used during extraction.
-func Extract(img v1.Image) io.ReadCloser {
+func Extract(img with.Layers) io.ReadCloser {
 	pr, pw := io.Pipe()
 
 	go func() {
@@ -261,7 +262,7 @@ func Extract(img v1.Image) io.ReadCloser {
 }
 
 // Adapted from https://github.com/google/containerregistry/blob/da03b395ccdc4e149e34fbb540483efce962dc64/client/v2_2/docker_image_.py#L816
-func extract(img v1.Image, w io.Writer) error {
+func extract(img with.Layers, w io.Writer) error {
 	tarWriter := tar.NewWriter(w)
 	defer tarWriter.Close()
 
