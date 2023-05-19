@@ -31,7 +31,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
@@ -87,8 +89,9 @@ func NewCmdEditConfig(options *[]crane.Option) *cobra.Command {
 // NewCmdManifest creates a new cobra.Command for the manifest subcommand.
 func NewCmdEditManifest(options *[]crane.Option) *cobra.Command {
 	var (
-		dst string
-		mt  string
+		dst  string
+		mt   string
+		ocil string
 	)
 	cmd := &cobra.Command{
 		Use:   "manifest",
@@ -97,16 +100,17 @@ func NewCmdEditManifest(options *[]crane.Option) *cobra.Command {
   crane edit manifest ubuntu`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ref, err := editManifest(cmd.InOrStdin(), cmd.OutOrStdout(), args[0], dst, mt, *options...)
+			ref, err := editManifest(cmd.InOrStdin(), cmd.OutOrStdout(), args[0], dst, mt, ocil, *options...)
 			if err != nil {
 				return fmt.Errorf("editing manifest: %w", err)
 			}
-			fmt.Println(ref.String())
+			fmt.Println(ref)
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&dst, "tag", "t", "", "New tag reference to apply to mutated image. If not provided, uses original tag or pushes a new digest.")
 	cmd.Flags().StringVarP(&mt, "media-type", "m", "", "Override the mediaType used as the Content-Type for PUT")
+	cmd.Flags().StringVarP(&ocil, "layout", "L", "", "Edit an OCI layout instead of a registry.")
 
 	return cmd
 }
@@ -272,47 +276,90 @@ func editConfig(ctx context.Context, in io.Reader, out io.Writer, src, dst strin
 	return dstRef, nil
 }
 
-func editManifest(in io.Reader, out io.Writer, src string, dst string, mt string, options ...crane.Option) (name.Reference, error) {
-	o := crane.GetOptions(options...)
+func pull(src, ocil string, options ...crane.Option) (*v1.Descriptor, error) {
+	if ocil == "" {
+		o := crane.GetOptions(options...)
 
-	ref, err := name.ParseReference(src, o.Name...)
+		ref, err := name.ParseReference(src)
+		if err != nil {
+			return nil, err
+		}
+
+		desc, err := remote.Get(ref, o.Remote...)
+		if err != nil {
+			return nil, err
+		}
+
+		return &desc.Descriptor, nil
+	}
+
+	p, err := layout.FromPath(ocil)
 	if err != nil {
 		return nil, err
 	}
 
-	desc, err := remote.Get(ref, o.Remote...)
+	l, err := p.ImageIndex()
 	if err != nil {
 		return nil, err
+	}
+
+	// Janky matcher.
+	matcher := func(desc v1.Descriptor) bool {
+		if strings.Contains(src, "sha256:") {
+			return desc.Digest.String() == src
+		}
+		if tag, ok := desc.Annotations["org.opencontainers.image.ref.name"]; ok {
+			return tag == src
+		}
+
+		return false
+	}
+
+	descs, err := partial.FindManifests(l, matcher)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(descs) == 0 {
+		return nil, fmt.Errorf("no matching descriptors in %q", ocil)
+	}
+
+	// Use the last one because we append when we edit. Maybe this is wrong.
+	desc := descs[len(descs)-1]
+
+	desc.Data, err = p.Bytes(desc.Digest)
+	if err != nil {
+		return nil, err
+	}
+
+	return &desc, nil
+}
+
+func editManifest(in io.Reader, out io.Writer, src string, dst string, mt string, ocil string, options ...crane.Option) (string, error) {
+	o := crane.GetOptions(options...)
+
+	desc, err := pull(src, ocil, options...)
+	if err != nil {
+		return "", err
 	}
 
 	var edited []byte
 	if interactive(in, out) {
-		edited, err = editor.Edit(bytes.NewReader(desc.Manifest), ".json")
+		edited, err = editor.Edit(bytes.NewReader(desc.Data), ".json")
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 	} else {
 		b, err := io.ReadAll(in)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		edited = b
 	}
 
 	digest, _, err := v1.SHA256(bytes.NewReader(edited))
 	if err != nil {
-		return nil, err
-	}
-
-	if dst == "" {
-		dst = src
-		if _, ok := ref.(name.Digest); ok {
-			dst = ref.Context().Digest(digest.String()).String()
-		}
-	}
-	dstRef, err := name.ParseReference(dst, o.Name...)
-	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	if mt == "" {
@@ -330,14 +377,55 @@ func editManifest(in io.Reader, out io.Writer, src string, dst string, mt string
 
 	rm := &rawManifest{
 		body:      edited,
+		digest:    digest,
 		mediaType: types.MediaType(mt),
 	}
 
-	if err := remote.Put(dstRef, rm, o.Remote...); err != nil {
-		return nil, err
+	if ocil == "" {
+		ref, err := name.ParseReference(src, o.Name...)
+		if err != nil {
+			return "", err
+		}
+
+		if dst == "" {
+			dst = src
+			if _, ok := ref.(name.Digest); ok {
+				dst = ref.Context().Digest(digest.String()).String()
+			}
+		}
+		dstRef, err := name.ParseReference(dst, o.Name...)
+		if err != nil {
+			return "", err
+		}
+		if err := remote.Put(dstRef, rm, o.Remote...); err != nil {
+			return "", err
+		}
+
+		return dstRef.String(), nil
 	}
 
-	return dstRef, nil
+	p, err := layout.FromPath(ocil)
+	if err != nil {
+		return "", err
+	}
+
+	// digest
+	if err := p.WriteBlob(digest, io.NopCloser(bytes.NewReader(edited))); err != nil {
+		return "", err
+	}
+
+	newDesc, err := partial.Descriptor(rm)
+	if err != nil {
+		return "", err
+	}
+
+	newDesc.Annotations = desc.Annotations
+
+	if err := p.AppendDescriptor(*newDesc); err != nil {
+		return "", err
+	}
+
+	return digest.String(), nil
 }
 
 func editFile(in io.Reader, out io.Writer, src, file, dst string, options ...crane.Option) (name.Reference, error) {
@@ -479,11 +567,20 @@ type withMediaType struct {
 
 type rawManifest struct {
 	body      []byte
+	digest    v1.Hash
 	mediaType types.MediaType
 }
 
 func (r *rawManifest) RawManifest() ([]byte, error) {
 	return r.body, nil
+}
+
+func (r *rawManifest) Size() (int64, error) {
+	return int64(len(r.body)), nil
+}
+
+func (r *rawManifest) Digest() (v1.Hash, error) {
+	return r.digest, nil
 }
 
 func (r *rawManifest) MediaType() (types.MediaType, error) {
