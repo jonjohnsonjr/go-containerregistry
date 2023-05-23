@@ -15,6 +15,7 @@
 package tarball
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"fmt"
@@ -212,7 +213,15 @@ func WithEstargz(l *layer) {
 // LayerFromFile returns a v1.Layer given a tarball
 func LayerFromFile(path string, opts ...LayerOption) (v1.Layer, error) {
 	opener := func() (io.ReadCloser, error) {
-		return os.Open(path)
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+
+		return &and.ReadCloser{
+			Reader:    bufio.NewReader(f),
+			CloseFunc: f.Close,
+		}, nil
 	}
 	return LayerFromOpener(opener, opts...)
 }
