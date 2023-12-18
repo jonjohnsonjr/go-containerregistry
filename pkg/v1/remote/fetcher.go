@@ -46,15 +46,6 @@ type fetcher struct {
 }
 
 func makeFetcher(ctx context.Context, target resource, o *options) (*fetcher, error) {
-	auth := o.auth
-	if o.keychain != nil {
-		kauth, err := o.keychain.Resolve(target)
-		if err != nil {
-			return nil, err
-		}
-		auth = kauth
-	}
-
 	reg, ok := target.(name.Registry)
 	if !ok {
 		repo, ok := target.(name.Repository)
@@ -79,6 +70,15 @@ func makeFetcher(ctx context.Context, target resource, o *options) (*fetcher, er
 				return nil, fmt.Errorf("parsing mirror target: %w", err)
 			}
 		}
+	}
+
+	auth := o.auth
+	if o.keychain != nil {
+		kauth, err := o.keychain.Resolve(target)
+		if err != nil {
+			return nil, err
+		}
+		auth = kauth
 	}
 
 	tr, err := transport.NewWithContext(ctx, reg, auth, o.transport, []string{target.Scope(transport.PullScope)})
