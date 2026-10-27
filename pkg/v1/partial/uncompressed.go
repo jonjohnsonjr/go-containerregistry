@@ -110,6 +110,13 @@ type uncompressedImageExtender struct {
 
 	lock     sync.Mutex
 	manifest *v1.Manifest
+	layers   sync.Map // map[v1.Hash]*layerEntry
+}
+
+type layerEntry struct {
+	once  sync.Once
+	layer v1.Layer
+	err   error
 }
 
 // Assert that our extender type completes the v1.Image interface
@@ -206,11 +213,22 @@ func (i *uncompressedImageExtender) Layers() ([]v1.Layer, error) {
 
 // LayerByDiffID implements v1.Image
 func (i *uncompressedImageExtender) LayerByDiffID(diffID v1.Hash) (v1.Layer, error) {
-	ul, err := i.UncompressedImageCore.LayerByDiffID(diffID)
-	if err != nil {
-		return nil, err
+	v, _ := i.layers.LoadOrStore(diffID, &layerEntry{})
+	le := v.(*layerEntry)
+	le.once.Do(func() {
+		var ul UncompressedLayer
+		ul, le.err = i.UncompressedImageCore.LayerByDiffID(diffID)
+		if le.err == nil {
+			le.layer, le.err = UncompressedToLayer(ul)
+		}
+	})
+	if le.err != nil {
+		// Evict failed entries so transient errors can be retried without
+		// clobbering a concurrent retry's entry.
+		i.layers.CompareAndDelete(diffID, le)
+		return nil, le.err
 	}
-	return UncompressedToLayer(ul)
+	return le.layer, nil
 }
 
 // LayerByDigest implements v1.Image

@@ -17,6 +17,8 @@ package partial_test
 import (
 	"io"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	legacy "github.com/google/go-containerregistry/pkg/legacy/tarball"
@@ -229,5 +231,148 @@ func TestUncompressed(t *testing.T) {
 	}
 	if got, want := ok, true; got != want {
 		t.Errorf("Exists() = %t != %t", got, want)
+	}
+}
+
+type countingUncompressedLayer struct {
+	wrapped v1.Layer
+	opens   atomic.Int64
+}
+
+func (l *countingUncompressedLayer) DiffID() (v1.Hash, error) {
+	return l.wrapped.DiffID()
+}
+
+func (l *countingUncompressedLayer) MediaType() (types.MediaType, error) {
+	return l.wrapped.MediaType()
+}
+
+func (l *countingUncompressedLayer) Uncompressed() (io.ReadCloser, error) {
+	l.opens.Add(1)
+	return l.wrapped.Uncompressed()
+}
+
+type countingUncompressedImage struct {
+	img            v1.Image
+	layersByDiffID map[v1.Hash]*countingUncompressedLayer
+	lookups        atomic.Int64
+}
+
+func (i *countingUncompressedImage) RawConfigFile() ([]byte, error) {
+	return i.img.RawConfigFile()
+}
+
+func (i *countingUncompressedImage) MediaType() (types.MediaType, error) {
+	return i.img.MediaType()
+}
+
+func (i *countingUncompressedImage) LayerByDiffID(h v1.Hash) (partial.UncompressedLayer, error) {
+	i.lookups.Add(1)
+	if cl, ok := i.layersByDiffID[h]; ok {
+		return cl, nil
+	}
+	return i.img.LayerByDiffID(h)
+}
+
+func TestUncompressedLayerMemoization(t *testing.T) {
+	wantImg, err := random.Image(1024, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origLayers, err := wantImg.Layers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byDiffID := make(map[v1.Hash]*countingUncompressedLayer, len(origLayers))
+	for _, l := range origLayers {
+		h, err := l.DiffID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		byDiffID[h] = &countingUncompressedLayer{wrapped: l}
+	}
+
+	core := &countingUncompressedImage{
+		img:            wantImg,
+		layersByDiffID: byDiffID,
+	}
+	img, err := partial.UncompressedToImage(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fetching Layers() concurrently is lazy and does not open any uncompressed streams.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			if _, err := img.Layers(); err != nil {
+				t.Errorf("concurrent Layers(): %v", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	layers, err := img.Layers()
+	if err != nil {
+		t.Fatalf("Layers(): %v", err)
+	}
+	for h, cl := range byDiffID {
+		if got := cl.opens.Load(); got != 0 {
+			t.Errorf("layer %v opened %d times during Layers(), want 0", h, got)
+		}
+	}
+
+	// Manifest(), Digest(), Size(), Layers(), LayerByDiffID(), and LayerByDigest()
+	// share the memoized layer extenders so Digest/Size hash each layer only once.
+	m, err := img.Manifest()
+	if err != nil {
+		t.Fatalf("Manifest(): %v", err)
+	}
+	layers2, err := img.Layers()
+	if err != nil {
+		t.Fatalf("Layers(): %v", err)
+	}
+	for idx, l := range layers2 {
+		if l != layers[idx] {
+			t.Errorf("layers[%d] was not memoized across Layers() calls", idx)
+		}
+		d, err := l.Digest()
+		if err != nil {
+			t.Fatalf("layers[%d].Digest(): %v", idx, err)
+		}
+		if d != m.Layers[idx].Digest {
+			t.Errorf("layers[%d] digest = %v, want %v", idx, d, m.Layers[idx].Digest)
+		}
+		sz, err := l.Size()
+		if err != nil {
+			t.Fatalf("layers[%d].Size(): %v", idx, err)
+		}
+		if sz != m.Layers[idx].Size {
+			t.Errorf("layers[%d] size = %d, want %d", idx, sz, m.Layers[idx].Size)
+		}
+		diffID, err := l.DiffID()
+		if err != nil {
+			t.Fatalf("layers[%d].DiffID(): %v", idx, err)
+		}
+		byDiff, err := img.LayerByDiffID(diffID)
+		if err != nil {
+			t.Fatalf("LayerByDiffID(%v): %v", diffID, err)
+		}
+		byDig, err := img.LayerByDigest(d)
+		if err != nil {
+			t.Fatalf("LayerByDigest(%v): %v", d, err)
+		}
+		if byDiff != l || byDig != l {
+			t.Errorf("layers[%d] was not memoized across LayerByDiffID/LayerByDigest", idx)
+		}
+	}
+
+	if got, want := core.lookups.Load(), int64(len(origLayers)); got != want {
+		t.Errorf("UncompressedImageCore.LayerByDiffID calls = %d, want %d", got, want)
+	}
+	for h, cl := range byDiffID {
+		if got := cl.opens.Load(); got != 1 {
+			t.Errorf("layer %v Uncompressed() opened %d times across metadata calls, want 1", h, got)
+		}
 	}
 }
